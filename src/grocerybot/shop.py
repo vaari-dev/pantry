@@ -1,5 +1,6 @@
 """The shop's website, through real Chrome: the site refuses headless browsers and data-centre IPs."""
 
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -71,6 +72,17 @@ SAVED_ADDRESSES = """() => {
     document.querySelectorAll('[data-saved-address]').forEach(el => el.removeAttribute('data-saved-address'));
     return cards.map((el, n) => { el.setAttribute('data-saved-address', n); return lines(el).join('\\n'); });
 }""".replace("MODAL", repr(MODAL))
+# The picker's markup with its text and attribute values masked like _mask; structural attributes kept.
+MASKED_PICKER = """m => {
+    const keep = new Set(['class', 'id', 'role', 'tabindex', 'type', 'data-testid', 'aria-modal', 'style']);
+    const mask = s => s.replace(/\\p{L}/gu, 'x').replace(/\\p{N}/gu, '0');
+    const root = ([...document.querySelectorAll(m)].pop() || document.body).cloneNode(true);
+    const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    while (walk.nextNode()) walk.currentNode.nodeValue = mask(walk.currentNode.nodeValue);
+    for (const el of [root, ...root.querySelectorAll('*')])
+        for (const a of el.attributes) if (!keep.has(a.name)) a.value = mask(a.value);
+    return root.outerHTML;
+}"""
 log = structlog.get_logger(__name__)
 
 
@@ -95,6 +107,19 @@ class Cart:
 
 def _money(text: str) -> float:
     return float(text.replace(",", ""))
+
+
+def _mask(value):
+    """Keeps the shape of JSON, not its content: letters become x, digits 0; keys, booleans and nulls stay."""
+    if isinstance(value, dict):
+        return {k: _mask(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_mask(v) for v in value]
+    if isinstance(value, str):
+        return re.sub(r"\d", "0", re.sub(r"[^\W\d_]", "x", value))
+    if isinstance(value, bool) or value is None:
+        return value
+    return 0
 
 
 def _squash(text: str) -> str:
@@ -224,8 +249,19 @@ class Browser:
 
     def saved_addresses(self) -> list[str]:
         """Opens the address picker and lists its saved addresses, in order; pick one with pick_address."""
-        self.page.locator(ADDRESS).first.click()
-        self.page.wait_for_timeout(2500)
+        replies = []
+
+        def record(response):
+            if "address" in response.url.split("?")[0].lower() and "json" in response.headers.get("content-type", ""):
+                replies.append(response)
+
+        self.page.on("response", record)
+        try:
+            self.page.locator(ADDRESS).first.click()
+            self.page.wait_for_timeout(2500)
+        finally:
+            self.page.remove_listener("response", record)
+        self._keep_picker(replies)
         try:
             found = self.page.evaluate(SAVED_ADDRESSES)
         except PlaywrightError:  # setup falls back to naming the address
@@ -234,6 +270,27 @@ class Browser:
         if not found:
             self.close_picker()
         return found
+
+    def _keep_picker(self, replies: list) -> None:
+        """The shape of the picker and of the shop's address replies, to build the address reader against.
+        Masked first (letters x, digits 0; keys and markup kept): no one's address is stored."""
+        stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
+        try:
+            html = self.page.evaluate(MASKED_PICKER, MODAL)
+            api = []
+            for r in replies:
+                try:
+                    api.append({"path": _mask(r.url.split("?")[0]), "status": r.status, "body": _mask(r.json())})
+                except Exception:  # redirects and aborted requests have no body
+                    log.info("address reply unreadable")
+            self.debug_dir.mkdir(parents=True, exist_ok=True)
+            for name, text in (("picker.html", html), ("picker-api.json", json.dumps(api))):
+                path = self.debug_dir / f"{stamp}-{name}"
+                path.write_text(text)
+                path.chmod(0o600)
+            log.info("address picker kept", replies=len(api))
+        except Exception:  # only a diagnostic: never stop setup over it
+            log.warning("could not keep the address picker", exc_info=True)
 
     def pick_address(self, n: int) -> str:
         """The nth of saved_addresses(); returns the delivery address the shop now shows."""
