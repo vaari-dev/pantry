@@ -16,6 +16,7 @@ ARG WHISPER_MODEL=small
 ENV HF_HOME=/opt/hf PYTHONUNBUFFERED=1 DATA_DIR=/data
 RUN python -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL}', device='cpu', compute_type='int8')" \
  && chmod -R a+rX /opt/hf
+ENV HF_HUB_OFFLINE=1
 
 COPY src ./src
 RUN pip install --no-cache-dir --no-deps .
