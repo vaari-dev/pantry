@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from grocerybot import store
-from grocerybot.accounts import Accounts
+from grocerybot.accounts import Accounts, address_parts
 
 ADMIN, ASHA, RAVI, MEERA = 1, 2, 3, 4
 
@@ -85,3 +85,16 @@ def test_leave_is_scoped_and_own_invite_is_harmless(tmp_path, accounts):
     assert accounts.join(ASHA, "Asha", accounts.invite(hh.id)).owner == ASHA
     accounts.leave(RAVI, "elsewhere")
     assert accounts.get(hh.id).members == (ASHA, RAVI)
+
+
+@pytest.mark.parametrize(
+    "text, parts",
+    [
+        ("Primanti\nT6/503, Prestige Road, Bengaluru", ("Primanti", "T6/503")),
+        ("Home - 12B, MG Road", ("Home", "12B")),
+        ("Work, Tower 3, Outer Ring Road", ("Work", "Tower 3")),
+        ("Home", ("Home", "Home")),
+    ],
+)
+def test_address_parts(text, parts):
+    assert address_parts(text) == parts

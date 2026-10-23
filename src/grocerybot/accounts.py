@@ -8,6 +8,7 @@ households.json:
 
 import contextlib
 import os
+import re
 import secrets
 import shutil
 import threading
@@ -49,6 +50,15 @@ class Household:
 
     def ledger(self) -> Ledger:
         return Ledger(self.dir / "ledger.json")
+
+
+def address_parts(text: str) -> tuple[str, str]:
+    """'Home\\nT6/503, MG Road' -> ('Home', 'T6/503'): what the address starts with, and must contain."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()] or [""]
+    if len(lines) == 1:
+        lines = re.split(r"\s+-\s+|,\s*", lines[0], maxsplit=1)
+    label, rest = lines[0], " ".join(lines[1:])
+    return label, rest.split(",")[0].strip() or label
 
 
 class Accounts:
