@@ -1,6 +1,7 @@
 """The shop's website, through real Chrome: the site refuses headless browsers and data-centre IPs."""
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -51,6 +52,7 @@ CONTINUE = re.compile(r"^\s*(continue|get otp|send otp|login|next)\s*$", re.I)
 VERIFY = re.compile(r"^\s*(verify|continue|login|submit)", re.I)
 PLUS = "button[aria-label='Increase quantity by one']:not([data-hidden=true])"
 MODAL = "[id^=zui-modal], [role=dialog], [aria-modal=true]"  # the address picker; it covers the page
+PICKER_BUTTON = f"button:has({ADDRESS}), {ADDRESS}"  # the header button around the address opens it
 # The picker's markup has no stable ids: a saved address is the innermost clickable block of two or
 # more lines with a digit or comma after its name. Tags each with data-saved-address=<n>.
 SAVED_ADDRESSES = """() => {
@@ -72,17 +74,18 @@ SAVED_ADDRESSES = """() => {
     document.querySelectorAll('[data-saved-address]').forEach(el => el.removeAttribute('data-saved-address'));
     return cards.map((el, n) => { el.setAttribute('data-saved-address', n); return lines(el).join('\\n'); });
 }""".replace("MODAL", repr(MODAL))
-# The picker's markup with its text and attribute values masked like _mask; structural attributes kept.
+# The picker's markup with its text masked like _mask; structural attribute values kept, others emptied.
 MASKED_PICKER = """m => {
-    const keep = new Set(['class', 'id', 'role', 'tabindex', 'type', 'data-testid', 'aria-modal', 'style']);
+    const keep = new Set(['class', 'id', 'role', 'tabindex', 'type', 'data-testid', 'aria-modal']);
     const mask = s => s.replace(/\\p{L}/gu, 'x').replace(/\\p{N}/gu, '0');
     const root = ([...document.querySelectorAll(m)].pop() || document.body).cloneNode(true);
     const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     while (walk.nextNode()) walk.currentNode.nodeValue = mask(walk.currentNode.nodeValue);
     for (const el of [root, ...root.querySelectorAll('*')])
-        for (const a of el.attributes) if (!keep.has(a.name)) a.value = mask(a.value);
+        for (const a of el.attributes) if (!keep.has(a.name)) a.value = '';
     return root.outerHTML;
 }"""
+LOG_PART = 10_000  # characters; JSON escaping grows them
 log = structlog.get_logger(__name__)
 
 
@@ -257,24 +260,39 @@ class Browser:
 
         self.page.on("response", record)
         try:
-            self.page.locator(ADDRESS).first.click()
-            self.page.wait_for_timeout(2500)
+            opened = self.open_picker()
+            self.page.wait_for_timeout(1500)  # the list fills in after the picker shows
         finally:
             self.page.remove_listener("response", record)
-        self._keep_picker(replies)
-        try:
-            found = self.page.evaluate(SAVED_ADDRESSES)
-        except PlaywrightError:  # setup falls back to naming the address
-            log.warning("could not read saved addresses", exc_info=True)
-            found = []
-        if not found:
+        if logging.getLogger(__name__).isEnabledFor(logging.DEBUG):
+            self._log_picker(replies)
+        found = []
+        if opened:
+            try:
+                found = self.page.evaluate(SAVED_ADDRESSES)
+            except PlaywrightError:  # setup falls back to naming the address
+                log.warning("could not read saved addresses", exc_info=True)
+        log.info("address picker", opened=opened, saved=len(found), replies=len(replies))
+        if opened and not found:
             self.close_picker()
         return found
 
-    def _keep_picker(self, replies: list) -> None:
-        """The shape of the picker and of the shop's address replies, to build the address reader against.
-        Masked first (letters x, digits 0; keys and markup kept): no one's address is stored."""
-        stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
+    def open_picker(self) -> bool:
+        """Right after login the page can ignore clicks for a while: click until the picker shows."""
+        picker = self.page.locator(f":is({MODAL}):visible").first
+        for _ in range(3):
+            self.page.locator(PICKER_BUTTON).first.click()
+            try:
+                picker.wait_for(timeout=8_000)
+                return True
+            except PlaywrightTimeout:
+                pass
+        return False
+
+    def _log_picker(self, replies: list) -> None:
+        """LOG_LEVEL=DEBUG: the shape of the picker and of the shop's address replies, to build the address
+        reader against. Masked first (letters x, digits 0; markup and keys kept), so no address is logged.
+        In parts: Docker splits log lines over 16 KB."""
         try:
             html = self.page.evaluate(MASKED_PICKER, MODAL)
             api = []
@@ -282,15 +300,13 @@ class Browser:
                 try:
                     api.append({"path": _mask(r.url.split("?")[0]), "status": r.status, "body": _mask(r.json())})
                 except Exception:  # redirects and aborted requests have no body
-                    log.info("address reply unreadable")
-            self.debug_dir.mkdir(parents=True, exist_ok=True)
-            for name, text in (("picker.html", html), ("picker-api.json", json.dumps(api))):
-                path = self.debug_dir / f"{stamp}-{name}"
-                path.write_text(text)
-                path.chmod(0o600)
-            log.info("address picker kept", replies=len(api))
+                    log.debug("address reply unreadable")
+            for kind, text in (("html", html), ("api", json.dumps(api))):
+                parts = [text[i : i + LOG_PART] for i in range(0, len(text), LOG_PART)] or [""]
+                for n, part in enumerate(parts, 1):
+                    log.debug("address picker", kind=kind, part=n, parts=len(parts), text=part)
         except Exception:  # only a diagnostic: never stop setup over it
-            log.warning("could not keep the address picker", exc_info=True)
+            log.warning("could not log the address picker", exc_info=True)
 
     def pick_address(self, n: int) -> str:
         """The nth of saved_addresses(); returns the delivery address the shop now shows."""
@@ -309,8 +325,9 @@ class Browser:
         addr = self.page.locator(ADDRESS).first
         if addr.inner_text().startswith(label):
             return
-        addr.click()
-        self.page.wait_for_timeout(2500)
+        if not self.open_picker():
+            raise ShopError("the shop's address list didn't open")
+        self.page.wait_for_timeout(1500)
         # Only inside the picker: the same name on the page behind it can't be clicked.
         choice = self.page.locator(MODAL).last.get_by_text(label, exact=True).filter(visible=True)
         if not choice.count():
