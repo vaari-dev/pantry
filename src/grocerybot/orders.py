@@ -100,11 +100,11 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]]) -> Outcome:
         if cart.problems:
             b.screenshot("cart")
             return out  # the basket stays as it was
-        if cart.item_total < cfg.min_order:
+        if cart.item_total < hh.min_order:
             out.waiting = True
             ledger.set_basket(placed_items)  # ordered together with the next list
             return out
-        if not cfg.place_orders:
+        if not hh.place_orders:
             return out
 
         attempt, started = ledger.begin(placed_items, cart.total), datetime.now()

@@ -156,6 +156,8 @@ class Browser:
 
     def check_session(self, rules: Rules) -> str:
         """Logged in and delivering to the family address. Works on any page of the site."""
+        if not rules.address_label or not rules.address_match:
+            raise ShopError("no delivery address is set; the account's owner can send /address")
         if not self.page.url.startswith(self.base):
             self.goto("/")
         addr = self.page.locator(ADDRESS).first

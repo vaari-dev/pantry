@@ -32,10 +32,10 @@ COMMANDS = {
     "basket": "What is waiting to be ordered",
     "clear": "Empty the waiting basket",
     "usual": "What we usually need around now",
+    "settings": "Address, limits, ordering on/off",
+    "members": "Who orders with this account; add or remove people",
     "setup": "Connect your shop account (or log it in again)",
     "invite": "Let a family member order with your account",
-    "members": "Who orders with this account",
-    "limit": "Show or change the daily spending limit",
     "leave": "Stop ordering with this account",
     "help": "How to order",
     "id": "Show your Telegram id",
@@ -61,6 +61,20 @@ SHARE_PHONE = {
 NO_KEYBOARD = {"remove_keyboard": True}
 
 
+def _rupees(text: str) -> float:
+    if (value := float(text)) <= 0:
+        raise ValueError(text)
+    return value
+
+
+# Owner commands that change a setting of their household: command -> (setting, parse, example).
+SETTINGS = {
+    "/limit": ("daily_cap", _rupees, "1500"),
+    "/minimum": ("min_order", _rupees, "99"),
+    "/ordering": ("place_orders", {"on": True, "off": False}.__getitem__, "on"),
+}
+
+
 class SetupStopped(Exception):
     """Ends /setup; the message is for the person setting up."""
 
@@ -84,7 +98,7 @@ class Bot:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.tg = Telegram(cfg.telegram_token)
-        self.accounts = Accounts(cfg.data_dir, cfg.admin_ids)
+        self.accounts = Accounts(cfg.data_dir, cfg.admin_id)
         self.transcribe = Transcriber(cfg.whisper_model)
         self.jobs: queue.Queue = queue.Queue()
         self.picking: dict[str, Picking] = {}
@@ -97,9 +111,9 @@ class Bot:
 
     def run(self) -> None:
         self.username = self.tg.setup(COMMANDS, DESCRIPTION, "Order groceries by voice or text.")
-        self.accounts.bootstrap(self.cfg.data_dir, self.cfg.address_label, self.cfg.address_match, self.cfg.daily_cap)
+        self.accounts.bootstrap(self.cfg.data_dir)
         households = self.accounts.all()
-        log.info("bot started", bot=self.username, households=len(households), place_orders=self.cfg.place_orders)
+        log.info("bot started", bot=self.username, households=len(households))
         for hh in households:
             for o in hh.ledger().interrupted():
                 self.alert(
@@ -139,7 +153,7 @@ class Bot:
             except ShopError as e:
                 log.warning("job stopped by the shop", job=name, reason=str(e))
                 chat_id = args[0] if args else None
-                self._say(chat_id or self.cfg.admin_ids[0], f"❌ Couldn't order: {e}.")
+                self._say(chat_id or self.cfg.admin_id, f"❌ Couldn't order: {e}.")
             except Exception:
                 log.exception("job failed", job=name)
                 if args:
@@ -164,7 +178,7 @@ class Bot:
             log.info("home exit ok", exit_ip=orders.exit_ip(self.cfg))
         except ShopError as e:
             log.error("health check failed", reason=str(e))
-            self.alert(self.cfg.admin_ids[0], f"⚠️ Daily check failed: {e}. Orders will fail until this is fixed.")
+            self.alert(self.cfg.admin_id, f"⚠️ Daily check failed: {e}. Orders will fail until this is fixed.")
             return
         for hh in self.accounts.all():
             try:
@@ -205,7 +219,7 @@ class Bot:
         if command == "/id":
             self._say(chat_id, f"Your Telegram id is {uid}.")
             return
-        if command == "/join":
+        if command == "/join" or (command == "/start" and arg.strip()):  # /start CODE: an invite link
             self._join(chat_id, user, arg)
             return
         if not self.accounts.allowed(uid):
@@ -231,10 +245,12 @@ class Bot:
             self._say(chat_id, NOT_SET_UP)
         elif command == "/invite":
             self._invite(chat_id, uid, hh)
+        elif command == "/settings":
+            self._settings(chat_id, hh)
         elif command == "/members":
-            self._members(chat_id, hh)
-        elif command == "/limit":
-            self._limit(chat_id, uid, hh, arg)
+            self._members(chat_id, uid, hh)
+        elif command in SETTINGS or command == "/address":
+            self._change(chat_id, uid, hh, command, arg)
         elif command == "/basket":
             basket = hh.ledger().basket()
             self._say(
@@ -321,6 +337,8 @@ class Bot:
         uid = cb.get("from", {}).get("id")
         if cb["data"].startswith("allow:"):
             return self._on_allow(cb, uid)
+        if cb["data"].startswith("remove:"):
+            return self._on_remove(cb, uid)
         if not (hh := self.accounts.household_of(uid)):
             return
         try:
@@ -384,10 +402,12 @@ class Bot:
             self._say(
                 chat_id,
                 f"🧺 In the basket, ₹{out.item_total:g} so far. I'll order once it reaches "
-                f"₹{self.cfg.min_order:g}; send more to add.\n{details}",
+                f"₹{hh.min_order:g}; send more to add.\n{details}",
             )
         elif not out.problems:
-            self._say(chat_id, f"🛒 Cart ready ({total}); ordering is switched off.\n{details}")
+            self._say(
+                chat_id, f"🛒 Cart ready ({total}); placing orders is off for this account (/settings).\n{details}"
+            )
         else:
             self._say(
                 chat_id,
@@ -397,19 +417,19 @@ class Bot:
     # ------------------------------------------------------------- accounts
 
     def _request_access(self, user: dict) -> None:
-        """Ask the first admin to let a new person in (once per ALERT_REPEAT)."""
+        """Ask the admin to let a new person in (once per ALERT_REPEAT)."""
         uid, name = user.get("id"), " ".join(filter(None, [user.get("first_name"), user.get("last_name")]))
         handle = f" (@{user['username']})" if user.get("username") else ""
         log.info("access requested", user=uid)
         self.alert(
-            self.cfg.admin_ids[0],
+            self.cfg.admin_id,
             f"{name or 'Someone'}{handle}, Telegram id {uid}, wants to use the bot. "
             "Once let in, they can connect their own shop account.",
             [(f"✅ Let {name or uid} in", f"allow:{uid}")],
         )
 
     def _on_allow(self, cb: dict, uid: int) -> None:
-        if uid not in self.cfg.admin_ids:
+        if uid != self.cfg.admin_id:
             return
         new = int(cb["data"].removeprefix("allow:"))
         if msg := cb.get("message"):
@@ -441,34 +461,76 @@ class Bot:
         code = self.accounts.invite(hh.id)
         self._say(
             chat_id,
-            f"Send this to the person you want to add. It works once, for 24 hours, and lets them order "
-            f"from your account and wallet:\n\nOpen t.me/{self.username} and send /join {code}",
+            "Forward the next message to the person you want to add. The link works once, for 24 hours, "
+            "and lets them order from your account and wallet. For more people, /invite again.",
         )
-
-    def _members(self, chat_id: int, hh: Household) -> None:
-        names = [self.accounts.name(m) + (" (owner)" if m == hh.owner else "") for m in hh.members]
         self._say(
             chat_id,
-            f"Delivering to {hh.address_label}, daily limit ₹{hh.daily_cap:g}.\nOrdering: " + ", ".join(names),
+            f"Join me in ordering groceries: https://t.me/{self.username}?start={code}\n"
+            f"(or send /join {code} to @{self.username})",
         )
 
-    def _limit(self, chat_id: int, uid: int, hh: Household, arg: str) -> None:
-        if not arg.strip():
-            spent = hh.ledger().spent_today()
-            self._say(chat_id, f"Daily limit ₹{hh.daily_cap:g}; ₹{spent:g} spent today. Change it: /limit 1500")
+    def _members(self, chat_id: int, uid: int, hh: Household) -> None:
+        names = [self.accounts.name(m) + (" (owner)" if m == hh.owner else "") for m in hh.members]
+        others = [m for m in hh.members if m != uid]
+        buttons = [(f"Remove {self.accounts.name(m)}", f"remove:{m}") for m in others] if uid == hh.owner else None
+        self._say(
+            chat_id,
+            "Ordering with this account: "
+            + ", ".join(names)
+            + "\n/invite adds someone"
+            + (", the buttons remove them." if buttons else ", /leave takes you off."),
+            buttons,
+        )
+
+    def _on_remove(self, cb: dict, uid: int) -> None:
+        hh, member = self.accounts.household_of(uid), int(cb["data"].removeprefix("remove:"))
+        if not hh or hh.owner != uid or member == uid or member not in hh.members:
             return
+        if msg := cb.get("message"):
+            self.tg.remove_buttons(msg["chat"]["id"], msg["message_id"])
+        self.jobs.put((self._do_remove, (uid, hh, member)))  # on the worker, so it never races an order
+
+    def _do_remove(self, uid: int, hh: Household, member: int) -> None:
+        self.accounts.leave(member)
+        log.info("household member removed", household=hh.id, user=member, by=uid)
+        self._say(uid, f"Removed {self.accounts.name(member)}.")
+        self._say(member, "You no longer order with that shop account. /setup connects your own.")
+
+    def _settings(self, chat_id: int, hh: Household) -> None:
+        names = [self.accounts.name(m) + (" (owner)" if m == hh.owner else "") for m in hh.members]
+        address = f"{hh.address_label}, which must include {hh.address_match!r}" if hh.address_label else "not set"
+        self._say(
+            chat_id,
+            f"Delivery address: {address}\n  change: /address\n"
+            f"Daily limit: ₹{hh.daily_cap:g} (₹{hh.ledger().spent_today():g} spent today)\n  change: /limit 1500\n"
+            f"Smallest order: ₹{hh.min_order:g} (smaller lists wait in the basket)\n  change: /minimum 99\n"
+            f"Placing orders: {'on' if hh.place_orders else 'off, cart only'}\n  change: /ordering on or off\n"
+            f"Ordering here: {', '.join(names)}\n  change: /members",
+        )
+
+    def _change(self, chat_id: int, uid: int, hh: Household, command: str, arg: str) -> None:
+        """An owner changing a setting; /address needs the shop, the others are just numbers or on/off."""
         if hh.owner != uid:
             self._say(chat_id, f"Only {self.accounts.name(hh.owner)}, who connected this account, can change it.")
             return
-        try:
-            cap = float(arg.strip().lstrip("₹").replace(",", ""))
-        except ValueError:
-            cap = 0
-        if cap <= 0:
-            self._say(chat_id, "Send an amount in rupees, e.g. /limit 1500")
+        if command == "/address":
+            self.replies[uid] = queue.Queue()
+            threading.Thread(target=self._address, args=(chat_id, uid, hh), daemon=True).start()
             return
-        self.accounts.set_cap(hh.id, cap)
-        self._say(chat_id, f"Daily limit is now ₹{cap:g}.")
+        key, parse, example = SETTINGS[command]
+        try:
+            value = parse(arg.strip().lstrip("₹").replace(",", "").lower())
+        except (ValueError, KeyError):
+            self._say(chat_id, f"For example: {command} {example}")
+            return
+        self.accounts.update(hh.id, **{key: value})
+        log.info("setting changed", household=hh.id, setting=key)
+        if key == "place_orders":
+            text = "Orders will now be placed and paid from the wallet." if value else "Cart only from now on."
+        else:
+            text = f"Done: ₹{value:g}."
+        self._say(chat_id, text)
 
     def _leave(self, chat_id: int, uid: int, arg: str) -> None:
         hh = self.accounts.household_of(uid)
@@ -522,31 +584,59 @@ class Bot:
             question = "That doesn't look like a 10-digit mobile number. Try again:"
         raise SetupStopped("Setup stopped; nothing changed. Send /setup to try again.")
 
+    def _ask_address(self, chat_id: int, uid: int) -> tuple[str, str]:
+        label = self._ask(
+            chat_id,
+            uid,
+            "Which saved address should orders go to? Send its name as the shop's app shows it, e.g. Home",
+            markup=NO_KEYBOARD,
+        ).get("text", "")
+        match = self._ask(
+            chat_id,
+            uid,
+            f"And something that is always in the {label} address, like the flat or house number. "
+            "I check it before every order, so nothing is ever delivered elsewhere.",
+        ).get("text", "")
+        if not label.strip() or not match.strip():
+            raise SetupStopped("I need both the address name and part of it; nothing changed.")
+        return label.strip(), match.strip()
+
     def _setup(self, chat_id: int, uid: int, name: str) -> None:
         """The questions of /setup (no browser needed), then the login on the worker."""
         try:
             phone = self._ask_phone(chat_id, uid)
-            label = self._ask(
-                chat_id,
-                uid,
-                "Which saved address should orders go to? Send its name as the shop's app shows it, e.g. Home",
-                markup=NO_KEYBOARD,
-            ).get("text", "")
-            match = self._ask(
-                chat_id,
-                uid,
-                f"And something that is always in the {label} address, like the flat or house number. "
-                "I check it before every order, so nothing is ever delivered elsewhere.",
-            ).get("text", "")
-            if not label.strip() or not match.strip():
-                raise SetupStopped("I need both the address name and part of it. Send /setup to try again.")
+            label, match = self._ask_address(chat_id, uid)
         except SetupStopped as e:
             self.replies.pop(uid, None)
             self._say(chat_id, str(e), markup=NO_KEYBOARD)
             return
         if not self.jobs.empty():
             self._say(chat_id, "I'm busy with another order; I'll log in right after.")
-        self.jobs.put((self._login, (chat_id, uid, name, phone, label.strip(), match.strip())))
+        self.jobs.put((self._login, (chat_id, uid, name, phone, label, match)))
+
+    def _address(self, chat_id: int, uid: int, hh: Household) -> None:
+        """/address: ask for the new one, then select it on the shop (on the worker)."""
+        try:
+            label, match = self._ask_address(chat_id, uid)
+        except SetupStopped as e:
+            self._say(chat_id, str(e))
+            return
+        finally:
+            self.replies.pop(uid, None)
+        self.jobs.put((self._set_address, (chat_id, hh, label, match)))
+
+    def _set_address(self, chat_id: int, hh: Household, label: str, match: str) -> None:
+        try:
+            with orders.browser(self.cfg, hh) as b:
+                b.goto("/")
+                b.choose_address(label)
+                b.check_session(Rules(label, match, budget=0))
+        except ShopError as e:
+            self._say(chat_id, f"❌ Couldn't switch the address: {e}. Nothing changed.")
+            return
+        self.accounts.update(hh.id, address_label=label, address_match=match)
+        log.info("setting changed", household=hh.id, setting="address")
+        self._say(chat_id, f"✅ Orders now go to {label}.")
 
     def _login(self, chat_id: int, uid: int, name: str, phone: str, label: str, match: str) -> None:
         """Log in to someone's shop account by phone + OTP, pick their delivery address, and save it
@@ -561,12 +651,14 @@ class Bot:
                 b.enter_otp(re.sub(r"\D", "", msg.get("text") or ""))
                 b.choose_address(label)
                 b.check_session(Rules(label, match, budget=0))
-            hh = self.accounts.connect(uid, name, label, match, session, self.cfg.daily_cap)
+            hh = self.accounts.connect(uid, name, label, match, session)
             log.info("household connected", household=hh.id, user=uid)
             self._say(
                 chat_id,
                 f"✅ Connected. Orders go to {hh.address_label}, paid from the shop's wallet, at most "
-                f"₹{hh.daily_cap:g} a day (/limit changes it). /invite adds family.\n\n{HELP}",
+                f"₹{hh.daily_cap:g} a day. "
+                + ("" if hh.place_orders else "For now I only fill and check the cart; /ordering on to place orders. ")
+                + f"/settings shows the rest, /invite adds family.\n\n{HELP}",
             )
         except SetupStopped as e:
             self._say(chat_id, str(e))

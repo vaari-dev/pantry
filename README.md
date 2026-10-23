@@ -11,12 +11,22 @@ Telegram (phone number + OTP), and the people they invite order from it too.
 
 ## How it works
 
-- **Accounts (households):** one shop account each: its login, delivery address, picks, basket,
-  order history and daily limit. Whoever connected it (`/setup`) is its owner: they can log it in
-  again, `/invite` family and change the `/limit`. Everyone in it orders from its wallet.
-- **Getting in:** someone new sends `/start`; the first admin gets a *Let them in* button. Once in,
-  they `/setup` their own account. Or an owner's `/invite` code (one person, 24 hours) lets them
-  straight into that account with `/join CODE`.
+- **Accounts (households):** one shop account each, with its own login, picks, basket, order
+  history and settings. Whoever connected it (`/setup`) is its owner: they can log it in again,
+  add and remove members (`/invite`, `/members`) and change its settings. Everyone in it orders
+  from its wallet.
+- **Settings, per account** (`/settings` shows them; the owner changes them):
+
+  | | starts at | change |
+  |---|---|---|
+  | delivery address: its name on the shop and text that must be in it (e.g. the flat number) | set in `/setup` | `/address` |
+  | daily limit | ₹1000 | `/limit 1500` |
+  | smallest order (the shop adds a delivery fee below it; smaller lists wait in the basket) | ₹100 | `/minimum 99` |
+  | placing orders (off: fill and check the cart only) | off | `/ordering on` |
+
+- **Getting in:** someone new sends `/start`; the admin gets a *Let them in* button. Once in, they
+  `/setup` their own account. Or an owner's `/invite` link (one person, 24 hours) brings them
+  straight into that account.
 - **Connecting** (`/setup`, private chat only): share your phone number, name the saved address
   (as in the shop's app) and something always in it, like the flat number. The bot opens the
   shop's login, you send it the OTP the shop texts you, and it picks that address. Your phone
@@ -32,10 +42,9 @@ Telegram ⇄ bot (OCI box, Docker)
 
 - **New items:** anything the bot doesn't know is searched on the shop and offered as photos with
   size and price. Tap **Pick**; the pick is remembered for next time.
-- **Rules checked on every cart:** only the expected items and quantities, the configured delivery
-  address, paid fully from the wallet (no reward coins, nothing left to pay), at least
-  `MIN_ORDER_INR` (the shop adds a delivery fee below it), within today's `DAILY_CAP_INR`.
-  Anything off: not placed.
+- **Rules checked on every cart:** only the expected items and quantities, the account's delivery
+  address, paid fully from the wallet (no reward coins, nothing left to pay), at least its smallest
+  order, within what is left of its daily limit. Anything off: not placed.
 - **No double orders:** each attempt is written down before *Place Order* is tapped. If the bot
   stops mid-order, it tells you and never retries on its own. An order counts as placed only once
   it shows up on the shop's Orders page.
@@ -51,12 +60,13 @@ Telegram ⇄ bot (OCI box, Docker)
 
 | | |
 |---|---|
-| voice note or text | order it (`2 milk, bread`, `anda aur doodh`); small lists wait in the basket until the total reaches `MIN_ORDER_INR` |
+| voice note or text | order it (`2 milk, bread`, `anda aur doodh`); small lists wait in the basket until the total reaches the account's smallest order |
 | `/basket`, `/clear` | show or empty the waiting basket |
 | `/usual` | items that are due, based on how often you have ordered them |
 | `/setup` | connect your shop account, or log it in again (private chat; `/cancel` stops it) |
-| `/invite`, `/join CODE` | owner: a code for one person to order with your account; they send `/join CODE` |
-| `/members`, `/limit [₹]` | who orders with this account; show or (owner) change its daily limit |
+| `/settings` | the account's settings; the owner changes them with `/address`, `/limit`, `/minimum`, `/ordering` |
+| `/invite` | owner: a link (or `/join CODE`) for one person to order with your account |
+| `/members` | who orders with this account; the owner gets buttons to remove people |
 | `/leave` | stop ordering with this account (the last one out deletes it here) |
 | `/id` | your Telegram user id |
 
@@ -71,13 +81,11 @@ Create a reusable auth key for the bot (Settings → Keys).
 | Variables | |
 |---|---|
 | `SHOP_URL` | the shop's website |
-| `TELEGRAM_USER_IDS` | admins, comma-separated (each can send `/id` to the bot): they let new people in; the first gets the bot's alerts |
-| `ADDRESS_LABEL`, `ADDRESS_MATCH` | optional, see *Upgrading* below |
+| `TELEGRAM_ADMIN_ID` | the admin's Telegram user id (send `/id` to the bot): lets new people in, gets the bot's alerts |
 | `SSH_HOST`, `SSH_USER` | the box |
 | `SSH_KNOWN_HOSTS` | `ssh-keyscan <host>` output |
 | `TS_EXIT_NODE` | Tailscale IP of the home exit node |
-| `PLACE_ORDERS` | `true` to place orders (default `false`: cart only) |
-| `DAILY_CAP_INR`, `MIN_ORDER_INR`, `DEPLOY_DIR` | optional (1000: each new account's starting limit, 100, `/opt/grocery-bot`) |
+| `DEPLOY_DIR` | optional (`/opt/grocery-bot`) |
 
 | Secrets | |
 |---|---|
@@ -89,15 +97,16 @@ Create a reusable auth key for the bot (Settings → Keys).
 **3. Deploy.** Push to `main`. The *Deploy* workflow runs the checks, builds the arm64 image to
 ghcr.io, installs Docker on a fresh box, restarts the bot, and runs the self-check.
 
-**4. Accounts.** Send `/setup` to the bot in a private chat and follow it. Others send `/start`
-(you get a button to let them in) or `/join` with a code from your `/invite`.
+**4. Accounts.** Send `/setup` to the bot in a private chat and follow it, then `/ordering on`
+once a cart or two look right. Others send `/start` (you get a button to let them in) or open a
+link from your `/invite`.
 
-**Upgrading a single-account box.** On its first start the bot turns the old setup into the
-account `home`: if `ADDRESS_LABEL` (name of the saved delivery address, e.g. `Home`) and
-`ADDRESS_MATCH` (text that must be in it, e.g. the flat number) are set, the shop login, catalog
-and ledger already in the volume move into it, owned by the first admin, with every admin in it.
-After that the two variables are not read again. To install its login from your own computer
-instead of `/setup`:
+**Upgrading a single-account box.** Set `TELEGRAM_ADMIN_ID`; `TELEGRAM_USER_IDS`, `ADDRESS_*`,
+`DAILY_CAP_INR`, `MIN_ORDER_INR` and `PLACE_ORDERS` are no longer read and can be deleted. On its
+first start the bot moves the shop login, catalog and ledger already in the volume into the
+account `home`, owned by the admin. Then, in Telegram: `/address`, `/ordering on` (and `/limit`,
+`/minimum` if they differed), and `/invite` the rest of the family. To install its login from your
+own computer instead of `/setup`:
 
 ```sh
 pip install playwright && playwright install chromium

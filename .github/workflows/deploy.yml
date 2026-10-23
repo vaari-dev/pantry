@@ -70,17 +70,12 @@ jobs:
         env:
           SHOP_URL: ${{ vars.SHOP_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_USER_IDS: ${{ vars.TELEGRAM_USER_IDS }}
-          ADDRESS_LABEL: ${{ vars.ADDRESS_LABEL }}
-          ADDRESS_MATCH: ${{ vars.ADDRESS_MATCH }}
+          TELEGRAM_ADMIN_ID: ${{ vars.TELEGRAM_ADMIN_ID }}
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
           TS_EXIT_NODE: ${{ vars.TS_EXIT_NODE }}
-          DAILY_CAP_INR: ${{ vars.DAILY_CAP_INR || '1000' }}
-          MIN_ORDER_INR: ${{ vars.MIN_ORDER_INR || '100' }}
-          PLACE_ORDERS: ${{ vars.PLACE_ORDERS || 'false' }}
         run: |
-          required=(SHOP_URL TELEGRAM_BOT_TOKEN TELEGRAM_USER_IDS TS_EXIT_NODE)
-          names=("${required[@]}" ADDRESS_LABEL ADDRESS_MATCH TS_AUTHKEY DAILY_CAP_INR MIN_ORDER_INR PLACE_ORDERS)
+          required=(SHOP_URL TELEGRAM_BOT_TOKEN TELEGRAM_ADMIN_ID TS_EXIT_NODE)
+          names=("${required[@]}" TS_AUTHKEY)
           for name in "${required[@]}"; do
             [ -n "${!name}" ] || { echo "::error::$name is unset in the oracle-cloud environment." >&2; exit 1; }
           done

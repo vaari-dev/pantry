@@ -1,11 +1,12 @@
-"""Who orders with which shop account.
+"""Who orders with which shop account, and each account's settings.
 
-A household is one shop account (its login, delivery address, picks, order history and daily cap)
-shared by one or more Telegram users. Everyone in it can order; its owner can log it in again,
-change its limit and invite others. Admins (TELEGRAM_USER_IDS) let new people in.
+A household is one shop account (its login, settings, picks, basket and order history) shared by
+one or more Telegram users. Everyone in it can order; its owner can log it in again, change its
+settings and invite others. The admin (TELEGRAM_ADMIN_ID) lets new people in.
 
 households.json (on the data volume):
-  {"households": {"<id>": {"owner": uid, "address_label": "Home", "address_match": "12B", "daily_cap": 1000}},
+  {"households": {"<id>": {"owner": uid, "address_label": "Home", "address_match": "12B",
+                           "daily_cap": 1000, "min_order": 100, "place_orders": false}},
    "users": {"<uid>": {"name": "Asha", "household": "<id>" | null}},
    "invites": {"<code>": {"household": "<id>", "expires": "<iso time>"}}}
 Each household's files live in households/<id>/: session.json, catalog.json, ledger.json, debug/.
@@ -28,6 +29,8 @@ from .ledger import Ledger
 INVITE_VALID = timedelta(hours=24)
 INVITE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O or 1/I
 LEGACY_FILES = ("session.json", "catalog.json", "ledger.json", "debug")  # single-account layout
+# What a new account starts with; its owner changes them in Telegram (see Bot._settings).
+DEFAULTS = {"address_label": "", "address_match": "", "daily_cap": 1000.0, "min_order": 100.0, "place_orders": False}
 log = structlog.get_logger(__name__)
 
 
@@ -39,7 +42,9 @@ class Household:
     members: tuple[int, ...]
     address_label: str  # name of the saved address on the shop, e.g. "Home"
     address_match: str  # text that must appear in that address, e.g. a flat number
-    daily_cap: float
+    daily_cap: float  # ₹ a day, counting unconfirmed attempts
+    min_order: float  # the shop adds a delivery fee below this, so smaller lists wait in the basket
+    place_orders: bool  # False: fill and check the cart only
 
     @property
     def state_file(self) -> Path:  # shop login (cookies); secret
@@ -61,8 +66,8 @@ class Household:
 
 
 class Accounts:
-    def __init__(self, data_dir: Path, admins: tuple[int, ...]):
-        self.root, self.admins = data_dir / "households", admins
+    def __init__(self, data_dir: Path, admin: int):
+        self.root, self.admin = data_dir / "households", admin
         self.path = data_dir / "households.json"
         self._lock = threading.RLock()  # read-modify-write from the polling and worker threads
 
@@ -74,14 +79,13 @@ class Accounts:
         if h is None:
             return None
         members = tuple(int(u) for u, user in data["users"].items() if user.get("household") == hid)
-        return Household(
-            hid, self.root / hid, h["owner"], members, h["address_label"], h["address_match"], h["daily_cap"]
-        )
+        settings = {**DEFAULTS, **h}
+        return Household(hid, self.root / hid, h["owner"], members, *(settings[k] for k in DEFAULTS))
 
     # ------------------------------------------------------------- reading
 
     def allowed(self, uid: int) -> bool:
-        return uid in self.admins or str(uid) in self._read()["users"]
+        return uid == self.admin or str(uid) in self._read()["users"]
 
     def get(self, hid: str) -> Household | None:
         return self._household(self._read(), hid)
@@ -100,29 +104,22 @@ class Accounts:
 
     # ------------------------------------------------------------- changes
 
-    def bootstrap(self, data_dir: Path, address_label: str, address_match: str, daily_cap: float) -> None:
-        """First start: turn a single-account box (files directly in /data, address from the
-        environment) into the household "home", owned by the first admin, with every admin in it."""
+    def bootstrap(self, data_dir: Path) -> None:
+        """First start: turn a single-account box (its files directly in /data) into the household
+        "home", owned by the admin. Its address is unset and ordering off until the admin sets them."""
         with self._lock:
             if self.path.exists():
                 return
             data = self._read()
-            if address_label and address_match and self.admins:
+            if any((data_dir / name).exists() for name in LEGACY_FILES):
                 home = self.root / "home"
                 home.mkdir(parents=True, exist_ok=True)
                 for name in LEGACY_FILES:
                     if (data_dir / name).exists():
                         os.replace(data_dir / name, home / name)
-                data["households"]["home"] = {
-                    "owner": self.admins[0],
-                    "address_label": address_label,
-                    "address_match": address_match,
-                    "daily_cap": daily_cap,
-                }
-                data["users"] = {str(a): {"name": "", "household": "home"} for a in self.admins}
+                data["households"]["home"] = {**DEFAULTS, "owner": self.admin}
+                data["users"][str(self.admin)] = {"name": "", "household": "home"}
                 log.info("household created from the single-account setup", household="home")
-            elif (data_dir / "session.json").exists():
-                log.warning("ADDRESS_LABEL/ADDRESS_MATCH unset: the old shop login is not used; /setup instead")
             store.write(self.path, data)
 
     def allow(self, uid: int, name: str = "") -> None:
@@ -132,9 +129,7 @@ class Accounts:
             data["users"].setdefault(str(uid), {"name": name, "household": None})
             store.write(self.path, data)
 
-    def connect(
-        self, uid: int, name: str, address_label: str, address_match: str, session: Path, daily_cap: float
-    ) -> Household:
+    def connect(self, uid: int, name: str, address_label: str, address_match: str, session: Path) -> Household:
         """Install a fresh shop login. The owner of a household logs that one in again (picks and
         history are kept); anyone else gets a new household of their own."""
         with self._lock:
@@ -146,7 +141,7 @@ class Accounts:
                 if hid:
                     self._leave(data, uid)
                 hid = secrets.token_hex(4)
-                data["households"][hid] = {"owner": uid, "daily_cap": daily_cap}
+                data["households"][hid] = {**DEFAULTS, "owner": uid}
                 user["household"] = hid
             data["households"][hid].update(address_label=address_label, address_match=address_match)
             (self.root / hid).mkdir(parents=True, exist_ok=True)
@@ -154,10 +149,13 @@ class Accounts:
             store.write(self.path, data)
             return self._household(data, hid)
 
-    def set_cap(self, hid: str, daily_cap: float) -> None:
+    def update(self, hid: str, **settings) -> None:
+        """Change some of a household's settings (keys of DEFAULTS)."""
+        if not settings.keys() <= DEFAULTS.keys():
+            raise ValueError(f"not settings: {settings.keys() - DEFAULTS.keys()}")
         with self._lock:
             data = self._read()
-            data["households"][hid]["daily_cap"] = daily_cap
+            data["households"][hid].update(settings)
             store.write(self.path, data)
 
     def invite(self, hid: str) -> str:

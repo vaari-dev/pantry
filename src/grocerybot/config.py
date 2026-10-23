@@ -1,4 +1,5 @@
-"""Settings, all from the environment (see .env.example). Nothing personal lives in the code."""
+"""Settings of the bot itself, from the environment (see .env.example). Each account's own settings
+(address, limits, ordering on/off) are kept in households.json and changed in Telegram."""
 
 import os
 from dataclasses import dataclass
@@ -18,13 +19,7 @@ def _required(name: str) -> str:
 class Config:
     shop_url: str  # the shop's website, e.g. https://www.example.com
     telegram_token: str
-    admin_ids: tuple[int, ...]  # Telegram users who let new people in; the first also gets the bot's own alerts
-    # The first household, for a box set up before accounts existed (optional; others use /setup).
-    address_label: str
-    address_match: str
-    daily_cap: float  # default for new households; each owner can change theirs with /limit
-    min_order: float  # the shop adds a delivery fee below this
-    place_orders: bool
+    admin_id: int  # Telegram user who lets new people in and gets the bot's own alerts
     whisper_model: str
     data_dir: Path
     proxy: str | None  # SOCKS5 proxy that exits through the home connection
@@ -39,12 +34,7 @@ def load() -> Config:
     return Config(
         shop_url=_required("SHOP_URL"),
         telegram_token=_required("TELEGRAM_BOT_TOKEN"),
-        admin_ids=tuple(int(i) for i in _required("TELEGRAM_USER_IDS").replace(" ", "").split(",") if i),
-        address_label=os.environ.get("ADDRESS_LABEL", "").strip(),
-        address_match=os.environ.get("ADDRESS_MATCH", "").strip(),
-        daily_cap=float(os.environ.get("DAILY_CAP_INR", "1000")),
-        min_order=float(os.environ.get("MIN_ORDER_INR", "100")),
-        place_orders=os.environ.get("PLACE_ORDERS", "false").lower() == "true",
+        admin_id=int(_required("TELEGRAM_ADMIN_ID")),
         whisper_model=os.environ.get("WHISPER_MODEL", "small"),
         data_dir=Path(os.environ.get("DATA_DIR", "/data")),
         # docker/entrypoint.sh serves this SOCKS5 proxy (exiting at home) whenever TS_EXIT_NODE is set.

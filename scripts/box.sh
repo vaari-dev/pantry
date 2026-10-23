@@ -37,7 +37,7 @@ case "${1:?command}" in
   set-login)
     home=/data/households/home
     if ! in_bot test -d "$home"; then
-      echo "there is no \"home\" account (ADDRESS_LABEL/ADDRESS_MATCH were unset on the first start); use /setup in Telegram" >&2
+      echo "there is no \"home\" account (only a box upgraded from one shop account has one); use /setup in Telegram" >&2
       exit 1
     fi
     if [ "${2:-}" = if-missing ] && in_bot test -s "$home/session.json"; then

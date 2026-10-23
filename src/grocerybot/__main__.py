@@ -20,7 +20,7 @@ def main() -> None:
             print(f"ok: exit IP {orders.exit_ip(cfg)}")
         except ShopError as e:
             sys.exit(f"check failed: {e}")
-        households = Accounts(cfg.data_dir, cfg.admin_ids).all()
+        households = Accounts(cfg.data_dir, cfg.admin_id).all()
         for hh in households:
             try:
                 orders.check(cfg, hh)
