@@ -22,7 +22,7 @@ from .catalog import Product, plan
 from .config import Config
 from .shop import ShopError
 from .speech import Transcriber
-from .telegram import Telegram, TelegramError
+from .telegram import Telegram, TelegramError, strikethrough
 
 log = structlog.get_logger(__name__)
 
@@ -193,9 +193,9 @@ class Bot:
                 log.warning("health check failed", household=hh.id, reason=str(e))
                 self.alert(hh.owner, f"⚠️ Daily check of your shop account failed: {e}.")
 
-    def _say(self, chat_id: int, text: str, buttons=None, markup=None) -> int | None:
+    def _say(self, chat_id: int, text: str, buttons=None, markup=None, entities=None) -> int | None:
         try:
-            return self.tg.send(chat_id, text, buttons, markup)
+            return self.tg.send(chat_id, text, buttons, markup, entities)
         except TelegramError as e:
             log.warning("telegram send failed", error=str(e))
             return None
@@ -321,13 +321,17 @@ class Bot:
 
     def _offer(self, chat_id: int, product: Product, data: str) -> int | None:
         caption = f"{product.name}\nSize: {product.size}" + (f"  ·  {product.price}" if product.price else "")
+        entities = None
+        if product.price and product.mrp:
+            caption += f" {product.mrp}"
+            entities = [strikethrough(caption, product.mrp)]
         buttons = [("✅ Pick", data)]
         if product.image:
             try:
-                return self.tg.send_photo(chat_id, product.image, caption, buttons)
+                return self.tg.send_photo(chat_id, product.image, caption, buttons, entities)
             except TelegramError as e:
                 log.info("photo not shown", error=str(e))
-        return self._say(chat_id, caption, buttons)
+        return self._say(chat_id, caption, buttons, entities=entities)
 
     def _pick(self, hh: Household, data: str) -> None:
         try:

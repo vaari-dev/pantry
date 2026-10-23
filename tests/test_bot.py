@@ -14,7 +14,7 @@ class FakeTelegram:
     def __init__(self):
         self.sent: list[tuple[int, str, dict | None]] = []
 
-    def send(self, chat_id, text, buttons=None, markup=None):
+    def send(self, chat_id, text, buttons=None, markup=None, entities=None):
         self.sent.append((chat_id, text, markup or buttons))
         return len(self.sent)
 
@@ -98,3 +98,16 @@ def test_let_in_without_setup_offers_the_connect_button(bot):
     assert said(bot, "🎉 You're in! Connect") == botmod.CONNECT_BUTTON
     bot._on_message(message(botmod.CONNECT))
     assert said(bot, "Let's connect") == botmod.SHARE_PHONE
+
+
+def test_offer_crosses_out_the_original_price(bot):
+    product = botmod.Product("Eggs 🥚", "1 pack", "/pn/eggs/pvid/1", "₹89", mrp="₹104")
+    bot.tg.send = lambda chat_id, text, buttons=None, markup=None, entities=None: bot.tg.sent.append(
+        (chat_id, text, entities)
+    )
+    bot._offer(NEW, product, "1:0:0")
+
+    _, text, entities = bot.tg.sent[-1]
+    assert text == "Eggs 🥚\nSize: 1 pack  ·  ₹89 ₹104"
+    # the egg emoji is two UTF-16 units, so the offset is one more than the str index
+    assert entities == [{"type": "strikethrough", "offset": text.index("₹104") + 1, "length": 4}]
