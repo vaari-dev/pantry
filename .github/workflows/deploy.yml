@@ -9,6 +9,7 @@ on:
 permissions:
   contents: read
 
+# One deploy at a time, and never cancel one halfway.
 concurrency:
   group: deploy
   cancel-in-progress: false
@@ -69,23 +70,18 @@ jobs:
         env:
           SHOP_URL: ${{ vars.SHOP_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_USER_IDS: ${{ vars.TELEGRAM_USER_IDS }}
-          ADDRESS_LABEL: ${{ vars.ADDRESS_LABEL }}
-          ADDRESS_MATCH: ${{ vars.ADDRESS_MATCH }}
+          TELEGRAM_ADMIN_ID: ${{ vars.TELEGRAM_ADMIN_ID }}
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
           TS_EXIT_NODE: ${{ vars.TS_EXIT_NODE }}
-          DAILY_CAP_INR: ${{ vars.DAILY_CAP_INR || '1000' }}
-          MIN_ORDER_INR: ${{ vars.MIN_ORDER_INR || '100' }}
-          PLACE_ORDERS: ${{ vars.PLACE_ORDERS || 'false' }}
         run: |
-          required=(SHOP_URL TELEGRAM_BOT_TOKEN TELEGRAM_USER_IDS ADDRESS_LABEL ADDRESS_MATCH TS_EXIT_NODE)
-          names=("${required[@]}" TS_AUTHKEY DAILY_CAP_INR MIN_ORDER_INR PLACE_ORDERS)
+          required=(SHOP_URL TELEGRAM_BOT_TOKEN TELEGRAM_ADMIN_ID TS_EXIT_NODE)
+          names=("${required[@]}" TS_AUTHKEY)
           for name in "${required[@]}"; do
             [ -n "${!name}" ] || { echo "::error::$name is unset in the oracle-cloud environment." >&2; exit 1; }
           done
           (umask 077; for name in "${names[@]}"; do printf '%s=%s\n' "$name" "${!name}"; done > bot.env)
 
-      - name: Prepare the box (first time)
+      - name: Prepare the box (Docker and the deploy directory, first time only)
         run: |
           ssh box 'command -v docker >/dev/null || { curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker "$USER"; }'
           ssh box "[ -w '$DIR' ] || sudo install -d -m 700 -o \"\$USER\" '$DIR'"
@@ -102,17 +98,10 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
         run: |
-          # Short-lived token, logged out after the pull.
+          # The box logs in to ghcr only for this pull; the short-lived token is not kept.
           printf '%s' "$GHCR_TOKEN" | ssh box "docker login ghcr.io -u '$ACTOR' --password-stdin" >/dev/null
           trap 'ssh box "docker logout ghcr.io" >/dev/null' EXIT
           ssh box "'$DIR/box.sh' deploy '$IMAGE:${{ github.sha }}'"
-
-      - name: Shop login (if missing)
-        env:
-          SHOP_SESSION: ${{ secrets.SHOP_SESSION }}
-        run: |
-          [ -n "$SHOP_SESSION" ] || { echo "::warning::SHOP_SESSION is unset."; exit 0; }
-          printf '%s' "$SHOP_SESSION" | ssh box "'$DIR/box.sh' set-login if-missing"
 
       - name: Self-check
         run: ssh box "'$DIR/box.sh' check"

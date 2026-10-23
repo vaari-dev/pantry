@@ -1,4 +1,4 @@
-"""JSON log lines on stdout for Loki: {"ts", "level", "logger", "msg", ...}. No message text or secrets."""
+"""JSON lines on stdout, collected by Loki. Never log message text, tokens or addresses."""
 
 import logging
 import sys
@@ -14,7 +14,6 @@ _shared = [
 
 
 def setup(level: str = "INFO") -> None:
-    """structlog and stdlib loggers through one JSON renderer."""
     structlog.configure(
         processors=[*_shared, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
         logger_factory=structlog.stdlib.LoggerFactory(),

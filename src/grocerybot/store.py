@@ -1,4 +1,4 @@
-"""JSON files, written atomically, owner-only."""
+"""JSON files, written atomically, readable only by the owner."""
 
 import json
 import os

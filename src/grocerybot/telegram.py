@@ -1,4 +1,4 @@
-"""Telegram Bot API client (long polling)."""
+"""Telegram Bot API over long polling: no public URL or open ports."""
 
 import contextlib
 import json
@@ -24,15 +24,23 @@ class Telegram:
                 f"{self._api}/{method}", data=urllib.parse.urlencode(body).encode(), timeout=http_timeout
             ) as r:
                 data = json.load(r)
-        except Exception as e:  # keep the token out of logs
+        except Exception as e:  # never let the token-bearing URL reach the logs
             raise TelegramError(f"{method}: {type(e).__name__} {getattr(e, 'code', '')}".strip()) from None
         if not data.get("ok"):
             raise TelegramError(f"{method}: {data.get('description')}")
         return data["result"]
 
-    def send(self, chat_id: int, text: str, buttons: list[tuple[str, str]] | None = None) -> int:
-        """buttons: (label, data), one per row. Returns the message id."""
-        return self.call("sendMessage", chat_id=chat_id, text=text, reply_markup=_keyboard(buttons))["message_id"]
+    def send(
+        self, chat_id: int, text: str, buttons: list[tuple[str, str]] | None = None, markup: dict | None = None
+    ) -> int:
+        """buttons: (label, callback data), one per row; markup: any other reply_markup."""
+        return self.call("sendMessage", chat_id=chat_id, text=text, reply_markup=markup or _keyboard(buttons))[
+            "message_id"
+        ]
+
+    def delete(self, chat_id: int, message_id: int) -> None:
+        with contextlib.suppress(TelegramError):
+            self.call("deleteMessage", chat_id=chat_id, message_id=message_id)
 
     def send_photo(self, chat_id: int, url: str, caption: str, buttons: list[tuple[str, str]]) -> int:
         return self.call("sendPhoto", chat_id=chat_id, photo=url, caption=caption, reply_markup=_keyboard(buttons))[
@@ -63,11 +71,10 @@ class Telegram:
             f.write(r.read())
         return Path(out)
 
-    def setup(self, commands: dict[str, str], description: str, short: str) -> str:
-        """Set commands and descriptions. Returns the username."""
+    def setup(self, commands: dict[str, str], description: str) -> str:
+        """Returns the bot's username."""
         self.call("setMyCommands", commands=[{"command": c, "description": d} for c, d in commands.items()])
         self.call("setMyDescription", description=description)
-        self.call("setMyShortDescription", short_description=short)
         return self.call("getMe")["username"]
 
 

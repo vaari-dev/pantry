@@ -1,11 +1,12 @@
 """python -m grocerybot            run the bot
-python -m grocerybot check      self-check: login, address, home exit
+python -m grocerybot check      self-check; fails only if the home exit is down
 """
 
 import os
 import sys
 
 from . import config, logs, orders
+from .accounts import Accounts
 from .bot import Bot
 from .shop import ShopError
 
@@ -13,13 +14,18 @@ from .shop import ShopError
 def main() -> None:
     logs.setup(os.environ.get("LOG_LEVEL", "INFO"))
     cfg = config.load()
-    if sys.argv[1:] == ["check"]:
+    if sys.argv[1:] != ["check"]:
+        return Bot(cfg).run()
+    try:
+        print(f"ok: exit IP {orders.exit_ip(cfg)}")
+    except ShopError as e:
+        sys.exit(f"check failed: {e}")
+    for hh in Accounts(cfg.data_dir, cfg.admin_id).all():
         try:
-            print(f"ok: logged in, delivering to {cfg.address_label}, exit IP {orders.check(cfg)}")
+            orders.check(cfg, hh)
+            print(f"ok: account {hh.id}")
         except ShopError as e:
-            sys.exit(f"check failed: {e}")
-        return
-    Bot(cfg).run()
+            print(f"not ready: account {hh.id}: {e}")
 
 
 if __name__ == "__main__":

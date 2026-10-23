@@ -1,13 +1,12 @@
-"""A list -> a checked, placed order."""
-
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 import structlog
 
-from .catalog import Catalog, Product, combine
+from .accounts import Household
+from .catalog import combine
 from .config import Config
-from .ledger import Ledger
 from .shop import Browser, Rules
 
 log = structlog.get_logger(__name__)
@@ -17,11 +16,12 @@ log = structlog.get_logger(__name__)
 class Outcome:
     placed: bool = False
     total: float | None = None
-    lines: list[str] = field(default_factory=list)  # added to the cart
-    unavailable: list[str] = field(default_factory=list)  # keys with no addable option
-    problems: list[str] = field(default_factory=list)  # why not placed
+    lines: list[str] = field(default_factory=list)
+    unavailable: list[str] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
     item_total: float = 0
-    waiting: bool = False  # under the minimum; in the basket
+    waiting: bool = False
+    unconfirmed: bool = False  # tapped Place Order, but no such order on the Orders page
 
     @property
     def result(self) -> str:
@@ -33,42 +33,40 @@ class Outcome:
             return "waiting"
         return "blocked" if self.problems else "cart ready"
 
-    unconfirmed: bool = False  # tapped, not found on Orders page
+
+def browser(cfg: Config, hh: Household, images: bool = False) -> Browser:
+    return Browser(cfg.shop_url, hh.state_file, cfg.proxy, hh.debug_dir, images=images)
 
 
-def browser(cfg: Config, images: bool = False) -> Browser:
-    return Browser(cfg.shop_url, cfg.state_file, cfg.proxy, cfg.debug_dir, images=images)
+def login_browser(cfg: Config, state_file: Path) -> Browser:
+    return Browser(cfg.shop_url, state_file, cfg.proxy, cfg.debug_dir, fresh=True)
 
 
-def rules(cfg: Config, ledger: Ledger) -> Rules:
-    return Rules(cfg.address_label, cfg.address_match, cfg.daily_cap - ledger.spent_today())
+def rules(hh: Household) -> Rules:
+    return Rules(hh.address_label, hh.address_match, hh.daily_cap - hh.ledger().spent_today())
 
 
-def search(cfg: Config, query: str) -> list[Product]:
-    with browser(cfg, images=True) as b:
-        return b.search(query)
+def exit_ip(cfg: Config) -> str:
+    with Browser(cfg.shop_url, None, cfg.proxy, cfg.debug_dir) as b:
+        return b.public_ip()
 
 
-def check(cfg: Config) -> str:
-    """Login, address, home exit. Returns the exit IP; raises ShopError."""
-    with browser(cfg) as b:
-        ip = b.public_ip()
-        b.check_session(rules(cfg, Ledger(cfg.ledger_file)))
-        return ip
+def check(cfg: Config, hh: Household) -> None:
+    with browser(cfg, hh) as b:
+        b.check_session(rules(hh))
 
 
-def order(cfg: Config, catalog: Catalog, ledger: Ledger, items: list[tuple[str, int]]) -> Outcome:
-    """Basket + list -> cart (first available option each) -> checks -> place once at the minimum.
-
-    The attempt is recorded before Place Order, so a crash never causes a second order.
-    """
-    out, limits = Outcome(), rules(cfg, ledger)
+def order(cfg: Config, hh: Household, items: list[tuple[str, int]]) -> Outcome:
+    """The attempt is written to the ledger before Place Order is tapped, so a crash can never lead
+    to a silent second order: an unfinished attempt is reported, not retried."""
+    catalog, ledger = hh.catalog(), hh.ledger()
+    out, limits = Outcome(), rules(hh)
     if limits.budget <= 0:
-        out.problems.append(f"today's limit of ₹{cfg.daily_cap:g} is used up")
+        out.problems.append(f"today's limit of ₹{hh.daily_cap:g} is used up")
         return out
 
     items = combine(ledger.basket(), items, catalog)
-    with browser(cfg) as b:
+    with browser(cfg, hh) as b:
         b.check_session(limits)
         b.empty_cart()
         expected, placed_items = {}, []
@@ -92,15 +90,15 @@ def order(cfg: Config, catalog: Catalog, ledger: Ledger, items: list[tuple[str, 
         if cart.problems:
             b.screenshot("cart")
             return out
-        if cart.item_total < cfg.min_order:
+        if cart.item_total < hh.min_order:
             out.waiting = True
             ledger.set_basket(placed_items)
             return out
-        if not cfg.place_orders:
+        if not hh.place_orders:
             return out
 
         attempt, started = ledger.begin(placed_items, cart.total), datetime.now()
-        ledger.set_basket([])  # never twice
+        ledger.set_basket([])  # never ordered twice, even if the outcome is unclear
         b.place()
         out.placed = b.confirm(cart.total, started)
         out.unconfirmed = not out.placed

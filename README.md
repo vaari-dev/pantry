@@ -1,74 +1,49 @@
 # grocery-bot
 
-Order groceries by Telegram voice note or text (*"bread aur do anda"*). No feed, ads or upsells.
+Order groceries by Telegram voice note or text, like *"bread aur do anda"*. Each family connects
+its own shop account; the bot fills the cart, checks it, and pays from the shop's wallet.
 
 ```
-Telegram ⇄ bot (Docker, OCI)
+Telegram ⇄ bot (OCI box, Docker)
             ├─ Whisper: voice → text
-            ├─ catalog: words → products (pick + 2 backups), qty limits
-            ├─ ledger: daily cap, basket, no double orders
-            └─ Chrome (Xvfb) → Tailscale → home exit node → shop
+            ├─ catalog: words → your products, per account
+            └─ real Chrome on a virtual screen → Tailscale → home exit node → shop
 ```
 
-- **New items:** searched and offered as photos; your pick is remembered.
-- **Basket:** lists under `MIN_ORDER_INR` wait; the order goes once the total reaches it.
-- **Every cart is checked:** expected items only, delivery address, wallet pays all, no coins,
-  within `DAILY_CAP_INR`. Otherwise not placed.
-- **No double orders:** attempts are recorded before *Place Order*; never retried.
-- **Home exit:** the shop blocks headless browsers and data-centre IPs.
-- **Daily self-check** at `HEALTH_CHECK_HOUR`; alerts only on failure.
+The shop refuses headless browsers and data-centre IPs, hence real Chrome leaving through home.
 
-## Commands
+## Use
+
+New people send `/start`; the admin taps *Let them in*. Then `/setup` (private chat): phone
+number, saved address name, flat number, and the OTP the shop texts. The bot deletes those
+messages. Family joins through an owner's `/invite` link.
+
+Every cart is checked before it is placed: only the expected items, the account's address, paid
+fully from the wallet, within the daily limit. Lists under the smallest order wait in the basket.
+Each attempt is recorded before *Place Order*, so an interrupted order is reported, never retried.
 
 | | |
 |---|---|
-| voice or text | order (`2 milk, bread`) |
-| `/basket`, `/clear` | show or empty the basket |
-| `/usual` | items due, by past orders |
+| voice or text | order it |
+| `/basket`, `/clear`, `/usual` | waiting items, empty them, what is due |
+| `/settings` | the account's settings; the owner changes them with `/limit 1500`, `/minimum 99`, `/ordering on` (new accounts only fill the cart), `/setup` (address, login) |
+| `/members`, `/invite`, `/leave` | who orders here; add one person; leave (the last one out deletes the account) |
 | `/id` | your Telegram id |
 
-## Setup
+## Deploy
 
-1. **Exit node:** at home, `sudo tailscale set --advertise-exit-node`; approve it; create a reusable auth key.
-2. **GitHub environment `oracle-cloud`:**
+1. On a device at home: `sudo tailscale set --advertise-exit-node`, approve it, and create a
+   reusable auth key.
+2. GitHub environment `oracle-cloud`:
+   variables `SHOP_URL`, `TELEGRAM_ADMIN_ID`, `TS_EXIT_NODE` (its Tailscale IP), `SSH_HOST`,
+   `SSH_USER`, `SSH_KNOWN_HOSTS`, optional `DEPLOY_DIR`;
+   secrets `TELEGRAM_BOT_TOKEN`, `TS_AUTHKEY`, `SSH_PRIVATE_KEY`.
+3. Push to `main`. *Actions → Operate* runs `check`, `logs` or `remove` (deletes the bot and its data).
 
-   | Variable | |
-   |---|---|
-   | `SHOP_URL` | shop website |
-   | `TELEGRAM_USER_IDS` | who may order, comma-separated; first gets alerts |
-   | `ADDRESS_LABEL`, `ADDRESS_MATCH` | saved address name, and text it must contain |
-   | `SSH_HOST`, `SSH_USER`, `SSH_KNOWN_HOSTS` | the box |
-   | `TS_EXIT_NODE` | exit node's Tailscale IP |
-   | `PLACE_ORDERS` | `true` to order (default: cart only) |
-   | `DAILY_CAP_INR`, `MIN_ORDER_INR`, `DEPLOY_DIR` | optional: 1000, 100, `/opt/grocery-bot` |
-
-   | Secret | |
-   |---|---|
-   | `SSH_PRIVATE_KEY` | box deploy key |
-   | `TELEGRAM_BOT_TOKEN` | from @BotFather |
-   | `TS_AUTHKEY` | first Tailscale login only |
-   | `SHOP_SESSION` | shop login (step 3) |
-
-3. **Shop login** (and when the bot says it expired). Treat `session.json` as a password.
-   ```sh
-   SHOP_URL=https://... python scripts/login.py session.json   # needs playwright
-   gh secret set SHOP_SESSION --env oracle-cloud < session.json && rm session.json
-   gh workflow run operate.yml -f action=set-login              # replace on a running box
-   ```
-4. **Deploy:** push to `main`. Checks → arm64 image on ghcr.io → Docker on the box (first time) → restart → self-check.
-
-## Operate
-
-`gh workflow run operate.yml -f action=check|logs|set-login|remove` (`remove` needs `-f confirm=remove`).
-
-Logs are JSON lines (`ts`, `level`, `logger`, `msg`, fields), no message text or secrets.
-Grafana: `{service_name="grocery-bot"}`.
+Logs are JSON lines in Loki: `{service_name="grocery-bot"}`. They never hold message text.
 
 ## Develop
 
 ```sh
 pip install -e '.[dev]' && ruff check . && ruff format --check . && pytest
-docker compose up --build   # needs .env (.env.example) and a session in the volume
 ```
-
-Volume `grocery-bot_data`: `session.json`, `catalog.json`, `ledger.json`, `tailscale/`, `debug/` (7 days).

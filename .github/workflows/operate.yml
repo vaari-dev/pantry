@@ -1,6 +1,7 @@
 name: Operate
 run-name: ${{ inputs.action }}
 
+# Day-two tasks on the box, so nobody needs to SSH in by hand.
 on:
   workflow_dispatch:
     inputs:
@@ -8,12 +9,11 @@ on:
         description: What to do
         type: choice
         options:
-          - check
-          - logs
-          - set-login        # install SHOP_SESSION
-          - remove           # delete bot and data
+          - check            # home exit, each account's login and address
+          - logs             # the bot's recent log lines and health
+          - remove           # stop the bot and delete everything on the box, data included
       confirm:
-        description: Type "remove" to confirm
+        description: Type the action name again to confirm "remove"
         required: false
 
 permissions:
@@ -45,12 +45,4 @@ jobs:
           user: ${{ vars.SSH_USER }}
           known-hosts: ${{ vars.SSH_KNOWN_HOSTS }}
           private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-      - if: inputs.action == 'set-login'
-        env:
-          SHOP_SESSION: ${{ secrets.SHOP_SESSION }}
-        run: |
-          [ -n "$SHOP_SESSION" ] || { echo "::error::Set the SHOP_SESSION secret first (README: Shop login)." >&2; exit 1; }
-          printf '%s' "$SHOP_SESSION" | ssh box "'$DIR/box.sh' set-login"
-          ssh box "'$DIR/box.sh' check"
-      - if: inputs.action != 'set-login'
-        run: ssh box "'$DIR/box.sh' $ACTION"
+      - run: ssh box "'$DIR/box.sh' $ACTION"

@@ -1,6 +1,4 @@
-"""The shop's website, via headed Chrome (Xvfb) through the home exit; the site blocks headless
-browsers and data-centre IPs. Products open by saved link; ads, trackers and media are blocked.
-"""
+"""The shop's website, through real Chrome: the site refuses headless browsers and data-centre IPs."""
 
 import re
 from dataclasses import dataclass, field
@@ -14,7 +12,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from .catalog import Product
 
-TIMEOUT_MS = 90_000  # slow via the exit node
+TIMEOUT_MS = 90_000  # pages are slower through the home exit node
 CHROME_ARGS = [
     "--disable-gpu",
     "--disable-dev-shm-usage",
@@ -35,33 +33,37 @@ SKIP_URLS = (
     "google.com/rmkt",
     "google.com/pagead",
     "google.co.in/ads",
-    "faro.",  # telemetry
+    "faro.",
     "publish-events",
     "~partytown",
-    "/proxy/",  # relayed third-party scripts
+    "/proxy/",
 )
-WALLET = re.compile(r"\bCash\b")  # the only payment
-COINS = re.compile(r"\bCoins\b")  # never used
+WALLET = re.compile(r"\bCash\b")  # the prepaid wallet: the only way the bot pays
+COINS = re.compile(r"\bCoins\b")  # reward coins: never used
 LOGGED_OUT = "[data-testid=login-btn]"
+ADDRESS = "[data-testid=user-address]"
+PHONE_FIELD = "input[type=tel], input[inputmode=numeric], input[name*=phone i]"
+OTP_FIELD = "input[autocomplete=one-time-code], input[maxlength='1'], input[maxlength='4'], input[maxlength='6']"
+CONTINUE = re.compile(r"(?i)^\s*(continue|get otp|send otp|login|next)\s*$")
 PLUS = "button[aria-label='Increase quantity by one']:not([data-hidden=true])"
 log = structlog.get_logger(__name__)
 
 
 class ShopError(Exception):
-    """Stops an order; the message is user-facing."""
+    pass
 
 
 @dataclass(frozen=True)
 class Rules:
     address_label: str
     address_match: str
-    budget: float  # left of today's cap
+    budget: float
 
 
 @dataclass
 class Cart:
-    total: float | None = None  # wallet amount
-    item_total: float = 0  # before fees
+    total: float | None = None
+    item_total: float = 0
     items: list[tuple[str, int]] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
 
@@ -75,22 +77,31 @@ def _squash(text: str) -> str:
 
 
 class Browser:
-    """Chrome with the saved login; a context manager."""
+    """One Chrome session. Loads and saves state_file (None: neither); fresh: starts logged out."""
 
-    def __init__(self, base_url: str, state_file: Path, proxy: str | None, debug_dir: Path, images: bool = False):
+    def __init__(
+        self,
+        base_url: str,
+        state_file: Path | None,
+        proxy: str | None,
+        debug_dir: Path,
+        images: bool = False,
+        fresh: bool = False,
+    ):
         self.base = base_url.rstrip("/")
-        self.state_file, self.proxy, self.debug_dir = state_file, proxy, debug_dir
+        self.state_file, self.proxy, self.debug_dir, self.fresh = state_file, proxy, debug_dir, fresh
         self.skip_types = SKIP_TYPES if images else SKIP_TYPES | {"image"}
 
     def __enter__(self) -> "Browser":
-        if not self.state_file.exists():
-            raise ShopError("not logged in to the shop yet (see README: Shop login)")
+        stored = self.state_file is not None and not self.fresh
+        if stored and not self.state_file.exists():
+            raise ShopError("this account is not logged in to the shop; its owner can /setup again")
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(
             headless=False, args=CHROME_ARGS, proxy={"server": self.proxy} if self.proxy else None
         )
         self._ctx = self._browser.new_context(
-            storage_state=str(self.state_file), viewport={"width": 1024, "height": 700}
+            storage_state=str(self.state_file) if stored else None, viewport={"width": 1024, "height": 700}
         )
         self._ctx.route("**/*", self._filter)
         self.page: Page = self._ctx.new_page()
@@ -101,8 +112,9 @@ class Browser:
         try:
             if exc_type:
                 self.screenshot("error")
-            self._ctx.storage_state(path=str(self.state_file))
-            self.state_file.chmod(0o600)
+            if self.state_file is not None:
+                self._ctx.storage_state(path=str(self.state_file))
+                self.state_file.chmod(0o600)
         finally:
             self._browser.close()
             self._pw.stop()
@@ -114,11 +126,11 @@ class Browser:
         return route.continue_()
 
     def screenshot(self, tag: str) -> None:
-        """Failures only; pruned by the bot."""
+        """Failures only: screens show the address."""
         self.debug_dir.mkdir(parents=True, exist_ok=True)
         try:
             self.page.screenshot(path=str(self.debug_dir / f"{datetime.now():%Y%m%d-%H%M%S}-{tag}.png"))
-        except Exception:
+        except Exception:  # never mask the real error
             log.warning("screenshot failed", exc_info=True)
 
     def goto(self, url: str) -> None:
@@ -131,27 +143,75 @@ class Browser:
         self.page.wait_for_timeout(2000)
 
     def check_session(self, rules: Rules) -> str:
-        """Logged in and delivering to the configured address."""
         if not self.page.url.startswith(self.base):
             self.goto("/")
-        addr = self.page.locator("[data-testid=user-address]").first
+        addr = self.page.locator(ADDRESS).first
         try:
             addr.wait_for(timeout=20_000)
         except PlaywrightTimeout:
             if self.page.locator(LOGGED_OUT).count():
-                raise ShopError("the shop login has expired") from None
+                raise ShopError("the shop login has expired; the account's owner can /setup again") from None
             raise ShopError("could not read the delivery address") from None
         text = addr.inner_text()
         if not text.startswith(rules.address_label) or rules.address_match not in text:
             raise ShopError(f"the shop is not set to deliver to '{rules.address_label}'")
         return text
 
+    def request_otp(self, phone: str) -> None:
+        self.goto("/")
+        self.page.locator(LOGGED_OUT).first.click()
+        field = self.page.locator(PHONE_FIELD).filter(visible=True).first
+        try:
+            field.wait_for(timeout=20_000)
+        except PlaywrightTimeout:
+            raise ShopError("the shop's login form did not open") from None
+        field.fill(phone)
+        self.page.wait_for_timeout(500)
+        button = self.page.get_by_role("button", name=CONTINUE).filter(visible=True)
+        if button.count():
+            button.first.click()
+        else:
+            field.press("Enter")
+        try:
+            self.page.locator(OTP_FIELD).filter(visible=True).first.wait_for(timeout=20_000)
+        except PlaywrightTimeout:
+            raise ShopError("the shop did not ask for a code; is the number right?") from None
+
+    def enter_otp(self, code: str) -> None:
+        """One field or one box per digit: typing works for both."""
+        self.page.locator(OTP_FIELD).filter(visible=True).first.click()
+        self.page.keyboard.type(code, delay=150)
+        self.page.wait_for_timeout(1000)
+        button = self.page.get_by_role("button", name=re.compile(r"(?i)^\s*(verify|continue|login|submit)")).filter(
+            visible=True
+        )
+        if button.count():
+            button.first.click()
+        try:
+            self.page.locator(LOGGED_OUT).first.wait_for(state="detached", timeout=30_000)
+            self.page.locator(ADDRESS).first.wait_for(timeout=20_000)
+        except PlaywrightTimeout:
+            raise ShopError("the shop did not accept that code") from None
+        self.page.wait_for_timeout(3000)
+
+    def choose_address(self, label: str) -> None:
+        addr = self.page.locator(ADDRESS).first
+        if addr.inner_text().startswith(label):
+            return
+        addr.click()
+        self.page.wait_for_timeout(2500)
+        choice = self.page.get_by_text(label, exact=True).filter(visible=True)
+        if not choice.count():
+            raise ShopError(f"there is no saved address called '{label}'; add it in the shop's app first")
+        choice.first.click()
+        self.page.wait_for_timeout(3000)
+        self.goto("/")
+
     def public_ip(self) -> str:
         self.goto("https://api.ipify.org")
         return self.page.locator("body").inner_text().strip()
 
     def search(self, query: str, limit: int = 4) -> list[Product]:
-        """Top in-stock, non-sponsored results."""
         self.goto(f"/search?query={quote(query)}")
         try:
             self.page.wait_for_selector("a[data-testid=product-card]", timeout=15_000)
@@ -183,9 +243,9 @@ class Browser:
         return found
 
     def add(self, product: Product, qty: int) -> str | None:
-        """Add from the product page. Returns None, or why it was skipped."""
+        """None on success, else why it was skipped."""
         self.goto(product.url)
-        # Page titles drop the "| tagline".
+        # Titles drop the "| tagline" of long names, so compare the core name.
         if not _squash(self.page.title()).startswith(_squash(product.name.split("|")[0])):
             return "listing changed"
         if _squash(product.size) not in _squash(self.page.locator("body").inner_text()):
@@ -193,7 +253,7 @@ class Browser:
         add = self.page.locator(PLUS, has_text="Add to Cart")
         if not add.count():
             return "out of stock"
-        add.first.evaluate("b => b.click()")  # header overlaps it
+        add.first.evaluate("b => b.click()")  # the sticky search bar overlaps it for mouse clicks
         self.page.wait_for_timeout(1500)
         for _ in range(qty - 1):
             self.page.locator(PLUS).first.evaluate("b => b.click()")
@@ -229,9 +289,9 @@ class Browser:
         self.page.keyboard.press("Escape")
 
     def review_cart(self, expected: dict[str, int], rules: Rules) -> Cart:
-        """Select wallet-only payment and check every rule."""
+        """Selects the wallet, never reward coins, and checks every rule."""
         cart = self._open_cart()
-        for i, box in enumerate(cart["boxes"]):  # wallet on, coins off
+        for i, box in enumerate(cart["boxes"]):
             want = bool(WALLET.search(box["label"]))
             if (want or COINS.search(box["label"])) and box["checked"] != want:
                 self.page.locator("[data-testid=cart-screen] input[type=checkbox]").nth(i).click(force=True)
@@ -273,7 +333,7 @@ class Browser:
         return result
 
     def place(self) -> None:
-        """Place Order, skipping the "Missed something?" upsell."""
+        """Also confirms the "Missed something?" upsell pop-up, adding nothing."""
         self.page.locator("[data-testid=cart-screen] button", has_text="Place Order").click()
         self.page.wait_for_timeout(3000)
         if self.page.get_by_text("Missed something?", exact=True).count():
@@ -282,10 +342,9 @@ class Browser:
                     d.innerText.startsWith('Missed something?') && d.querySelector('button'));
                 [...pop.querySelectorAll('button')].find(b => b.innerText.trim() === 'Place Order').click();
             }""")
-        self.page.wait_for_timeout(15_000)
+        self.page.wait_for_timeout(15_000)  # "Confirming your order..."
 
     def confirm(self, total: float, since: datetime) -> bool:
-        """Newest order has this total and is newer than `since`."""
         for _ in range(3):
             self.goto("/account/orders")
             body = self.page.locator("body").inner_text().split("Log Out", 1)[-1]
