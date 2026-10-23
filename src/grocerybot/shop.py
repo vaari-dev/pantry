@@ -317,7 +317,9 @@ class Browser:
         """None on success, else why it was skipped."""
         self.goto(product.url)
         # Titles drop the "| tagline" of long names, so compare the core name.
-        if not _squash(self.page.title()).startswith(_squash(product.name.split("|")[0])):
+        if not _squash(title := self.page.title()).startswith(_squash(product.name.split("|")[0])):
+            headings = self.page.locator("h1").all_inner_texts()
+            log.info("listing changed", saved=product.name, title=title, headings=headings)
             return "listing changed"
         if _squash(product.size) not in _squash(self.page.locator("body").inner_text()):
             return "size changed"
