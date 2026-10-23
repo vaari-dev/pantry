@@ -1,7 +1,7 @@
 name: grocery-bot
 
 services:
-  bot:
+  grocery-bot:  # also the service_name label of its logs in Loki
     image: ${APP_IMAGE:-grocery-bot:local}
     build: .
     restart: unless-stopped

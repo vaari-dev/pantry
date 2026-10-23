@@ -6,13 +6,13 @@ docker/entrypoint.sh). Products are opened by their saved links, so no feed, ads
 browsed; analytics/ad scripts and media are not even loaded.
 """
 
-import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
+import structlog
 from playwright.sync_api import Page, Route, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
@@ -48,7 +48,7 @@ WALLET = re.compile(r"\bCash\b")  # the prepaid wallet: the only way the bot pay
 COINS = re.compile(r"\bCoins\b")  # reward coins: never used
 LOGGED_OUT = "[data-testid=login-btn]"
 PLUS = "button[aria-label='Increase quantity by one']:not([data-hidden=true])"
-log = logging.getLogger(__name__)
+log = structlog.get_logger(__name__)
 
 
 class ShopError(Exception):
@@ -59,13 +59,13 @@ class ShopError(Exception):
 class Rules:
     address_label: str
     address_match: str
-    min_order: float
     budget: float  # what is left of today's cap
 
 
 @dataclass
 class Cart:
     total: float | None = None  # paid from the wallet
+    item_total: float = 0  # before fees and discounts; the shop charges a delivery fee below its minimum
     items: list[tuple[str, int]] = field(default_factory=list)  # product name, quantity
     problems: list[str] = field(default_factory=list)
 
@@ -269,8 +269,10 @@ class Browser:
 
         amount = lambda label: re.search(label + r"\s*\n(?:-?₹[\d,.]+\s*\n)?-?₹([\d,.]+)", text)  # noqa: E731
         item_total, to_pay, cash = amount("Item Total"), amount("To Pay"), amount(r"[^\n]*\bCash")
-        if not item_total or _money(item_total.group(1)) < rules.min_order:
-            result.problems.append(f"orders under ₹{rules.min_order:g} get a delivery fee")
+        if item_total:
+            result.item_total = _money(item_total.group(1))
+        else:
+            result.problems.append("could not read the item total")
         if not to_pay or _money(to_pay.group(1)) != 0:
             result.problems.append("the wallet does not cover the whole bill")
         result.total = _money(cash.group(1)) if cash else None

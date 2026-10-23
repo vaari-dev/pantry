@@ -11,14 +11,14 @@ set -euo pipefail
 cd "$(dirname "$0")"
 export COMPOSE_PROJECT_NAME=grocery-bot
 compose() { docker compose --env-file .image "$@"; }
-in_bot() { compose exec -T bot "$@"; }
+in_bot() { compose exec -T grocery-bot "$@"; }
 
 wait_healthy() {
   for _ in $(seq 36); do
-    [ "$(docker inspect -f '{{.State.Health.Status}}' "$(compose ps -q bot)" 2>/dev/null)" = healthy ] && return
+    [ "$(docker inspect -f '{{.State.Health.Status}}' "$(compose ps -q grocery-bot)" 2>/dev/null)" = healthy ] && return
     sleep 5
   done
-  compose logs --tail 50 bot >&2
+  compose logs --tail 50 grocery-bot >&2
   echo "the bot did not become healthy" >&2
   return 1
 }
@@ -44,8 +44,8 @@ case "${1:?command}" in
     in_bot xvfb-run -a python -m grocerybot check
     ;;
   logs)
-    docker inspect -f 'health: {{.State.Health.Status}}, started {{.State.StartedAt}}' "$(compose ps -q bot)"
-    compose logs --no-log-prefix --tail 200 bot
+    docker inspect -f 'health: {{.State.Health.Status}}, started {{.State.StartedAt}}' "$(compose ps -q grocery-bot)"
+    compose logs --no-log-prefix --tail 200 grocery-bot
     ;;
   remove)
     compose down --volumes --rmi all --remove-orphans

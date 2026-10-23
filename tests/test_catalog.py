@@ -1,7 +1,7 @@
 import pytest
 
 from grocerybot import store
-from grocerybot.catalog import Catalog, Product, normalize, plan, split_spoken
+from grocerybot.catalog import Catalog, Product, combine, normalize, plan, split_spoken
 
 EGGS = Product("Urban White Eggs", "1 pack (10 pcs)", "/pn/eggs/pvid/1")
 BREAD = Product("Multigrain Bread", "1 pack (400 g)", "/pn/bread/pvid/2")
@@ -74,3 +74,11 @@ def test_learn_puts_pick_first_and_keeps_backups(catalog):
     assert [p.url for p in catalog.options("egg")] == [other.url, EGGS.url]
     assert catalog.learn("anar", Product("Pomegranate", "4 pcs", "/pn/anar/pvid/4")) == "anar"
     assert catalog.lookup("anar") == "anar"
+
+
+def test_combine_adds_new_list_to_basket_within_limits(catalog):
+    assert combine([("egg", 2), ("bread", 1)], [("egg", 2), ("milk", 1)], catalog) == [
+        ("egg", 3),
+        ("bread", 1),
+        ("milk", 1),
+    ]

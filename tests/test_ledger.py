@@ -40,3 +40,13 @@ def test_due_uses_usual_gap_and_skips_lapsed(tmp_path):
     ledger = Ledger(path)
     assert ledger.due(date(2026, 10, 12)) == []  # 3 days since eggs, usual gap 4
     assert ledger.due(date(2026, 10, 14)) == [("egg", 1)]  # skyr lapsed long ago
+
+
+def test_basket_is_kept_alongside_orders(tmp_path):
+    ledger = Ledger(tmp_path / "ledger.json")
+    ledger.set_basket([("bread", 1)])
+    ledger.finish(ledger.begin([("egg", 1)], 87), "placed")
+    assert ledger.basket() == [("bread", 1)]
+    assert ledger.spent_today() == 87
+    ledger.set_basket([])
+    assert ledger.basket() == []

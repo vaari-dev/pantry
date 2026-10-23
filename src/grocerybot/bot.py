@@ -4,13 +4,14 @@ One worker thread does all browser work in order (one Chrome, one cart at a time
 thread only parses messages and button presses, so the bot stays responsive during an order.
 """
 
-import logging
 import queue
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+
+import structlog
 
 from . import orders
 from .catalog import Catalog, Product, plan
@@ -20,13 +21,20 @@ from .shop import ShopError
 from .speech import Transcriber
 from .telegram import Telegram, TelegramError
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger(__name__)
 
 DESCRIPTION = 'Family grocery helper. Send a voice note or text like "bread aur do anda" and I\'ll order it.'
-COMMANDS = {"usual": "What we usually need around now", "help": "How to order", "id": "Show your Telegram id"}
+COMMANDS = {
+    "basket": "What is waiting to be ordered",
+    "clear": "Empty the waiting basket",
+    "usual": "What we usually need around now",
+    "help": "How to order",
+    "id": "Show your Telegram id",
+}
 HELP = (
     'Send what we need, by voice or text, e.g. "bread aur do anda" or "2 milk, bananas".\n'
-    "New things: I'll show a few options to pick from, and remember your pick."
+    "New things: I'll show a few options to pick from, and remember your pick.\n"
+    "Small lists wait in the basket and are ordered once they add up to the shop's minimum."
 )
 DEBUG_KEEP = timedelta(days=7)
 ALERT_REPEAT = timedelta(hours=6)
@@ -60,7 +68,7 @@ class Bot:
 
     def run(self) -> None:
         name = self.tg.setup(COMMANDS, DESCRIPTION, "Order groceries by voice or text.")
-        log.info("running as @%s; cap ₹%g; placing orders: %s", name, self.cfg.daily_cap, self.cfg.place_orders)
+        log.info("bot started", bot=name, daily_cap=self.cfg.daily_cap, place_orders=self.cfg.place_orders)
         for o in self.ledger.interrupted():
             self.alert(
                 f"⚠️ An order (₹{o['total']:g}, {o['at']}) was interrupted while being placed. "
@@ -76,7 +84,7 @@ class Bot:
                     offset = update["update_id"] + 1
                     self._dispatch(update)
             except TelegramError as e:
-                log.warning("polling: %s", e)
+                log.warning("telegram polling failed", error=str(e))
                 time.sleep(5)
 
     def _dispatch(self, update: dict) -> None:
@@ -91,13 +99,16 @@ class Bot:
     def _worker(self) -> None:
         while True:
             job, args = self.jobs.get()
+            name, started = job.__name__.lstrip("_"), time.monotonic()
             try:
                 job(*args)
+                log.info("job done", job=name, seconds=round(time.monotonic() - started, 1))
             except ShopError as e:
+                log.warning("job stopped by the shop", job=name, reason=str(e))
                 chat_id = args[0] if args else None
                 self._say(chat_id or self.cfg.user_ids[0], f"❌ Couldn't order: {e}.")
             except Exception:
-                log.exception("job failed")
+                log.exception("job failed", job=name)
                 if args:
                     self._say(args[0], "Something went wrong. Nothing was ordered unless you got a ✅.")
             finally:
@@ -117,8 +128,9 @@ class Bot:
 
     def _health(self) -> None:
         try:
-            log.info("health check ok (exit ip %s)", orders.check(self.cfg))
+            log.info("health check ok", exit_ip=orders.check(self.cfg))
         except ShopError as e:
+            log.error("health check failed", reason=str(e))
             self.alert(f"⚠️ Daily check failed: {e}. Orders will fail until this is fixed.")
 
     # ------------------------------------------------------------- messaging
@@ -127,7 +139,7 @@ class Bot:
         try:
             return self.tg.send(chat_id, text, buttons)
         except TelegramError as e:
-            log.warning("send failed: %s", e)
+            log.warning("telegram send failed", error=str(e))
             return None
 
     def alert(self, text: str) -> None:
@@ -147,10 +159,18 @@ class Bot:
             self._say(chat_id, f"Your Telegram id is {uid}.")
             return
         if uid not in self.cfg.user_ids:
-            log.info("ignored a message from a user who is not allowed")
+            log.info("message ignored: user not allowed")
             return
         if text.startswith(("/start", "/help")):
             self._say(chat_id, HELP)
+        elif text.startswith("/basket"):
+            basket = self.ledger.basket()
+            self._say(
+                chat_id,
+                "Waiting: " + ", ".join(f"{k} ×{q}" for k, q in basket) if basket else "The basket is empty.",
+            )
+        elif text.startswith("/clear"):
+            self.jobs.put((self._clear, (chat_id,)))  # on the worker, so it never races an order
         elif text.startswith("/usual"):
             due = self.ledger.due()
             self._say(
@@ -170,6 +190,7 @@ class Bot:
             text = self.transcribe(audio)
         finally:
             audio.unlink(missing_ok=True)
+        log.info("voice transcribed", words=len(text.split()))
         self._say(chat_id, f'🎙️ Heard: "{text}"')
         if text:
             self._handle_list(chat_id, text)  # already on the worker
@@ -220,7 +241,7 @@ class Bot:
             try:
                 return self.tg.send_photo(chat_id, product.image, caption, buttons)
             except TelegramError as e:
-                log.info("photo not shown: %s", e)
+                log.info("photo not shown", error=str(e))
         return self._say(chat_id, caption, buttons)
 
     def _on_pick(self, cb: dict) -> None:
@@ -258,9 +279,22 @@ class Bot:
 
     # ------------------------------------------------------------- ordering
 
+    def _clear(self, chat_id: int) -> None:
+        self.ledger.set_basket([])
+        self._say(chat_id, "Basket emptied.")
+
     def _order(self, chat_id: int, items: list[tuple[str, int]]) -> None:
-        self._say(chat_id, "Ordering " + ", ".join(f"{k} ×{q}" for k, q in items) + " …")
+        self._say(chat_id, "Adding " + ", ".join(f"{k} ×{q}" for k, q in items) + " …")
         out = orders.order(self.cfg, self.catalog, self.ledger, items)
+        log.info(
+            "order",
+            result=out.result,
+            items=len(out.lines),
+            unavailable=out.unavailable,
+            item_total=out.item_total,
+            wallet=out.total,
+            problems=out.problems,
+        )
         details = "\n".join([*out.lines, *(f"Couldn't add {k} (out of stock or changed)" for k in out.unavailable)])
         total = f"₹{out.total:g}" if out.total is not None else ""
         if out.placed:
@@ -269,6 +303,12 @@ class Bot:
             self._say(
                 chat_id,
                 f"⚠️ I tapped Place Order but couldn't confirm it. Check the shop's app before resending.\n{details}",
+            )
+        elif out.waiting:
+            self._say(
+                chat_id,
+                f"🧺 In the basket, ₹{out.item_total:g} so far. I'll order once it reaches "
+                f"₹{self.cfg.min_order:g}; send more to add.\n{details}",
             )
         elif not out.problems:
             self._say(chat_id, f"🛒 Cart ready ({total}); ordering is switched off.\n{details}")

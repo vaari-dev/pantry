@@ -35,7 +35,8 @@ Telegram ⇄ bot (OCI box, Docker)
 
 | | |
 |---|---|
-| voice note or text | order it (`2 milk, bread`, `anda aur doodh`) |
+| voice note or text | order it (`2 milk, bread`, `anda aur doodh`); small lists wait in the basket until the total reaches `MIN_ORDER_INR` |
+| `/basket`, `/clear` | show or empty the waiting basket |
 | `/usual` | items that are due, based on how often you have ordered them |
 | `/id` | your Telegram user id |
 
@@ -85,6 +86,10 @@ Logging out on the shop's website ends it.
 
 *Actions → Operate* (or `gh workflow run operate.yml -f action=…`):
 `check` · `logs` · `set-login` · `remove` (deletes the bot and its data from the box; confirm with `remove`).
+
+**Logs** are JSON lines on stdout (`ts`, `level`, `logger`, `msg`, plus fields such as `result`,
+`item_total`, `job`, `seconds`). The Grafana/Loki stack on the box picks them up; query
+`{service_name="grocery-bot"}`. They hold events and ids only, never message text or tokens.
 
 ## Development
 

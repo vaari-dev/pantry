@@ -179,3 +179,11 @@ def plan(text: str, catalog: Catalog) -> Plan:
             notes.append(f"{key}: asked for {qty}, capped at {limit}")
         ready.append((key, min(qty, limit)))
     return Plan(ready, [(n, min(q, DEFAULT_MAX_QTY)) for n, q in to_pick], notes)
+
+
+def combine(basket: list[tuple[str, int]], items: list[tuple[str, int]], catalog: Catalog) -> list[tuple[str, int]]:
+    """The waiting basket plus a new list; repeats add up, within each item's limit."""
+    merged: dict[str, int] = {}
+    for key, qty in [*basket, *items]:
+        merged[key] = min(merged.get(key, 0) + qty, catalog.max_qty(key))
+    return list(merged.items())

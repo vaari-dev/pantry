@@ -1,8 +1,10 @@
-"""Order history kept by the bot: daily spend cap, no double orders, and "what's due".
+"""Order history kept by the bot: daily spend cap, no double orders, "what's due", and the basket.
 
-ledger.json: {"orders": [{"id", "day", "at", "status", "total", "items": [[key, qty], ...]}]}
+ledger.json: {"orders": [{"id", "day", "at", "status", "total", "items": [[key, qty], ...]}],
+              "basket": [[key, qty], ...]}
 status: placing -> placed | failed | unknown. "placing" left over after a crash means the
 order may or may not have gone through; it is reported to the user, never retried.
+The basket holds items waiting for the order to reach the shop's minimum.
 """
 
 import statistics
@@ -18,11 +20,20 @@ class Ledger:
     def __init__(self, path: Path):
         self.path = path
 
+    def _read(self) -> dict:
+        return {"orders": [], "basket": [], **store.read(self.path, {})}
+
     def _orders(self) -> list[dict]:
-        return store.read(self.path, {"orders": []})["orders"]
+        return self._read()["orders"]
 
     def _save(self, orders: list[dict]) -> None:
-        store.write(self.path, {"orders": orders[-1000:]})
+        store.write(self.path, {**self._read(), "orders": orders[-1000:]})
+
+    def basket(self) -> list[tuple[str, int]]:
+        return [(key, qty) for key, qty in self._read()["basket"]]
+
+    def set_basket(self, items: list[tuple[str, int]]) -> None:
+        store.write(self.path, {**self._read(), "basket": [list(i) for i in items]})
 
     def spent_today(self) -> float:
         today = date.today().isoformat()

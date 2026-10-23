@@ -2,17 +2,16 @@
 python -m grocerybot check      self-check: shop login, delivery address, home exit IP (exit 1 on failure)
 """
 
-import logging
+import os
 import sys
 
-from . import config, orders
+from . import config, logs, orders
 from .bot import Bot
 from .shop import ShopError
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    logging.getLogger("httpx").setLevel(logging.WARNING)  # huggingface/whisper model fetch noise
+    logs.setup(os.environ.get("LOG_LEVEL", "INFO"))
     cfg = config.load()
     if sys.argv[1:] == ["check"]:
         try:

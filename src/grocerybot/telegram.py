@@ -2,13 +2,10 @@
 
 import contextlib
 import json
-import logging
 import tempfile
 import urllib.parse
 import urllib.request
 from pathlib import Path
-
-log = logging.getLogger(__name__)
 
 
 class TelegramError(Exception):
