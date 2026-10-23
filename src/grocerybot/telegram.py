@@ -71,10 +71,11 @@ class Telegram:
             f.write(r.read())
         return Path(out)
 
-    def setup(self, commands: dict[str, str], description: str) -> str:
+    def setup(self, commands: dict[str, str], description: str, short: str) -> str:
         """Returns the bot's username."""
         self.call("setMyCommands", commands=[{"command": c, "description": d} for c, d in commands.items()])
         self.call("setMyDescription", description=description)
+        self.call("setMyShortDescription", short_description=short)
         return self.call("getMe")["username"]
 
 
