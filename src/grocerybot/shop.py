@@ -52,6 +52,7 @@ CONTINUE = re.compile(r"^\s*(continue|get otp|send otp|login|next)\s*$", re.I)
 VERIFY = re.compile(r"^\s*(verify|continue|login|submit)", re.I)
 PLUS = "button[aria-label='Increase quantity by one']:not([data-hidden=true])"
 MODAL = "[id^=zui-modal], [role=dialog], [aria-modal=true]"  # the address picker; it covers the page
+PICKER_BUTTON = f"button:has({ADDRESS}), {ADDRESS}"  # the header button around the address opens it
 # The picker's markup has no stable ids: a saved address is the innermost clickable block of two or
 # more lines with a digit or comma after its name. Tags each with data-saved-address=<n>.
 SAVED_ADDRESSES = """() => {
@@ -259,20 +260,34 @@ class Browser:
 
         self.page.on("response", record)
         try:
-            self.page.locator(ADDRESS).first.click()
-            self.page.wait_for_timeout(2500)
+            opened = self.open_picker()
+            self.page.wait_for_timeout(1500)  # the list fills in after the picker shows
         finally:
             self.page.remove_listener("response", record)
         if logging.getLogger(__name__).isEnabledFor(logging.DEBUG):
             self._log_picker(replies)
-        try:
-            found = self.page.evaluate(SAVED_ADDRESSES)
-        except PlaywrightError:  # setup falls back to naming the address
-            log.warning("could not read saved addresses", exc_info=True)
-            found = []
-        if not found:
+        found = []
+        if opened:
+            try:
+                found = self.page.evaluate(SAVED_ADDRESSES)
+            except PlaywrightError:  # setup falls back to naming the address
+                log.warning("could not read saved addresses", exc_info=True)
+        log.info("address picker", opened=opened, saved=len(found), replies=len(replies))
+        if opened and not found:
             self.close_picker()
         return found
+
+    def open_picker(self) -> bool:
+        """Right after login the page can ignore clicks for a while: click until the picker shows."""
+        picker = self.page.locator(f":is({MODAL}):visible").first
+        for _ in range(3):
+            self.page.locator(PICKER_BUTTON).first.click()
+            try:
+                picker.wait_for(timeout=8_000)
+                return True
+            except PlaywrightTimeout:
+                pass
+        return False
 
     def _log_picker(self, replies: list) -> None:
         """LOG_LEVEL=DEBUG: the shape of the picker and of the shop's address replies, to build the address
@@ -310,8 +325,9 @@ class Browser:
         addr = self.page.locator(ADDRESS).first
         if addr.inner_text().startswith(label):
             return
-        addr.click()
-        self.page.wait_for_timeout(2500)
+        if not self.open_picker():
+            raise ShopError("the shop's address list didn't open")
+        self.page.wait_for_timeout(1500)
         # Only inside the picker: the same name on the page behind it can't be clicked.
         choice = self.page.locator(MODAL).last.get_by_text(label, exact=True).filter(visible=True)
         if not choice.count():
