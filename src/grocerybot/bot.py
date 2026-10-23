@@ -17,10 +17,10 @@ from pathlib import Path
 import structlog
 
 from . import orders
-from .accounts import Accounts, Household
+from .accounts import Accounts, Household, address_parts
 from .catalog import Product, plan
 from .config import Config
-from .shop import Rules, ShopError
+from .shop import ShopError
 from .speech import Transcriber
 from .telegram import Telegram, TelegramError
 
@@ -49,6 +49,9 @@ ANSWER_WAIT = 600
 OTP_WAIT = 300  # Chrome waits on the login page meanwhile, holding up every order
 SHARE_PHONE = {"keyboard": [[{"text": "📱 Share my phone number", "request_contact": True}]], "resize_keyboard": True}
 NO_KEYBOARD = {"remove_keyboard": True}
+RETRY = "Nothing changed; send /setup to try again."
+YES = "✅ Yes, deliver here"
+CONFIRM = {"keyboard": [[{"text": YES}], [{"text": "📍 Another saved address"}]], "resize_keyboard": True}
 PICK_IDS = itertools.count()
 HEARTBEAT = Path("/tmp/heartbeat")  # noqa: S108  read by the container healthcheck
 BUSY = Path("/tmp/busy")  # noqa: S108  exists while jobs run; deploys wait for it
@@ -463,19 +466,20 @@ class Bot:
 
     # setup
 
-    def _ask(self, chat_id: int, uid: int, question: str, wait: int = ANSWER_WAIT, markup=None) -> str:
-        """Their next message, deleted from the chat (phone numbers and OTPs)."""
+    def _ask(self, chat_id: int, uid: int, question: str, wait: int = ANSWER_WAIT, markup=None, secret=False) -> str:
+        """Their next message; secret ones (phone number, OTP) are deleted from the chat."""
         while not self.replies[uid].empty():
             self.replies[uid].get_nowait()
         self._say(chat_id, question, markup=markup)
         try:
             msg = self.replies[uid].get(timeout=wait)
         except queue.Empty:
-            raise SetupStopped("Setup timed out") from None
-        self.tg.delete(chat_id, msg["message_id"])
+            raise SetupStopped("I didn't hear back, so I stopped") from None
+        if secret:
+            self.tg.delete(chat_id, msg["message_id"])
         answer = ((msg.get("contact") or {}).get("phone_number") or msg.get("text") or "").strip()
         if answer.startswith("/"):
-            raise SetupStopped("Setup stopped")
+            raise SetupStopped("Stopped")
         return answer
 
     def _setup(self, chat_id: int, uid: int, name: str) -> None:
@@ -483,40 +487,64 @@ class Bot:
             phone = self._ask(
                 chat_id,
                 uid,
-                "I'll log in to your shop account like its website does. Your phone number there? (/cancel stops)",
+                "Let's connect your shop account 🛒\nTap the button to share the phone number you log in with, "
+                "or type it. (/cancel stops)",
                 markup=SHARE_PHONE,
+                secret=True,
             )
             if len(phone := re.sub(r"\D", "", phone)[-10:]) != 10:
-                raise SetupStopped("That isn't a 10-digit mobile number")
-            question = "Name of the saved address to deliver to, as in the shop's app (e.g. Home)?"
-            label = self._ask(chat_id, uid, question, markup=NO_KEYBOARD)
-            match = self._ask(chat_id, uid, "Something always in that address, like the flat number? I check it.")
-            if not label or not match:
-                raise SetupStopped("I need both")
+                raise SetupStopped("That doesn't look like a 10-digit mobile number")
         except SetupStopped as e:
+            return self._say(chat_id, f"{e}. {RETRY}", markup=NO_KEYBOARD)
+        finally:
             self.replies.pop(uid, None)
-            return self._say(chat_id, f"{e}. Nothing changed; /setup starts again.", markup=NO_KEYBOARD)
-        self.replies.pop(uid, None)
-        if not self.jobs.empty():
-            self._say(chat_id, "I'm busy with another order; I'll log in right after.")
-        self.jobs.put((self._login, (chat_id, uid, name, phone, label, match)))
+        busy = "" if self.jobs.empty() else " right after the order in progress"
+        self._say(chat_id, f"Thanks! Logging in as ••••••{phone[-4:]}{busy}…", markup=NO_KEYBOARD)
+        self.jobs.put((self._login, (chat_id, uid, name, phone)))
 
-    def _login(self, chat_id: int, uid: int, name: str, phone: str, label: str, match: str) -> None:
+    def _login(self, chat_id: int, uid: int, name: str, phone: str) -> None:
         session = self.cfg.data_dir / f".login-{uid}.json"
         self.replies[uid] = queue.Queue()
         try:
             with orders.login_browser(self.cfg, session) as b:
                 b.request_otp(phone)
-                b.enter_otp(re.sub(r"\D", "", self._ask(chat_id, uid, "The shop has texted you an OTP:", OTP_WAIT)))
-                b.choose_address(label)
-                b.check_session(Rules(label, match, budget=0))
+                otp = self._ask(
+                    chat_id, uid, "📩 The shop has texted you a login code. Send it here:", OTP_WAIT, secret=True
+                )
+                b.enter_otp(re.sub(r"\D", "", otp))
+                self._say(chat_id, "✅ Logged in! Now, where should orders go?")
+                label, match = self._choose_address(chat_id, uid, b)
             hh = self.accounts.connect(uid, name, label, match, session)
             log.info("household connected", household=hh.id, user=uid)
-            self._say(chat_id, f"✅ Connected.\n\n{HELP}")
+            self._say(chat_id, f"🎉 All set!\n\n{HELP}", markup=NO_KEYBOARD)
             self._settings(chat_id, hh)
         except (SetupStopped, ShopError) as e:
             log.info("setup stopped", user=uid, reason=str(e))
-            self._say(chat_id, f"❌ Couldn't connect: {e}. Nothing changed; /setup starts again.")
+            reason = str(e)
+            self._say(chat_id, f"❌ {reason[:1].upper()}{reason[1:]}. {RETRY}", markup=NO_KEYBOARD)
+        except Exception:
+            log.exception("setup failed", user=uid)
+            self._say(chat_id, f"❌ The shop's login page wasn't what I expected. {RETRY}", markup=NO_KEYBOARD)
         finally:
             self.replies.pop(uid, None)
             session.unlink(missing_ok=True)
+
+    def _choose_address(self, chat_id: int, uid: int, b) -> tuple[str, str]:
+        for _ in range(3):
+            if address := b.delivery_address():
+                answer = self._ask(
+                    chat_id, uid, f"Your shop account delivers to:\n\n{address}\n\nOrder there?", markup=CONFIRM
+                )
+                if answer == YES:
+                    return address_parts(address)
+            name = self._ask(
+                chat_id,
+                uid,
+                "Which of your saved addresses? Send its name as the shop's app shows it, e.g. Home",
+                markup=NO_KEYBOARD,
+            )
+            try:
+                b.choose_address(name)
+            except ShopError as e:
+                self._say(chat_id, f"Hmm, {e}.")
+        raise SetupStopped("We couldn't settle on an address")

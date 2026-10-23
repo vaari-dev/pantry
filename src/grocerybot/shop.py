@@ -44,7 +44,9 @@ LOGGED_OUT = "[data-testid=login-btn]"
 ADDRESS = "[data-testid=user-address]"
 PHONE_FIELD = "input[type=tel], input[inputmode=numeric], input[name*=phone i]"
 OTP_FIELD = "input[autocomplete=one-time-code], input[maxlength='1'], input[maxlength='4'], input[maxlength='6']"
-CONTINUE = re.compile(r"(?i)^\s*(continue|get otp|send otp|login|next)\s*$")
+# Playwright runs these in the browser: flags must be re flags, not inline (?i).
+CONTINUE = re.compile(r"^\s*(continue|get otp|send otp|login|next)\s*$", re.I)
+VERIFY = re.compile(r"^\s*(verify|continue|login|submit)", re.I)
 PLUS = "button[aria-label='Increase quantity by one']:not([data-hidden=true])"
 log = structlog.get_logger(__name__)
 
@@ -182,9 +184,7 @@ class Browser:
         self.page.locator(OTP_FIELD).filter(visible=True).first.click()
         self.page.keyboard.type(code, delay=150)
         self.page.wait_for_timeout(1000)
-        button = self.page.get_by_role("button", name=re.compile(r"(?i)^\s*(verify|continue|login|submit)")).filter(
-            visible=True
-        )
+        button = self.page.get_by_role("button", name=VERIFY).filter(visible=True)
         if button.count():
             button.first.click()
         try:
@@ -193,6 +193,11 @@ class Browser:
         except PlaywrightTimeout:
             raise ShopError("the shop did not accept that code") from None
         self.page.wait_for_timeout(3000)
+
+    def delivery_address(self) -> str:
+        """'' when none is chosen."""
+        text = self.page.locator(ADDRESS).first.inner_text().strip()
+        return "" if text.startswith("Select") else text
 
     def choose_address(self, label: str) -> None:
         addr = self.page.locator(ADDRESS).first
