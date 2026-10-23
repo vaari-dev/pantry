@@ -61,7 +61,11 @@ ALERT_REPEAT = timedelta(hours=6)
 ANSWER_WAIT = 600
 OTP_WAIT = 300  # Chrome waits on the login page meanwhile, holding up every order
 HOLD = 180  # an order-ready basket waits this long before it's placed, so a forgotten item can still join
+PICK_HOLD = 60  # more waiting, at a time, while someone is still picking an item for the basket
+PICK_WAIT = 600  # a pick left open this long no longer holds the basket back
+STALE = timedelta(minutes=5)  # a hold overdue by this much after a restart is offered, not placed
 KEPT = "Still in the /basket: tap Order now to try again, or /clear to empty it."
+KEPT_LIMIT = "Still in the /basket: raise today's limit with /limit, then tap Order now; or /clear to empty it."
 SHARE_PHONE = {
     "keyboard": [[{"text": "📱 Share my phone number", "request_contact": True}]],
     "resize_keyboard": True,
@@ -107,6 +111,7 @@ class Picking:
     ready: list[tuple[str, int]]
     asks: dict[int, tuple[str, int, list[Product], list[int]]]  # n -> spoken, qty, options, message ids
     picked: list[tuple[str, int]] = field(default_factory=list)
+    started: float = field(default_factory=time.monotonic)
 
 
 @dataclass
@@ -115,7 +120,6 @@ class Hold:
     Also kept in the ledger, so a restart picks the wait up again."""
 
     chat_id: int
-    message_id: int | None
     timer: threading.Timer | None = None
 
 
@@ -166,9 +170,18 @@ class Bot:
                     f"⚠️ An order (₹{o['total']:g}, {o['at']}) was interrupted while being placed. "
                     "Check the shop's app; it was NOT retried.",
                 )
-            if held := hh.ledger().hold():
-                chat_id, until = held
-                self._arm(chat_id, hh, None, max(0.0, (until - datetime.now()).total_seconds()))
+            if not (held := hh.ledger().hold()):
+                continue
+            chat_id, until = held
+            if datetime.now() - until < STALE:
+                self._arm(chat_id, hh, max(0.0, (until - datetime.now()).total_seconds()))
+            else:  # down too long to order unasked
+                hh.ledger().set_hold(None)
+                self._offer_now(
+                    self._chat_for(hh, chat_id),
+                    hh,
+                    f"⏸ I was offline, so the order due at {until:%H:%M} wasn't placed. {KEPT}",
+                )
 
     def _worker(self) -> None:
         """Runs jobs (function, (chat_id, ...)); failures are told to chat_id."""
@@ -311,12 +324,22 @@ class Bot:
             self._pick(hh, data)
 
     def _now(self, cb: dict, uid: int, household: str) -> None:
-        """Order now: places whatever is in the basket, held or not (orders.order still checks it all)."""
+        """Order now: places whatever is in the basket (orders.order still checks it all), from the one
+        message whose button is live, so an old button can't cut short a newer wait."""
         hh = self.accounts.household_of(uid)
-        if not hh or hh.id != household:
+        if not hh:
+            return self.tg.answer(cb["id"], "You no longer order with that shop account.")
+        if hh.id != household:
             return self.tg.answer(cb["id"], "That order is for another shop account.")
-        self.tg.answer(cb["id"], "Ordering …")
-        chat_id = cb["message"]["chat"]["id"] if cb.get("message") else uid
+        msg = cb.get("message") or {}
+        chat_id, message_id = msg.get("chat", {}).get("id"), msg.get("message_id")
+        if not message_id or hh.ledger().offer() != (chat_id, message_id):
+            self.tg.answer(cb["id"], "That button is out of date; /basket shows what's waiting.")
+            if message_id:
+                self.tg.remove_buttons(chat_id, message_id)
+            return
+        busy = not self.jobs.empty() or BUSY.exists()
+        self.tg.answer(cb["id"], "Ordering right after what's in progress …" if busy else "Ordering …")
         self.jobs.put((self._order, (chat_id, hh, [], False)))
 
     def _voice(self, chat_id: int, hh: Household, file_id: str) -> None:
@@ -396,6 +419,7 @@ class Bot:
 
     def _clear(self, chat_id: int, hh: Household) -> None:
         self._unhold(hh)
+        self._withdraw(hh)
         hh.ledger().set_basket([])
         self._say(chat_id, "Basket emptied.")
 
@@ -409,17 +433,42 @@ class Bot:
         hh.ledger().set_hold(None)
         if current.timer:
             current.timer.cancel()
-        if current.message_id:
-            self.tg.remove_buttons(current.chat_id, current.message_id)
         return True
+
+    def _offer_now(self, chat_id: int, hh: Household, text: str) -> None:
+        """Sends text with the household's one live Order now button."""
+        self._withdraw(hh)
+        if message_id := self._say(chat_id, text, _order_now(hh)):
+            hh.ledger().set_offer(chat_id, message_id)
+
+    def _withdraw(self, hh: Household) -> None:
+        if offer := hh.ledger().offer():
+            hh.ledger().set_offer(None)
+            self.tg.remove_buttons(*offer)
+
+    def _chat_for(self, hh: Household, chat_id: int) -> int:
+        """Where to report on a household's order: private chats (positive ids) of people who left go to the owner."""
+        return hh.owner if chat_id > 0 and chat_id not in hh.members else chat_id
+
+    def _picking(self, hh: Household) -> bool:
+        with self.lock:
+            return any(p.household == hh.id and time.monotonic() - p.started < PICK_WAIT for p in self.picking.values())
 
     def _release(self, chat_id: int, hh: Household, hold: Hold) -> None:
         """Places a held basket, once: the timer and Order now can both get here."""
-        if self._unhold(hh, hold):
-            self._order(chat_id, hh, [], hold=False)
+        if not self._unhold(hh, hold):
+            return
+        if self._picking(hh):  # an item still being picked joins the basket first
+            return self._hold(chat_id, hh, PICK_HOLD)
+        if (to := self._chat_for(hh, chat_id)) != chat_id:  # the ✅ would go to someone no longer here
+            return self._offer_now(
+                to, hh, f"⏸ The waiting order wasn't placed, since {self.accounts.name(chat_id)} left. {KEPT}"
+            )
+        self._order(chat_id, hh, [], hold=False)
 
     def _order(self, chat_id: int, hh: Household, items: list[tuple[str, int]], hold: bool = True) -> None:
         self._unhold(hh)  # new items join the held basket and start its wait again
+        self._withdraw(hh)
         if items:
             self._say(chat_id, f"Adding {_items(items)} …")
         elif not hh.ledger().basket():
@@ -428,11 +477,16 @@ class Bot:
             self._say(chat_id, "Placing the order …")
         try:
             out = orders.order(self.cfg, hh, items, hold=hold)
-        except ShopError as e:
-            if not hh.ledger().basket():
+        except Exception as e:
+            if not hh.ledger().basket():  # emptied just before Place Order: the worker's message is right
                 raise
-            log.warning("order stopped by the shop", household=hh.id, reason=str(e))
-            return self._say(chat_id, f"❌ Couldn't order: {e}.\n{KEPT}", _order_now(hh))
+            if isinstance(e, ShopError):
+                log.warning("order stopped by the shop", household=hh.id, reason=str(e))
+                reason = f"Couldn't order: {e}."
+            else:
+                log.exception("order failed", household=hh.id)
+                reason = "Something went wrong, so nothing was ordered."
+            return self._offer_now(chat_id, hh, f"❌ {reason}\n{KEPT}")
         log.info(
             "order",
             household=hh.id,
@@ -453,20 +507,23 @@ class Bot:
             text = f"🧺 In the basket, ₹{out.item_total:g} so far. I'll order at ₹{hh.min_order:g}; send more to add."
         elif out.held:
             text = f"⏳ Cart ready ({total}). I'll order it in {HOLD // 60} minutes; send more to add, or:"
-            message_id = self._say(chat_id, f"{text}\n{details}".strip(), _order_now(hh))
-            hh.ledger().set_hold(chat_id, datetime.now() + timedelta(seconds=HOLD))
-            return self._arm(chat_id, hh, message_id, HOLD)
+            self._offer_now(chat_id, hh, f"{text}\n{details}".strip())
+            return self._hold(chat_id, hh, HOLD)
         elif not out.problems:
             text = f"🛒 Cart ready ({total}); placing orders is off (/settings)."
         else:
             text = "❌ Not ordered:\n" + "\n".join(f"- {p}" for p in out.problems)
             if hh.ledger().basket():
-                details = f"{details}\n{KEPT}"
-                return self._say(chat_id, f"{text}\n{details}".strip(), _order_now(hh))
+                details = f"{details}\n{KEPT_LIMIT if out.over_limit else KEPT}"
+                return self._offer_now(chat_id, hh, f"{text}\n{details}".strip())
         self._say(chat_id, f"{text}\n{details}".strip())
 
-    def _arm(self, chat_id: int, hh: Household, message_id: int | None, seconds: float) -> None:
-        hold = Hold(chat_id, message_id)
+    def _hold(self, chat_id: int, hh: Household, seconds: float) -> None:
+        hh.ledger().set_hold(chat_id, datetime.now() + timedelta(seconds=seconds))
+        self._arm(chat_id, hh, seconds)
+
+    def _arm(self, chat_id: int, hh: Household, seconds: float) -> None:
+        hold = Hold(chat_id)
         hold.timer = threading.Timer(seconds, self.jobs.put, [(self._release, (chat_id, hh, hold))])
         hold.timer.daemon = True
         with self.lock:
@@ -555,22 +612,12 @@ class Bot:
         """On the worker, so an account is never deleted mid-order."""
         if member not in hh.members:
             return
-        # Stopped before leaving, while the ledger is still there; a hold started in the member's own chat
-        # would send its ✅ to someone no longer here.
-        hold = self.holds.get(hh.id)
-        stopped = bool(hold and (len(hh.members) == 1 or hold.chat_id == member) and self._unhold(hh))
         self.accounts.leave(member, hh.id)
         log.info("household left", household=hh.id, user=member)
         self._not_set_up(member, "You no longer order with that account. ")
         if chat_id != member:
             self._say(chat_id, f"Removed {self.accounts.name(member)}.")
-        if (now := self.accounts.get(hh.id)) and stopped:
-            self._say(
-                now.owner,
-                f"⏸ The order waiting to be placed stopped, since {self.accounts.name(member)} left. {KEPT}",
-                _order_now(now),
-            )
-        if now and now.owner != hh.owner:
+        if (now := self.accounts.get(hh.id)) and now.owner != hh.owner:
             self._say(now.owner, "You now own this shop account. /setup to log it in with yours.")
 
     def _settings(self, chat_id: int, hh: Household) -> None:

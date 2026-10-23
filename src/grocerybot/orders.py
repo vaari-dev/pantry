@@ -23,6 +23,7 @@ class Outcome:
     waiting: bool = False
     held: bool = False  # reached the smallest order; kept in the basket until it's placed
     unconfirmed: bool = False  # tapped Place Order, but no such order on the Orders page
+    over_limit: bool = False  # today's limit can't cover it; trying again today won't help
 
     @property
     def result(self) -> str:
@@ -62,15 +63,20 @@ def check(cfg: Config, hh: Household) -> None:
 def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool = False) -> Outcome:
     """hold: fill and check the cart, but keep an order-ready basket for later instead of placing it.
 
+    The new items join the basket before the shop is touched, so a failure loses nothing.
+
     The attempt is written to the ledger before Place Order is tapped, so a crash can never lead
     to a silent second order: an unfinished attempt is reported, not retried."""
     catalog, ledger = hh.catalog(), hh.ledger()
     out, limits = Outcome(), rules(hh)
+    items = combine(ledger.basket(), items, catalog)
+    if hh.place_orders:  # with ordering off the cart is filled for someone to pay; nothing is kept for later
+        ledger.set_basket(items)
     if limits.budget <= 0:
+        out.over_limit = True
         out.problems.append(f"today's limit of ₹{hh.daily_cap:g} is used up")
         return out
 
-    items = combine(ledger.basket(), items, catalog)
     with browser(cfg, hh) as b:
         b.check_session(limits)
         b.empty_cart()
@@ -92,6 +98,7 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
 
         cart = b.review_cart(expected, limits)
         out.total, out.problems, out.item_total = cart.total, cart.problems, cart.item_total
+        out.over_limit = cart.total is not None and cart.total > limits.budget
         if cart.problems:
             b.screenshot("cart")
             return out

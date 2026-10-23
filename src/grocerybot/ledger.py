@@ -1,7 +1,8 @@
 """ledger.json: {"orders": [{"id", "day", "at", "status", "total", "items"}], "basket": [[key, qty]],
-"hold": {"chat", "until"} or null}
+"hold": {"chat", "until"} or null, "offer": {"chat", "message"} or null}
 
 hold: the basket reached the smallest order and is placed at `until` unless more is added.
+offer: the one message whose Order now button still works.
 
 status: placing -> placed | failed | unknown. "placing" left over after a crash may or may not
 have gone through: it is reported, never retried.
@@ -21,7 +22,7 @@ class Ledger:
         self.path = path
 
     def _read(self) -> dict:
-        return {"orders": [], "basket": [], "hold": None, **store.read(self.path, {})}
+        return {"orders": [], "basket": [], "hold": None, "offer": None, **store.read(self.path, {})}
 
     def _orders(self) -> list[dict]:
         return self._read()["orders"]
@@ -44,6 +45,16 @@ class Ledger:
     def set_hold(self, chat_id: int | None, until: datetime | None = None) -> None:
         hold = {"chat": chat_id, "until": until.isoformat(timespec="seconds")} if until else None
         store.write(self.path, {**self._read(), "hold": hold})
+
+    def offer(self) -> tuple[int, int] | None:
+        """(chat id, message id) of the live Order now button."""
+        if o := self._read()["offer"]:
+            return o["chat"], o["message"]
+        return None
+
+    def set_offer(self, chat_id: int | None, message_id: int | None = None) -> None:
+        offer = {"chat": chat_id, "message": message_id} if message_id else None
+        store.write(self.path, {**self._read(), "offer": offer})
 
     def spent_today(self) -> float:
         today = date.today().isoformat()
