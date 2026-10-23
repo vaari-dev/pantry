@@ -56,7 +56,7 @@ jobs:
       contents: read
       packages: read
     env:
-      DIR: ${{ vars.DEPLOY_DIR || 'grocery-bot' }}
+      DIR: ${{ vars.DEPLOY_DIR || '/opt/grocery-bot' }}
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/box
@@ -86,13 +86,13 @@ jobs:
           done
           (umask 077; for name in "${names[@]}"; do printf '%s=%s\n' "$name" "${!name}"; done > bot.env)
 
-      - name: Prepare the box (Docker, first time only)
+      - name: Prepare the box (Docker and the deploy directory, first time only)
         run: |
           ssh box 'command -v docker >/dev/null || { curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker "$USER"; }'
+          ssh box "[ -w '$DIR' ] || sudo install -d -m 700 -o \"\$USER\" '$DIR'"
 
       - name: Ship config
         run: |
-          ssh box "mkdir -p '$DIR'"
           scp -q compose.yaml scripts/box.sh box:"$DIR/"
           scp -q bot.env box:"$DIR/.env"
           ssh box "chmod 600 '$DIR/.env' && chmod 700 '$DIR/box.sh'"
@@ -107,6 +107,7 @@ jobs:
           printf '%s' "$GHCR_TOKEN" | ssh box "docker login ghcr.io -u '$ACTOR' --password-stdin" >/dev/null
           trap 'ssh box "docker logout ghcr.io" >/dev/null' EXIT
           ssh box "'$DIR/box.sh' deploy '$IMAGE:${{ github.sha }}'"
+          ssh box 'rm -rf ~/grocery-bot'  # earlier deploy directory (one-off; remove this line later)
 
       - name: Shop login (first deploy only; later ones keep the bot's refreshed session)
         env:

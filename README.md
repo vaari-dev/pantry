@@ -57,7 +57,7 @@ Create a reusable auth key for the bot (Settings → Keys).
 | `SSH_KNOWN_HOSTS` | `ssh-keyscan <host>` output |
 | `TS_EXIT_NODE` | Tailscale IP of the home exit node |
 | `PLACE_ORDERS` | `true` to place orders (default `false`: cart only) |
-| `DAILY_CAP_INR`, `MIN_ORDER_INR`, `DEPLOY_DIR` | optional (1000, 100, `grocery-bot`) |
+| `DAILY_CAP_INR`, `MIN_ORDER_INR`, `DEPLOY_DIR` | optional (1000, 100, `/opt/grocery-bot`) |
 
 | Secrets | |
 |---|---|

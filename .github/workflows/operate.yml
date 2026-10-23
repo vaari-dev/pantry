@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     environment: oracle-cloud
     env:
-      DIR: ${{ vars.DEPLOY_DIR || 'grocery-bot' }}
+      DIR: ${{ vars.DEPLOY_DIR || '/opt/grocery-bot' }}
       ACTION: ${{ inputs.action }}
     steps:
       - if: inputs.action == 'remove' && inputs.confirm != 'remove'

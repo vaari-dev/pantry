@@ -49,7 +49,7 @@ case "${1:?command}" in
     ;;
   remove)
     compose down --volumes --rmi all --remove-orphans
-    rm -rf "$PWD"
+    sudo rm -rf -- "$PWD"  # the directory sits in /opt
     ;;
   *)
     echo "unknown command: $1" >&2
