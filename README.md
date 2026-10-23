@@ -19,7 +19,8 @@ phone number, the code the shop texts, and one of the account's saved addresses;
 the number and code from the chat. Family joins through an owner's `/invite` link.
 
 Every cart is checked before it is placed: only the expected items, the account's address, paid
-fully from the wallet, within the daily limit. Lists under the smallest order wait in the basket.
+fully from the wallet, within the daily limit. Lists under the smallest order wait in the basket;
+a cart that reaches it is placed 3 minutes later (more items can still join), or at once with *Order now*.
 Each attempt is recorded before *Place Order*, so an interrupted order is reported, never retried.
 
 | | |

@@ -21,6 +21,7 @@ class Outcome:
     problems: list[str] = field(default_factory=list)
     item_total: float = 0
     waiting: bool = False
+    held: bool = False  # reached the smallest order; kept in the basket until it's placed
     unconfirmed: bool = False  # tapped Place Order, but no such order on the Orders page
 
     @property
@@ -31,6 +32,8 @@ class Outcome:
             return "unconfirmed"
         if self.waiting:
             return "waiting"
+        if self.held:
+            return "held"
         return "blocked" if self.problems else "cart ready"
 
 
@@ -56,8 +59,10 @@ def check(cfg: Config, hh: Household) -> None:
         b.check_session(rules(hh))
 
 
-def order(cfg: Config, hh: Household, items: list[tuple[str, int]]) -> Outcome:
-    """The attempt is written to the ledger before Place Order is tapped, so a crash can never lead
+def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool = False) -> Outcome:
+    """hold: fill and check the cart, but keep an order-ready basket for later instead of placing it.
+
+    The attempt is written to the ledger before Place Order is tapped, so a crash can never lead
     to a silent second order: an unfinished attempt is reported, not retried."""
     catalog, ledger = hh.catalog(), hh.ledger()
     out, limits = Outcome(), rules(hh)
@@ -95,6 +100,10 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]]) -> Outcome:
             ledger.set_basket(placed_items)
             return out
         if not hh.place_orders:
+            return out
+        if hold:
+            out.held = True
+            ledger.set_basket(placed_items)
             return out
 
         attempt, started = ledger.begin(placed_items, cart.total), datetime.now()

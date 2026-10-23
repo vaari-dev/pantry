@@ -98,3 +98,62 @@ def test_let_in_without_setup_offers_the_connect_button(bot):
     assert said(bot, "🎉 You're in! Connect") == botmod.CONNECT_BUTTON
     bot._on_message(message(botmod.CONNECT))
     assert said(bot, "Let's connect") == botmod.SHARE_PHONE
+
+
+@pytest.fixture
+def shop(bot, monkeypatch):
+    """A connected household whose orders reach the smallest order; records each order call's hold flag."""
+    (session := bot.cfg.data_dir / "state.json").write_text("{}")
+    hh = bot.accounts.connect(NEW, "Asha", "Home", "T6/503", session)
+    calls = []
+
+    def order(cfg, hh, items, hold=False):
+        calls.append((items, hold))
+        basket = hh.ledger().basket() + items
+        if hold:
+            hh.ledger().set_basket(basket)
+            return botmod.orders.Outcome(total=150, item_total=150, held=True, lines=["Bread ×1"])
+        hh.ledger().set_basket([])
+        return botmod.orders.Outcome(placed=True, total=150, item_total=150, lines=["Bread ×1"])
+
+    monkeypatch.setattr(botmod.orders, "order", order)
+    bot.accounts.allow(NEW)
+    return hh, calls
+
+
+def test_order_reaching_the_minimum_waits_then_places(bot, shop, monkeypatch):
+    monkeypatch.setattr(botmod, "HOLD", 0.2)
+    hh, calls = shop
+    bot.jobs.put((bot._order, (NEW, hh, [("bread", 1)])))
+    assert said(bot, "⏳ Cart ready") == botmod.ORDER_NOW
+    said(bot, "✅ Ordered")
+    assert calls == [([("bread", 1)], True), ([], False)]
+    assert not bot.holds
+
+
+def test_order_now_places_at_once_and_only_once(bot, shop):
+    hh, calls = shop
+    bot.jobs.put((bot._order, (NEW, hh, [("bread", 1)])))
+    said(bot, "⏳ Cart ready")
+    bot._on_button({"id": "q", "from": {"id": NEW}, "data": "now"})
+    bot._on_button({"id": "q", "from": {"id": NEW}, "data": "now"})
+    said(bot, "✅ Ordered")
+    time.sleep(0.1)
+    assert calls == [([("bread", 1)], True), ([], False)]
+    assert not bot.holds
+
+
+def test_more_items_restart_the_wait(bot, shop):
+    hh, calls = shop
+    bot.jobs.put((bot._order, (NEW, hh, [("bread", 1)])))
+    said(bot, "⏳ Cart ready")
+    first = bot.holds[hh.id]
+    bot.jobs.put((bot._order, (NEW, hh, [("milk", 2)])))
+    deadline = time.monotonic() + 5
+    while bot.holds.get(hh.id) in (None, first) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not first.timer.is_alive()
+    assert calls == [([("bread", 1)], True), ([("milk", 2)], True)]
+    bot.jobs.put((bot._clear, (NEW, hh)))
+    said(bot, "Basket emptied")
+    assert not bot.holds
