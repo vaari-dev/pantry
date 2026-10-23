@@ -15,9 +15,9 @@ The shop refuses headless browsers and data-centre IPs, hence real Chrome leavin
 
 ## Use
 
-New people send `/start`; the admin taps *Let them in*. Then `/setup` (private chat): phone
-number, saved address name, flat number, and the OTP the shop texts. The bot deletes those
-messages. Family joins through an owner's `/invite` link.
+New people message the bot; the admin taps *Let them in*. `/setup` (private chat) asks for the
+phone number, the code the shop texts, and one of the account's saved addresses; the bot deletes
+the number and code from the chat. Family joins through an owner's `/invite` link.
 
 Every cart is checked before it is placed: only the expected items, the account's address, paid
 fully from the wallet or fully on delivery, within the daily limit. Lists under the
