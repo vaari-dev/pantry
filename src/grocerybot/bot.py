@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import structlog
+from structlog.contextvars import bind_contextvars, bound_contextvars, clear_contextvars, get_contextvars
 
 from . import orders
 from .accounts import Accounts, Household, address_parts
@@ -22,9 +23,9 @@ from .catalog import Product, plan
 from .config import Config
 from .shop import ShopError
 from .speech import Transcriber
-from .telegram import Telegram, TelegramError
+from .telegram import Telegram, TelegramError, strikethrough
 
-log = structlog.get_logger(__name__)
+log = structlog.get_logger(__name__)  # user_id, chat_id, household_id and job ride along as contextvars
 
 COMMANDS = {
     "basket": "What is waiting to be ordered",
@@ -40,7 +41,7 @@ COMMANDS = {
 SHORT = "Groceries from a voice note."
 DESCRIPTION = (
     f"🛒 {SHORT}\n\n"
-    'Say "bread aur do anda" and I\'ll order it on your shop account, paid from its wallet. '
+    'Say "bread aur do anda" and I\'ll order it on your shop account, paid from its wallet or cash on delivery. '
     "No app to open, no browsing, no upsells."
 )
 HELP = (
@@ -140,7 +141,7 @@ class Bot:
 
     def run(self) -> None:
         self.username = self.tg.setup(COMMANDS, DESCRIPTION, SHORT)
-        log.info("bot started", bot=self.username, households=len(self.accounts.all()))
+        log.info("bot started", bot_username=self.username, households=len(self.accounts.all()))
         self._resume()
         threading.Thread(target=self._worker, daemon=True).start()
         threading.Thread(target=self._daily, daemon=True).start()
@@ -150,6 +151,8 @@ class Bot:
             try:
                 for update in self.tg.updates(offset):
                     offset = update["update_id"] + 1
+                    clear_contextvars()
+                    bind_contextvars(update_id=update["update_id"])
                     try:
                         if "message" in update:
                             self._on_message(update["message"])
@@ -165,6 +168,7 @@ class Bot:
         """What a restart left behind: orders cut off mid-placing, and held baskets."""
         for hh in self.accounts.all():
             for o in hh.ledger().interrupted():
+                log.warning("interrupted order found", household_id=hh.id, total=o["total"], at=o["at"])
                 self.alert(
                     hh.owner,
                     f"⚠️ An order (₹{o['total']:g}, {o['at']}) was interrupted while being placed. "
@@ -183,24 +187,34 @@ class Bot:
                     f"⏸ I was offline, so the order due at {until:%H:%M} wasn't placed. {KEPT}",
                 )
 
+    def _queue(self, job, *args) -> None:
+        """job(chat_id, ...) on the worker, logging with the context of whoever asked for it."""
+        self.jobs.put((job, args, get_contextvars()))
+
     def _worker(self) -> None:
-        """Runs jobs (function, (chat_id, ...)); failures are told to chat_id."""
+        """Runs jobs (function, (chat_id, ...), log context); failures are told to chat_id."""
         while True:
-            job, args = self.jobs.get()
+            job, args, context = self.jobs.get()
+            name = job.__name__.lstrip("_")
+            clear_contextvars()
+            bind_contextvars(**{**context, "job": name})
             # settings or membership may have changed while queued
             args = tuple(self.accounts.get(a.id) if isinstance(a, Household) else a for a in args)
-            name, started = job.__name__.lstrip("_"), time.monotonic()
+            if hh := next((a for a in args if isinstance(a, Household)), None):
+                bind_contextvars(household_id=hh.id)
+            started = time.monotonic()
             BUSY.touch()
             try:
                 if None in args:
+                    log.info("job dropped", reason="household gone")
                     continue
                 job(*args)
-                log.info("job done", job=name, seconds=round(time.monotonic() - started, 1))
+                log.info("job done", seconds=round(time.monotonic() - started, 1))
             except ShopError as e:
-                log.warning("job stopped by the shop", job=name, reason=str(e))
+                log.warning("job stopped by the shop", error=e.logged)
                 self._say(args[0], f"❌ Couldn't order: {e}.")
             except Exception:
-                log.exception("job failed", job=name)
+                log.exception("job failed")
                 self._say(args[0], "Something went wrong. Nothing was ordered unless you got a ✅.")
             finally:
                 if self.jobs.empty():
@@ -211,7 +225,7 @@ class Bot:
             now = datetime.now()
             run_at = now.replace(hour=self.cfg.health_hour, minute=0, second=0, microsecond=0)
             time.sleep(((run_at if run_at > now else run_at + timedelta(days=1)) - now).total_seconds())
-            self.jobs.put((self._health, (self.cfg.admin_id,)))
+            self._queue(self._health, self.cfg.admin_id)
             cutoff = (datetime.now() - DEBUG_KEEP).timestamp()
             for f in self.cfg.data_dir.glob("**/debug/*-*.*"):
                 if f.stat().st_mtime < cutoff:
@@ -221,21 +235,22 @@ class Bot:
         try:
             log.info("home exit ok", exit_ip=orders.exit_ip(self.cfg))
         except ShopError as e:
-            log.error("health check failed", reason=str(e))
+            log.error("home exit failed", error=e.logged)
             return self.alert(admin, f"⚠️ Daily check failed: {e}. Orders will fail until this is fixed.")
         for hh in self.accounts.all():
-            try:
-                orders.check(self.cfg, hh)
-                log.info("health check ok", household=hh.id)
-            except ShopError as e:
-                log.warning("health check failed", household=hh.id, reason=str(e))
-                self.alert(hh.owner, f"⚠️ Daily check of your shop account failed: {e}.")
+            with bound_contextvars(household_id=hh.id):
+                try:
+                    orders.check(self.cfg, hh)
+                    log.info("health check ok")
+                except ShopError as e:
+                    log.warning("health check failed", error=e.logged)
+                    self.alert(hh.owner, f"⚠️ Daily check of your shop account failed: {e}.")
 
-    def _say(self, chat_id: int, text: str, buttons=None, markup=None) -> int | None:
+    def _say(self, chat_id: int, text: str, buttons=None, markup=None, entities=None) -> int | None:
         try:
-            return self.tg.send(chat_id, text, buttons, markup)
+            return self.tg.send(chat_id, text, buttons, markup, entities)
         except TelegramError as e:
-            log.warning("telegram send failed", error=str(e))
+            log.warning("telegram send failed", to_chat_id=chat_id, error=str(e))
             return None
 
     def alert(self, uid: int, text: str, buttons=None) -> None:
@@ -249,10 +264,21 @@ class Bot:
         chat_id, user = msg["chat"]["id"], msg.get("from", {})
         uid, text = user.get("id"), (msg.get("text") or "").strip()
         private = msg["chat"].get("type") == "private"
+        bind_contextvars(user_id=uid, chat_id=chat_id, message_id=msg.get("message_id"))
         if uid in self.replies and private:
+            log.info("setup answer received")
             return self.replies[uid].put(msg)
         command, _, arg = ("/setup", "", "") if text == CONNECT else text.partition(" ")
         command = command.split("@")[0] if command.startswith("/") else ""
+        if msg.get("voice") or msg.get("audio"):
+            kind = "voice"
+        elif not command:
+            kind = "text" if text else "other"
+        elif command[1:] in COMMANDS or command in ("/start", "/id", *SETTINGS):
+            kind = command
+        else:
+            kind = "unknown command"  # never log what they typed
+        log.info("message received", kind=kind, private=private)
         if command == "/id":
             return self._say(chat_id, f"Your Telegram id is {uid}.")
         if command == "/start" and arg:
@@ -271,6 +297,8 @@ class Bot:
                 self._request_access(user)
             return
         hh = self.accounts.household_of(uid)
+        if hh:
+            bind_contextvars(household_id=hh.id)
         if command in ("/start", "/help"):
             if hh:
                 self._say(chat_id, HELP)
@@ -299,20 +327,24 @@ class Bot:
             basket = hh.ledger().basket()
             self._say(chat_id, f"Waiting: {_items(basket)}" if basket else "The basket is empty.")
         elif command == "/clear":
-            self.jobs.put((self._clear, (chat_id, hh)))
+            self._queue(self._clear, chat_id, hh)
         elif command == "/usual":
             due = hh.ledger().due()
             self._say(chat_id, f"Due now: {_items(due)}\nSend that back to order it." if due else "Nothing is due.")
         elif voice := msg.get("voice") or msg.get("audio"):
-            self.jobs.put((self._voice, (chat_id, hh, voice["file_id"])))
+            self._queue(self._voice, chat_id, hh, voice["file_id"])
         elif text and not command:
             if not self.jobs.empty():
                 self._say(chat_id, "Another order is in progress; yours is next.")
-            self.jobs.put((self._handle_list, (chat_id, hh, text)))
+            self._queue(self._handle_list, chat_id, hh, text)
 
     def _on_button(self, cb: dict) -> None:
         uid, data = cb.get("from", {}).get("id"), cb["data"]
         kind, _, arg = data.partition(":")
+        bind_contextvars(user_id=uid, chat_id=(cb.get("message") or {}).get("chat", {}).get("id"))
+        if hh := self.accounts.household_of(uid):
+            bind_contextvars(household_id=hh.id)
+        log.info("button pressed", kind=kind if kind in ("allow", "remove") else "pick")
         if kind == "now":
             return self._now(cb, uid, arg)
         self.tg.answer(cb["id"])
@@ -320,7 +352,7 @@ class Bot:
             done = self._allow(uid, int(arg)) if kind == "allow" else self._remove(uid, int(arg))
             if done and (msg := cb.get("message")):
                 self.tg.remove_buttons(msg["chat"]["id"], msg["message_id"])
-        elif hh := self.accounts.household_of(uid):
+        elif hh:
             self._pick(hh, data)
 
     def _now(self, cb: dict, uid: int, household: str) -> None:
@@ -340,21 +372,23 @@ class Bot:
             return
         busy = not self.jobs.empty() or BUSY.exists()
         self.tg.answer(cb["id"], "Ordering right after what's in progress …" if busy else "Ordering …")
-        self.jobs.put((self._order, (chat_id, hh, [], False)))
+        self._queue(self._order, chat_id, hh, [], False)
 
     def _voice(self, chat_id: int, hh: Household, file_id: str) -> None:
         audio = self.tg.download(file_id)
+        started = time.monotonic()
         try:
             text = self.transcribe(audio, hh.catalog().vocabulary())
         finally:
             audio.unlink(missing_ok=True)
-        log.info("voice transcribed", words=len(text.split()))
+        log.info("voice transcribed", seconds=round(time.monotonic() - started, 1), words=len(text.split()))
         self._say(chat_id, f'🎙️ Heard: "{text}"')
         if text:
             self._handle_list(chat_id, hh, text)
 
     def _handle_list(self, chat_id: int, hh: Household, text: str) -> None:
         p = plan(text, hh.catalog())
+        log.info("list planned", ready=len(p.ready), to_pick=len(p.to_pick), notes=len(p.notes))
         for note in p.notes:
             self._say(chat_id, note)
         found = []
@@ -363,6 +397,7 @@ class Bot:
                 found = [(name, qty, b.search(name)) for name, qty in p.to_pick]
         for name, _, options in found:
             if not options:
+                log.info("item not found")
                 self._say(chat_id, f'Couldn\'t find "{name}" in the shop; leaving it out.')
         asks = {n: (name, qty, options, []) for n, (name, qty, options) in enumerate(found) if options}
         if not asks:
@@ -380,13 +415,17 @@ class Bot:
 
     def _offer(self, chat_id: int, product: Product, data: str) -> int | None:
         caption = f"{product.name}\nSize: {product.size}" + (f"  ·  {product.price}" if product.price else "")
+        entities = None
+        if product.price and product.mrp:
+            caption += f" {product.mrp}"
+            entities = [strikethrough(caption, product.mrp)]
         buttons = [("✅ Pick", data)]
         if product.image:
             try:
-                return self.tg.send_photo(chat_id, product.image, caption, buttons)
+                return self.tg.send_photo(chat_id, product.image, caption, buttons, entities)
             except TelegramError as e:
-                log.info("photo not shown", error=str(e))
-        return self._say(chat_id, caption, buttons)
+                log.info("photo not shown", to_chat_id=chat_id, error=str(e))
+        return self._say(chat_id, caption, buttons, entities=entities)
 
     def _pick(self, hh: Household, data: str) -> None:
         try:
@@ -396,6 +435,7 @@ class Bot:
         with self.lock:
             picking = self.picking.get(pid)
             if not picking or picking.household != hh.id or int(n) not in picking.asks:
+                log.info("pick ignored", reason="stale or already answered")
                 return
             name, qty, options, ids = picking.asks.pop(int(n))
             if choice == "x":
@@ -405,6 +445,7 @@ class Bot:
                 picking.picked.append((hh.catalog().learn(name, product), qty))
                 result = f"✔ {product.label()}"
             done = not picking.asks
+            log.info("item picked" if choice != "x" else "item skipped", remaining=len(picking.asks))
             if done:
                 self.picking.pop(pid)
         for mid in filter(None, ids):
@@ -413,7 +454,7 @@ class Bot:
             self.tg.edit_text(picking.chat_id, ids[0], f'"{name}": {result}')
         if done:
             if items := picking.ready + picking.picked:
-                self.jobs.put((self._order, (picking.chat_id, hh, items)))
+                self._queue(self._order, picking.chat_id, hh, items)
             else:
                 self._say(picking.chat_id, "Nothing left to order.")
 
@@ -481,28 +522,29 @@ class Bot:
             if not hh.ledger().basket():  # emptied just before Place Order: the worker's message is right
                 raise
             if isinstance(e, ShopError):
-                log.warning("order stopped by the shop", household=hh.id, reason=str(e))
+                log.warning("order stopped by the shop", error=e.logged)
                 reason = f"Couldn't order: {e}."
             else:
-                log.exception("order failed", household=hh.id)
+                log.exception("order failed")
                 reason = "Something went wrong, so nothing was ordered."
             return self._offer_now(chat_id, hh, f"❌ {reason}\n{KEPT}")
         log.info(
-            "order",
-            household=hh.id,
+            "order finished",
             result=out.result,
             items=len(out.lines),
             unavailable=out.unavailable,
             item_total=out.item_total,
-            wallet=out.total,
+            total=out.total,
+            cod=out.cod,
             problems=out.problems,
         )
         details = "\n".join([*out.lines, *(f"Couldn't add {k} (out of stock or changed)" for k in out.unavailable)])
         total = f"₹{out.total:g}" if out.total is not None else ""
+        problems = "".join(f"\n- {p}" for p in out.problems)
         if out.placed:
-            text = f"✅ Ordered, {total} from the wallet:"
+            text = f"✅ Ordered, {total} {'cash on delivery' if out.cod else 'from the wallet'}:"
         elif out.unconfirmed:
-            text = "⚠️ I tapped Place Order but couldn't confirm it. Check the shop's app before resending."
+            text = f"⚠️ I couldn't confirm the order. Check the shop's app before resending.{problems}"
         elif out.waiting:
             text = f"🧺 In the basket, ₹{out.item_total:g} so far. I'll order at ₹{hh.min_order:g}; send more to add."
         elif out.held:
@@ -510,9 +552,10 @@ class Bot:
             self._offer_now(chat_id, hh, f"{text}\n{details}".strip())
             return self._hold(chat_id, hh, HOLD)
         elif not out.problems:
-            text = f"🛒 Cart ready ({total}); placing orders is off (/settings)."
+            how = ", cash on delivery" if out.cod else ""
+            text = f"🛒 Cart ready ({total}{how}); placing orders is off (/settings)."
         else:
-            text = "❌ Not ordered:\n" + "\n".join(f"- {p}" for p in out.problems)
+            text = f"❌ Not ordered:{problems}"
             if hh.ledger().basket():
                 details = f"{details}\n{KEPT_LIMIT if out.over_limit else KEPT}"
                 return self._offer_now(chat_id, hh, f"{text}\n{details}".strip())
@@ -524,7 +567,7 @@ class Bot:
 
     def _arm(self, chat_id: int, hh: Household, seconds: float) -> None:
         hold = Hold(chat_id)
-        hold.timer = threading.Timer(seconds, self.jobs.put, [(self._release, (chat_id, hh, hold))])
+        hold.timer = threading.Timer(seconds, self._queue, [self._release, chat_id, hh, hold])
         hold.timer.daemon = True
         with self.lock:
             self.holds[hh.id] = hold
@@ -538,7 +581,7 @@ class Bot:
     def _request_access(self, user: dict) -> None:
         uid, name = user.get("id"), user.get("first_name") or "Someone"
         handle = f" (@{user['username']})" if user.get("username") else ""
-        log.info("access requested", user=uid)
+        log.info("access requested")
         self.alert(self.cfg.admin_id, f"{name}{handle} wants to use the bot.", [(f"✅ Let {name} in", f"allow:{uid}")])
 
     def _allow(self, uid: int, new: int) -> bool:
@@ -546,7 +589,7 @@ class Bot:
             return False
         if not self.accounts.allowed(new):
             self.accounts.allow(new)
-            log.info("access granted", user=new)
+            log.info("access granted", granted_user_id=new)
             if (name := self.wants_setup.pop(new, None)) is not None:
                 self._say(new, "🎉 You're in!")
                 self._start_setup(new, name)
@@ -567,10 +610,12 @@ class Bot:
         uid, name = user.get("id"), user.get("first_name", "")
         mine = self.accounts.household_of(uid)
         if mine and mine.owner == uid and len(mine.members) == 1:
+            log.info("invite rejected", reason="owns an account")
             return self._say(chat_id, "You have your own shop account here. /leave it first, then open the link.")
         if not (hh := self.accounts.join(uid, name, code)):
+            log.info("invite rejected", reason="expired or used")
             return self._say(chat_id, "That invite link has expired or was used. Ask for a new one.")
-        log.info("household joined", household=hh.id, user=uid)
+        log.info("household joined", household_id=hh.id)
         self.wants_setup.pop(uid, None)
         owner = self.accounts.name(hh.owner)
         welcome = f"🎉 Welcome! You now order with {owner}'s shop account.\n\n{TRY}\n\n/help shows the rest."
@@ -584,6 +629,7 @@ class Bot:
             "from your account and wallet.",
         )
         link = f"https://t.me/{self.username}?start={self.accounts.invite(hh.id)}"
+        log.info("invite created")
         self._say(chat_id, f"🛒 Order our groceries with a voice note! Tap to join: {link}")
 
     def _members(self, chat_id: int, uid: int, hh: Household) -> None:
@@ -596,7 +642,7 @@ class Bot:
         hh = self.accounts.household_of(uid)
         if not (hh and hh.owner == uid and member != uid):
             return False
-        self.jobs.put((self._drop, (uid, hh, member)))
+        self._queue(self._drop, uid, hh, member)
         return True
 
     def _leave(self, chat_id: int, uid: int, hh: Household, arg: str) -> None:
@@ -606,14 +652,14 @@ class Bot:
                 "You're the only one here, so this deletes the account's login, picks and history. "
                 "Send /leave yes to go ahead.",
             )
-        self.jobs.put((self._drop, (chat_id, hh, uid)))
+        self._queue(self._drop, chat_id, hh, uid)
 
     def _drop(self, chat_id: int, hh: Household, member: int) -> None:
         """On the worker, so an account is never deleted mid-order."""
         if member not in hh.members:
             return
         self.accounts.leave(member, hh.id)
-        log.info("household left", household=hh.id, user=member)
+        log.info("household left", member_id=member, removed=chat_id != member)
         self._not_set_up(member, "You no longer order with that account. ")
         if chat_id != member:
             self._say(chat_id, f"Removed {self.accounts.name(member)}.")
@@ -634,9 +680,10 @@ class Bot:
         try:
             value = parse(arg.lstrip("₹").replace(",", "").lower())
         except (ValueError, KeyError):
+            log.info("setting rejected", setting=key)
             return self._say(chat_id, f"For example: {command} {example}")
         self.accounts.update(hh.id, **{key: value})
-        log.info("setting changed", household=hh.id, setting=key)
+        log.info("setting changed", setting=key)
         self._settings(chat_id, self.accounts.get(hh.id))
 
     def _ask(self, uid: int, question: str, wait: int = ANSWER_WAIT, markup=None, secret=False) -> str:
@@ -647,6 +694,7 @@ class Bot:
         try:
             msg = self.replies[uid].get(timeout=wait)
         except queue.Empty:
+            log.info("setup answer timed out", seconds=wait)
             raise SetupStopped("I didn't hear back, so I stopped") from None
         if secret:
             self.tg.delete(uid, msg["message_id"])
@@ -661,6 +709,8 @@ class Bot:
         )
 
     def _setup(self, uid: int, name: str) -> None:
+        bind_contextvars(user_id=uid, chat_id=uid)  # a fresh thread; maybe started by the admin's tap
+        log.info("setup started")
         try:
             phone = self._ask(
                 uid,
@@ -678,7 +728,7 @@ class Bot:
             self.replies.pop(uid, None)
         busy = "" if self.jobs.empty() else " right after the order in progress"
         self._say(uid, f"Thanks! Asking the shop for a login code for ••••••{phone[-4:]}{busy}…", markup=NO_KEYBOARD)
-        self.jobs.put((self._login, (uid, name, phone)))
+        self._queue(self._login, uid, name, phone)
 
     def _login(self, uid: int, name: str, phone: str) -> None:
         session = self.cfg.data_dir / f".login-{uid}.json"
@@ -686,15 +736,17 @@ class Bot:
         try:
             with orders.login_browser(self.cfg, session) as b:
                 b.request_otp(phone)
+                log.info("login code requested")
                 otp = self._ask(
                     uid, "📩 Step 2 of 3\n\nThe shop just texted you a login code. Send it here:", OTP_WAIT, secret=True
                 )
                 b.enter_otp(re.sub(r"\D", "", otp))
+                log.info("logged in")
                 self._say(uid, "✅ Logged in!\n\n📍 Step 3 of 3: where should orders go?")
                 label, match = self._choose_address(uid, b)
             hh = self.accounts.connect(uid, name, label, match, session)
-            log.info("household connected", household=hh.id, user=uid)
-            paid = "paid from your shop wallet" if hh.place_orders else "carts filled for you to pay (/ordering on)"
+            log.info("household connected", household_id=hh.id)
+            paid = "paid from your wallet or on delivery" if hh.place_orders else "carts filled for you (/ordering on)"
             self._say(
                 uid,
                 f"🎉 You're all set{', ' + name if name else ''}!\n\n{TRY}\n\n"
@@ -703,10 +755,10 @@ class Bot:
                 markup=NO_KEYBOARD,
             )
         except (SetupStopped, ShopError) as e:
-            log.info("setup stopped", user=uid, reason=str(e))
+            log.info("setup stopped", error=getattr(e, "logged", str(e)))
             self._stopped(uid, str(e))
         except Exception:
-            log.exception("setup failed", user=uid)
+            log.exception("setup failed")
             self._stopped(uid, "the shop's login page wasn't what I expected")
         finally:
             self.replies.pop(uid, None)
@@ -725,7 +777,9 @@ class Bot:
         keyboard = {"keyboard": [[{"text": t}] for t in buttons], "resize_keyboard": True}
         answer = self._ask(uid, f"Your saved addresses:\n\n{listed}\n\nWhich one should orders go to?", markup=keyboard)
         if (m := re.match(r"\s*(\d+)", answer)) and 1 <= (n := int(m[1])) <= len(saved):
+            log.info("address picked", option=n, saved=len(saved))
             return b.pick_address(n - 1)
+        log.info("address answer not understood")
         return ""
 
     def _name_address(self, uid: int, b) -> str:
@@ -742,5 +796,6 @@ class Bot:
         try:
             b.choose_address(name)
         except ShopError as e:
+            log.info("address not chosen", error=e.logged)
             self._say(uid, f"Hmm, {e}.")
         return ""

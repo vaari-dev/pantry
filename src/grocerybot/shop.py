@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import structlog
 from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import Page, Route, sync_playwright
+from playwright.sync_api import Locator, Page, Route, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from .catalog import Product
@@ -39,8 +39,12 @@ SKIP_URLS = (
     "~partytown",
     "/proxy/",
 )
-WALLET = re.compile(r"\bCash\b")  # the prepaid wallet: the only way the bot pays
+WALLET = re.compile(r"\bCash\b(?! on [Dd]elivery)")  # the prepaid wallet
 COINS = re.compile(r"\bCoins\b")  # reward coins: never used
+# Wallet short: the cart's pay button opens Payment Options; "Pay by Cash / UPI on delivery" shows "Pay ₹N on delivery".
+PAY = re.compile(r"^\s*(?:click to )?pay ₹\s?([\d,.]+)(?: on delivery)?\s*$", re.I)
+COD = re.compile(r"^\s*pay by cash\b.*on delivery\s*$", re.I)
+PAY_COD = re.compile(r"^\s*pay ₹\s?([\d,.]+) on delivery\s*$", re.I)
 LOGGED_OUT = "[data-testid=login-btn]"
 ADDRESS = "[data-testid=user-address]"
 PHONE_FIELD = "input[type=tel], input[inputmode=numeric], input[name*=phone i]"
@@ -76,7 +80,11 @@ log = structlog.get_logger(__name__)
 
 
 class ShopError(Exception):
-    pass
+    """Its text is told to the user; `logged` is the same without their address in it."""
+
+    def __init__(self, text: str, logged: str | None = None):
+        super().__init__(text)
+        self.logged = logged or text
 
 
 @dataclass(frozen=True)
@@ -92,14 +100,47 @@ class Cart:
     item_total: float = 0
     items: list[tuple[str, int]] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
+    cod: bool = False
 
 
 def _money(text: str) -> float:
     return float(text.replace(",", ""))
 
 
+def _amount(text: str, label: str) -> float | None:
+    """The bill line's amount, after any struck-out one."""
+    m = re.search(label + r"\s*\n(?:-?₹[\d,.]+\s*\n)?-?₹([\d,.]+)", text)
+    return _money(m.group(1)) if m else None
+
+
+def _owed(cart: dict) -> bool:
+    return (_amount(cart["text"], "To Pay") or 0) > 0
+
+
 def _squash(text: str) -> str:
     return " ".join(text.split()).lower()
+
+
+def _prices(lines: list[str], struck: list[str]) -> tuple[str, str]:
+    """(price, original price) from a card's lines; struck are the texts shown crossed out."""
+    amounts = [
+        line.replace(" ", "")
+        for i, line in enumerate(lines)
+        if re.fullmatch(r"₹\s?[\d,.]+", line) and lines[i + 1 : i + 2] != ["OFF"]  # not a "₹15 OFF" badge
+    ]
+    struck = {s.replace(" ", "") for s in struck}
+    price = next((a for a in amounts if a not in struck), "")
+    mrp = next((a for a in amounts if a in struck), "")
+    if not mrp and len(amounts) > 1 and _rupees(amounts[1]) > _rupees(price):
+        mrp = amounts[1]  # no strike styling found: cards list the price, then the original
+    return price, mrp
+
+
+def _rupees(amount: str) -> float:
+    try:
+        return float(amount.lstrip("₹").replace(",", ""))
+    except ValueError:
+        return 0
 
 
 class Browser:
@@ -180,7 +221,9 @@ class Browser:
             raise ShopError("could not read the delivery address") from None
         text = addr.inner_text()
         if not text.startswith(rules.address_label) or rules.address_match not in text:
-            raise ShopError(f"the shop is not set to deliver to '{rules.address_label}'")
+            raise ShopError(
+                f"the shop is not set to deliver to '{rules.address_label}'", "the shop is set to another address"
+            )
         return text
 
     def request_otp(self, phone: str) -> None:
@@ -232,7 +275,7 @@ class Browser:
         except PlaywrightError:  # setup falls back to naming the address
             log.warning("could not read saved addresses", exc_info=True)
             found = []
-        log.info("address picker", saved=len(found))
+        log.info("saved addresses read", saved=len(found))
         if not found:
             self.close_picker()
         return found
@@ -273,7 +316,10 @@ class Browser:
         choice = self.page.locator(MODAL).last.get_by_text(label, exact=True).filter(visible=True)
         if not choice.count():
             self.close_picker()
-            raise ShopError(f"there is no saved address called '{label}'; add it in the shop's app first")
+            raise ShopError(
+                f"there is no saved address called '{label}'; add it in the shop's app first",
+                "no saved address by that name",
+            )
         choice.first.click(timeout=15_000)
         self.page.wait_for_timeout(3000)
         self.goto("/")
@@ -292,6 +338,8 @@ class Browser:
         cards = self.page.evaluate("""() => [...document.querySelectorAll('a[data-testid=product-card]')].map(a => ({
             url: a.getAttribute('href'),
             image: (a.querySelector('img') || {}).currentSrc || '',
+            struck: [...a.querySelectorAll('*')].filter(e => getComputedStyle(e).textDecorationLine
+                .includes('line-through')).map(e => e.innerText.replace(/\\s/g, '')),
             lines: a.innerText.split('\\n').map(s => s.trim()).filter(Boolean)}))""")
         found, seen = [], set()
         for c in cards:
@@ -306,9 +354,9 @@ class Browser:
             if len(body) < 2:
                 continue
             seen.add(c["url"])
-            price = next((line.replace(" ", "") for line in lines if re.fullmatch(r"₹\s?[\d,.]+", line)), "")
+            price, mrp = _prices(lines, c["struck"])
             image = "" if "placeholder" in c["image"].lower() else c["image"].replace("f-auto", "f-jpg")
-            found.append(Product(body[0], body[1], c["url"], price, image))
+            found.append(Product(body[0], body[1], c["url"], price, image, mrp))
             if len(found) == limit:
                 break
         return found
@@ -317,7 +365,9 @@ class Browser:
         """None on success, else why it was skipped."""
         self.goto(product.url)
         # Titles drop the "| tagline" of long names, so compare the core name.
-        if not _squash(self.page.title()).startswith(_squash(product.name.split("|")[0])):
+        if not _squash(title := self.page.title()).startswith(_squash(product.name.split("|")[0])):
+            headings = self.page.locator("h1").all_inner_texts()
+            log.info("listing changed", product=product.name, title=title, headings=headings)
             return "listing changed"
         if _squash(product.size) not in _squash(self.page.locator("body").inner_text()):
             return "size changed"
@@ -359,17 +409,23 @@ class Browser:
             self.page.wait_for_timeout(700)
         self.page.keyboard.press("Escape")
 
-    def review_cart(self, expected: dict[str, int], rules: Rules) -> Cart:
-        """Selects the wallet, never reward coins, and checks every rule."""
+    def _pay_with(self, wallet: bool) -> dict:
+        """Sets the wallet box, unticks reward coins; returns the cart as it then is."""
         cart = self._open_cart()
         for i, box in enumerate(cart["boxes"]):
-            want = bool(WALLET.search(box["label"]))
-            if (want or COINS.search(box["label"])) and box["checked"] != want:
+            is_wallet = bool(WALLET.search(box["label"]))
+            if (is_wallet or COINS.search(box["label"])) and box["checked"] != (wallet and is_wallet):
                 self.page.locator("[data-testid=cart-screen] input[type=checkbox]").nth(i).click(force=True)
                 self.page.wait_for_timeout(1500)
                 cart = self._open_cart()
+        return cart
 
-        text, result, seen = cart["text"], Cart(), set()
+    def review_cart(self, expected: dict[str, int], rules: Rules) -> Cart:
+        """Pays from the wallet if it covers the whole bill, else cash on delivery. Checks every rule."""
+        cart, result, seen = self._pay_with(wallet=True), Cart(), set()
+        if _owed(cart) and _owed(self._open_cart()):  # twice: the bill can lag behind the wallet tick
+            cart, result.cod = self._pay_with(wallet=False), True
+        text = cart["text"]
         if not text.startswith(rules.address_label) or rules.address_match not in text:
             result.problems.append(f"the cart is not delivering to '{rules.address_label}'")
         for item in cart["items"]:
@@ -385,35 +441,86 @@ class Browser:
         for box in cart["boxes"]:
             if COINS.search(box["label"]) and box["checked"]:
                 result.problems.append("reward coins are selected")
-            if WALLET.search(box["label"]) and not box["checked"]:
-                result.problems.append("the wallet is not selected")
+            if WALLET.search(box["label"]) and box["checked"] == result.cod:
+                result.problems.append("the wallet is still selected" if result.cod else "the wallet is not selected")
 
-        amount = lambda label: re.search(label + r"\s*\n(?:-?₹[\d,.]+\s*\n)?-?₹([\d,.]+)", text)  # noqa: E731
-        item_total, to_pay, cash = amount("Item Total"), amount("To Pay"), amount(r"[^\n]*\bCash")
-        if item_total:
-            result.item_total = _money(item_total.group(1))
+        item_total, to_pay = _amount(text, "Item Total"), _amount(text, "To Pay")
+        if item_total is not None:
+            result.item_total = item_total
         else:
             result.problems.append("could not read the item total")
-        if not to_pay or _money(to_pay.group(1)) != 0:
-            result.problems.append("the wallet does not cover the whole bill")
-        result.total = _money(cash.group(1)) if cash else None
+        if result.cod:
+            result.total = to_pay
+        else:
+            if to_pay != 0:
+                result.problems.append("the wallet does not cover the whole bill")
+            result.total = _amount(text, r"[^\n]*\bCash")
         if result.total is None:
-            result.problems.append("could not read the amount paid from the wallet")
+            result.problems.append("could not read the amount to pay")
         elif result.total > rules.budget:
             result.problems.append(f"₹{result.total:g} is more than what is left of today's limit (₹{rules.budget:g})")
         return result
 
     def place(self) -> None:
-        """Also confirms the "Missed something?" upsell pop-up, adding nothing."""
         self.page.locator("[data-testid=cart-screen] button", has_text="Place Order").click()
         self.page.wait_for_timeout(3000)
+        self._skip_upsell("Place Order")
+        self.page.wait_for_timeout(15_000)  # "Confirming your order..."
+
+    def has_pay_button(self, total: float) -> bool:
+        """Taps nothing."""
+        if self._pay_button(PAY, total, 5):
+            return True
+        labels = self.page.locator("[data-testid=cart-screen] button").all_inner_texts()
+        log.info("no pay button", labels=[t for t in labels if re.search(r"₹|pay|order", t, re.I)])
+        return False
+
+    def place_cod(self, total: float) -> str | None:
+        """None once "Pay ₹total on delivery" is tapped, else where it stopped."""
+        if not (button := self._pay_button(PAY, total, 5)):
+            return f"the cart's Pay ₹{total:g} button went away"
+        label = " ".join(button.inner_text().split())
+        button.click()
+        self.page.wait_for_timeout(3000)
+        self._skip_upsell(label)
+        option = self.page.get_by_text(COD).filter(visible=True).first
+        if not self._shown(option, 20):
+            return "cash on delivery is not offered for this order"
+        if not (pay := self._pay_button(PAY_COD, total, 3)):
+            option.click()  # its button shows once it is selected
+            if not (pay := self._pay_button(PAY_COD, total, 10)):
+                return f"no Pay ₹{total:g} on delivery button"
+        pay.click()
+        self.page.wait_for_timeout(15_000)  # "Confirming your order..."
+        return None
+
+    def _pay_button(self, pattern: re.Pattern, total: float, seconds: int) -> Locator | None:
+        """Only a button for exactly ₹total."""
+        button = self.page.get_by_role("button", name=pattern).filter(visible=True).first
+        if not self._shown(button, seconds):
+            return None
+        m = pattern.search(" ".join(button.inner_text().split()))
+        return button if m and _money(m.group(1)) == total else None
+
+    def _shown(self, locator: Locator, seconds: int) -> bool:
+        try:
+            locator.wait_for(timeout=seconds * 1000)
+            return True
+        except PlaywrightTimeout:
+            return False
+
+    def _skip_upsell(self, label: str) -> None:
+        """Gets past the "Missed something?" pop-up, adding nothing, by its button labelled like the one tapped."""
         if self.page.get_by_text("Missed something?", exact=True).count():
-            self.page.evaluate("""() => {
+            self.page.evaluate(
+                """label => {
                 const pop = [...document.querySelectorAll('[role=dialog], div')].find(d =>
                     d.innerText.startsWith('Missed something?') && d.querySelector('button'));
-                [...pop.querySelectorAll('button')].find(b => b.innerText.trim() === 'Place Order').click();
-            }""")
-        self.page.wait_for_timeout(15_000)  # "Confirming your order..."
+                [...pop.querySelectorAll('button')].find(b => b.innerText.trim() === label)?.click();
+            }""",
+                label,
+            )
+            self.page.wait_for_timeout(3000)
 
     def confirm(self, total: float, since: datetime) -> bool:
         for _ in range(3):

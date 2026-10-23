@@ -24,6 +24,7 @@ class Outcome:
     held: bool = False  # reached the smallest order; kept in the basket until it's placed
     unconfirmed: bool = False  # tapped Place Order, but no such order on the Orders page
     over_limit: bool = False  # today's limit can't cover it; trying again today won't help
+    cod: bool = False
 
     @property
     def result(self) -> str:
@@ -97,7 +98,7 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
             return out
 
         cart = b.review_cart(expected, limits)
-        out.total, out.problems, out.item_total = cart.total, cart.problems, cart.item_total
+        out.total, out.problems, out.item_total, out.cod = cart.total, cart.problems, cart.item_total, cart.cod
         out.over_limit = cart.total is not None and cart.total > limits.budget
         if cart.problems:
             b.screenshot("cart")
@@ -105,6 +106,10 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
         if cart.item_total < hh.min_order:
             out.waiting = True
             ledger.set_basket(placed_items)
+            return out
+        if cart.cod and not b.has_pay_button(cart.total):
+            out.problems.append(f"could not find the cart's Pay ₹{cart.total:g} button")
+            b.screenshot("cart")
             return out
         if not hh.place_orders:
             return out
@@ -115,9 +120,12 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
 
         attempt, started = ledger.begin(placed_items, cart.total), datetime.now()
         ledger.set_basket([])  # never ordered twice, even if the outcome is unclear
-        b.place()
+        if stopped := (b.place_cod(cart.total) if cart.cod else b.place()):
+            b.screenshot("payment")
         out.placed = b.confirm(cart.total, started)
         out.unconfirmed = not out.placed
+        if stopped and out.unconfirmed:
+            out.problems.append(stopped)
         ledger.finish(attempt, "placed" if out.placed else "unknown")
         if out.unconfirmed:
             b.screenshot("unconfirmed")

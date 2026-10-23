@@ -62,6 +62,7 @@ class Product:
     url: str
     price: str = ""
     image: str = ""
+    mrp: str = ""  # the original price, when the shop shows it struck through
 
     def label(self) -> str:
         return f"{self.name} ({self.size})"

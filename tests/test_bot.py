@@ -21,7 +21,7 @@ class FakeTelegram:
         self.answers: list[str | None] = []
         self.unbuttoned: set[tuple[int, int]] = set()
 
-    def send(self, chat_id, text, buttons=None, markup=None):
+    def send(self, chat_id, text, buttons=None, markup=None, entities=None):
         self.sent.append((chat_id, text, markup or buttons))
         return len(self.sent)
 
@@ -113,7 +113,17 @@ def test_let_in_without_setup_offers_the_connect_button(bot):
     assert said(bot, "Let's connect") == botmod.SHARE_PHONE
 
 
-MIN = 100
+def test_offer_crosses_out_the_original_price(bot):
+    product = botmod.Product("Eggs 🥚", "1 pack", "/pn/eggs/pvid/1", "₹89", mrp="₹104")
+    bot.tg.send = lambda chat_id, text, buttons=None, markup=None, entities=None: bot.tg.sent.append(
+        (chat_id, text, entities)
+    )
+    bot._offer(NEW, product, "1:0:0")
+
+    _, text, entities = bot.tg.sent[-1]
+    assert text == "Eggs 🥚\nSize: 1 pack  ·  ₹89 ₹104"
+    # the egg emoji is two UTF-16 units, so the offset is one more than the str index
+    assert entities == [{"type": "strikethrough", "offset": text.index("₹104") + 1, "length": 4}]
 
 
 class FakeBrowser:
@@ -181,7 +191,7 @@ def idle(bot, timeout=5.0):
 @contextlib.contextmanager
 def worker_paused(bot):
     go = threading.Event()
-    bot.jobs.put((lambda _: go.wait(), (NEW,)))
+    bot._queue(lambda _: go.wait(), NEW)
     yield
     go.set()
 
@@ -350,6 +360,6 @@ def test_an_open_pick_holds_the_basket_back(bot, shop, monkeypatch):
 def test_busy_clears_after_a_skipped_job(bot, shop):
     hh, _ = shop
     with worker_paused(bot):
-        bot.jobs.put((bot._clear, (NEW, dataclasses.replace(hh, id="gone"))))
+        bot._queue(bot._clear, NEW, dataclasses.replace(hh, id="gone"))
     idle(bot)
     assert not botmod.BUSY.exists()
