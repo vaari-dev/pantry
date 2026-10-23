@@ -81,7 +81,7 @@ def test_setup_before_access_starts_once_let_in_and_connects(bot):
 
     assert said(bot, "Let's connect") == botmod.SHARE_PHONE
     assert not any(t.startswith("🎉 You're in! Connect") for _, t, _ in bot.tg.sent)
-    bot._on_message(message(contact={"phone_number": "+91 98765 43210"}))
+    bot._on_message(message(contact={"phone_number": "(+91) 98765 43210"}))
     said(bot, "📩 Step 2")
     bot._on_message(message("123456"))
     keyboard = said(bot, "Your saved addresses")
