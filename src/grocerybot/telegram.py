@@ -25,7 +25,7 @@ class Telegram:
             ) as r:
                 data = json.load(r)
         except Exception as e:  # keep the token out of logs
-            raise TelegramError(f"{method}: {type(e).__name__}") from None
+            raise TelegramError(f"{method}: {type(e).__name__} {getattr(e, 'code', '')}".strip()) from None
         if not data.get("ok"):
             raise TelegramError(f"{method}: {data.get('description')}")
         return data["result"]
