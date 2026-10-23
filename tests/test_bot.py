@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import time
 
 import pytest
@@ -13,13 +14,16 @@ ADDRESS = "Home\nT6/503, MG Road"
 class FakeTelegram:
     def __init__(self):
         self.sent: list[tuple[int, str, dict | None]] = []
+        self.answers: list[str | None] = []
 
     def send(self, chat_id, text, buttons=None, markup=None):
         self.sent.append((chat_id, text, markup or buttons))
         return len(self.sent)
 
     def delete(self, *_): ...
-    def answer(self, *_): ...
+    def answer(self, _, text=None):
+        self.answers.append(text)
+
     def remove_buttons(self, *_): ...
 
 
@@ -100,47 +104,93 @@ def test_let_in_without_setup_offers_the_connect_button(bot):
     assert said(bot, "Let's connect") == botmod.SHARE_PHONE
 
 
+MIN = 100
+
+
 @pytest.fixture
 def shop(bot, monkeypatch):
-    """A connected household whose orders reach the smallest order; records each order call's hold flag."""
+    """A connected household; each item costs ₹100, so one reaches the smallest order. Records each order."""
     (session := bot.cfg.data_dir / "state.json").write_text("{}")
     hh = bot.accounts.connect(NEW, "Asha", "Home", "T6/503", session)
+    bot.accounts.allow(NEW)
     calls = []
 
     def order(cfg, hh, items, hold=False):
         calls.append((items, hold))
+        if hh.daily_cap < MIN:
+            return botmod.orders.Outcome(problems=["today's limit is used up"])
         basket = hh.ledger().basket() + items
+        total = MIN * sum(q for _, q in basket)
+        out = botmod.orders.Outcome(total=total, item_total=total, lines=[f"{k} ×{q}" for k, q in basket])
         if hold:
+            out.held = True
             hh.ledger().set_basket(basket)
-            return botmod.orders.Outcome(total=150, item_total=150, held=True, lines=["Bread ×1"])
-        hh.ledger().set_basket([])
-        return botmod.orders.Outcome(placed=True, total=150, item_total=150, lines=["Bread ×1"])
+        else:
+            out.placed = True
+            hh.ledger().set_basket([])
+        return out
 
     monkeypatch.setattr(botmod.orders, "order", order)
-    bot.accounts.allow(NEW)
     return hh, calls
+
+
+def tap(bot, data, uid=NEW):
+    bot._on_button({"id": "q", "from": {"id": uid}, "data": data, "message": {"chat": {"id": uid}, "message_id": 1}})
+
+
+def idle(bot, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    time.sleep(0.05)
+    while (not bot.jobs.empty() or botmod.BUSY.exists()) and time.monotonic() < deadline:
+        time.sleep(0.01)
 
 
 def test_order_reaching_the_minimum_waits_then_places(bot, shop, monkeypatch):
     monkeypatch.setattr(botmod, "HOLD", 0.2)
     hh, calls = shop
     bot.jobs.put((bot._order, (NEW, hh, [("bread", 1)])))
-    assert said(bot, "⏳ Cart ready") == botmod.ORDER_NOW
+    assert said(bot, "⏳ Cart ready") == botmod._order_now(hh)
+    assert hh.ledger().hold()[0] == NEW
     said(bot, "✅ Ordered")
     assert calls == [([("bread", 1)], True), ([], False)]
     assert not bot.holds
+    assert hh.ledger().hold() is None
 
 
 def test_order_now_places_at_once_and_only_once(bot, shop):
     hh, calls = shop
     bot.jobs.put((bot._order, (NEW, hh, [("bread", 1)])))
     said(bot, "⏳ Cart ready")
-    bot._on_button({"id": "q", "from": {"id": NEW}, "data": "now"})
-    bot._on_button({"id": "q", "from": {"id": NEW}, "data": "now"})
+    tap(bot, f"now:{hh.id}")
+    tap(bot, f"now:{hh.id}")
     said(bot, "✅ Ordered")
-    time.sleep(0.1)
+    said(bot, "The basket is empty")
     assert calls == [([("bread", 1)], True), ([], False)]
+    assert bot.tg.answers[-2:] == ["Ordering …", "Ordering …"]
     assert not bot.holds
+
+
+def test_order_now_after_more_items_places_them_all(bot, shop):
+    hh, calls = shop
+    bot.jobs.put((bot._order, (NEW, hh, [("bread", 1)])))
+    said(bot, "⏳ Cart ready")
+    bot.jobs.put((bot._order, (NEW, hh, [("milk", 2)])))
+    tap(bot, f"now:{hh.id}")
+    said(bot, "✅ Ordered")
+    idle(bot)
+    assert calls[-1] == ([], False)
+    assert not bot.holds
+
+
+def test_order_now_is_only_for_its_own_account(bot, shop):
+    hh, calls = shop
+    bot.jobs.put((bot._order, (NEW, hh, [("bread", 1)])))
+    said(bot, "⏳ Cart ready")
+    tap(bot, "now:someone-else")
+    idle(bot)
+    assert bot.tg.answers[-1] == "That order is for another shop account."
+    assert len(calls) == 1
+    assert hh.id in bot.holds
 
 
 def test_more_items_restart_the_wait(bot, shop):
@@ -149,11 +199,57 @@ def test_more_items_restart_the_wait(bot, shop):
     said(bot, "⏳ Cart ready")
     first = bot.holds[hh.id]
     bot.jobs.put((bot._order, (NEW, hh, [("milk", 2)])))
-    deadline = time.monotonic() + 5
-    while bot.holds.get(hh.id) in (None, first) and time.monotonic() < deadline:
-        time.sleep(0.01)
+    idle(bot)
+    assert bot.holds[hh.id] is not first
     assert not first.timer.is_alive()
     assert calls == [([("bread", 1)], True), ([("milk", 2)], True)]
     bot.jobs.put((bot._clear, (NEW, hh)))
     said(bot, "Basket emptied")
     assert not bot.holds
+    assert hh.ledger().hold() is None
+
+
+def test_a_restart_picks_the_wait_up_again(bot, shop):
+    hh, calls = shop
+    hh.ledger().set_basket([("bread", 1)])
+    hh.ledger().set_hold(NEW, botmod.datetime.now() - botmod.timedelta(seconds=1))
+    bot._resume()
+    said(bot, "✅ Ordered")
+    assert calls == [([], False)]
+
+
+def test_a_failed_order_keeps_the_basket_and_offers_order_now(bot, shop):
+    hh, _ = shop
+    bot.jobs.put((bot._order, (NEW, hh, [("bread", 1)])))
+    said(bot, "⏳ Cart ready")
+    bot.accounts.update(hh.id, daily_cap=1.0)
+    tap(bot, f"now:{hh.id}")
+    assert said(bot, "❌ Not ordered") == botmod._order_now(hh)
+    assert hh.ledger().basket() == [("bread", 1)]
+
+
+def test_a_member_leaving_stops_the_wait_they_started(bot, shop):
+    hh, calls = shop
+    member = 7
+    hh = bot.accounts.join(member, "Ravi", bot.accounts.invite(hh.id))
+    bot.jobs.put((bot._order, (member, hh, [("bread", 1)])))
+    deadline = time.monotonic() + 5
+    while hh.id not in bot.holds and time.monotonic() < deadline:
+        time.sleep(0.01)
+    bot.jobs.put((bot._drop, (NEW, hh, member)))
+    assert said(bot, "⏸ The order waiting") == botmod._order_now(hh)
+    assert not bot.holds
+    assert calls == [([("bread", 1)], True)]
+    assert hh.ledger().basket() == [("bread", 1)]
+
+
+def test_busy_clears_after_a_skipped_job(bot, shop):
+    hh, _ = shop
+
+    def slow(_):
+        time.sleep(0.1)
+
+    bot.jobs.put((slow, (NEW,)))  # still queued when it finishes: a household gone since
+    bot.jobs.put((bot._clear, (NEW, dataclasses.replace(hh, id="gone"))))
+    time.sleep(0.3)
+    assert not botmod.BUSY.exists()
