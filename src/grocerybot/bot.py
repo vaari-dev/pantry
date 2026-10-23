@@ -569,6 +569,24 @@ class Bot:
             session.unlink(missing_ok=True)
 
     def _choose_address(self, chat_id: int, uid: int, b) -> tuple[str, str]:
+        if saved := b.saved_addresses():
+            return self._pick_saved(chat_id, uid, b, saved)
+        return self._name_address(chat_id, uid, b)
+
+    def _pick_saved(self, chat_id: int, uid: int, b, saved: list[str]) -> tuple[str, str]:
+        listed = "\n\n".join(f"{n}. {' · '.join(a.splitlines())}" for n, a in enumerate(saved, 1))
+        buttons = [f"{n}. {' · '.join(a.splitlines()[:2])}"[:48] for n, a in enumerate(saved, 1)]
+        keyboard = {"keyboard": [[{"text": t}] for t in buttons], "resize_keyboard": True}
+        question = f"Your saved addresses:\n\n{listed}\n\nWhich one should orders go to?"
+        for _ in range(3):
+            answer = self._ask(chat_id, uid, question, markup=keyboard)
+            if (m := re.match(r"\s*(\d+)", answer)) and 1 <= (n := int(m[1])) <= len(saved):
+                return address_parts(b.pick_address(n - 1))
+            question = "Tap one of the addresses below."
+        raise SetupStopped("We couldn't settle on an address")
+
+    def _name_address(self, chat_id: int, uid: int, b) -> tuple[str, str]:
+        """When the shop's address list can't be read: confirm the current one or type a name."""
         for _ in range(3):
             if address := b.delivery_address():
                 answer = self._ask(
