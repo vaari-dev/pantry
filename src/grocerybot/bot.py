@@ -34,8 +34,9 @@ HELP = (
 )
 DEBUG_KEEP = timedelta(days=7)
 ALERT_REPEAT = timedelta(hours=6)
-# Polling loop liveness, read by the container healthcheck.
+# Polling liveness for the healthcheck; BUSY exists while a job runs, so deploys wait.
 HEARTBEAT = Path("/tmp/heartbeat")  # noqa: S108
+BUSY = Path("/tmp/busy")  # noqa: S108
 
 
 @dataclass
@@ -94,6 +95,7 @@ class Bot:
         while True:
             job, args = self.jobs.get()
             name, started = job.__name__.lstrip("_"), time.monotonic()
+            BUSY.touch()
             try:
                 job(*args)
                 log.info("job done", job=name, seconds=round(time.monotonic() - started, 1))
@@ -106,6 +108,8 @@ class Bot:
                 if args:
                     self._say(args[0], "Something went wrong. Nothing was ordered unless you got a ✅.")
             finally:
+                if self.jobs.empty():
+                    BUSY.unlink(missing_ok=True)
                 self.jobs.task_done()
 
     def _daily(self) -> None:
