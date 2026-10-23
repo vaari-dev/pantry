@@ -52,7 +52,8 @@ HELP = (
 )
 TRY = 'Try it now 👉 send a voice note saying "bread aur do anda", or type "2 milk, bananas".'
 CONNECT = "🛒 Connect my shop account"
-CONNECT_BUTTON = {"keyboard": [[{"text": CONNECT}]], "resize_keyboard": True}
+# One-time: a keyboard left open after the tap can hide the next one, like Share my phone number.
+CONNECT_BUTTON = {"keyboard": [[{"text": CONNECT}]], "resize_keyboard": True, "one_time_keyboard": True}
 NOT_SET_UP = "Connect your shop account to start ordering: it takes a minute. Or open an invite link from family."
 DEBUG_KEEP = timedelta(days=7)
 ALERT_REPEAT = timedelta(hours=6)
@@ -107,6 +108,7 @@ class Bot:
         self.jobs: queue.Queue = queue.Queue()
         self.picking: dict[str, Picking] = {}
         self.replies: dict[int, queue.Queue] = {}
+        self.wants_setup: dict[int, str] = {}  # asked for /setup before being let in: their first name
         self.lock = threading.Lock()
         self.alerted: dict[tuple[int, str], datetime] = {}
         self.username = ""
@@ -225,6 +227,8 @@ class Bot:
                     "text.\n\nI'm invite-only, so I've asked the admin to let you in. "
                     "I'll message you right here when you're in.",
                 )
+                if command == "/setup":
+                    self.wants_setup[uid] = user.get("first_name", "")
                 self._request_access(user)
             return
         hh = self.accounts.household_of(uid)
@@ -235,9 +239,7 @@ class Bot:
                 self._not_set_up(chat_id, f"{HELP}\n\n")
         elif command == "/setup":
             if private:
-                self.replies[uid] = queue.Queue()
-                args = (chat_id, uid, user.get("first_name", ""))
-                threading.Thread(target=self._setup, args=args, daemon=True).start()
+                self._start_setup(uid, user.get("first_name", ""))
             else:
                 self._say(chat_id, "Send /setup in a private chat with me: it needs your phone number and OTP.")
         elif not hh:
@@ -409,8 +411,17 @@ class Bot:
         if not self.accounts.allowed(new):
             self.accounts.allow(new)
             log.info("access granted", user=new)
-            self._not_set_up(new, "🎉 You're in! ")
+            if new in self.wants_setup and new not in self.replies:
+                self._say(new, "🎉 You're in!")
+                self._start_setup(new, self.wants_setup.pop(new))
+            else:
+                self._not_set_up(new, "🎉 You're in! ")
         return True
+
+    def _start_setup(self, uid: int, name: str) -> None:
+        """Private chats only: the chat id is the user id."""
+        self.replies[uid] = queue.Queue()
+        threading.Thread(target=self._setup, args=(uid, uid, name), daemon=True).start()
 
     def _not_set_up(self, chat_id: int, prefix: str = "") -> None:
         # Group chats have negative ids; a reply keyboard there would pop up for everyone.
