@@ -31,21 +31,33 @@ class Telegram:
         return data["result"]
 
     def send(
-        self, chat_id: int, text: str, buttons: list[tuple[str, str]] | None = None, markup: dict | None = None
+        self,
+        chat_id: int,
+        text: str,
+        buttons: list[tuple[str, str]] | None = None,
+        markup: dict | None = None,
+        entities: list[dict] | None = None,
     ) -> int:
-        """buttons: (label, callback data), one per row; markup: any other reply_markup."""
-        return self.call("sendMessage", chat_id=chat_id, text=text, reply_markup=markup or _keyboard(buttons))[
-            "message_id"
-        ]
+        """buttons: (label, callback data), one per row; markup: any other reply_markup; entities: text styling."""
+        return self.call(
+            "sendMessage", chat_id=chat_id, text=text, reply_markup=markup or _keyboard(buttons), entities=entities
+        )["message_id"]
 
     def delete(self, chat_id: int, message_id: int) -> None:
         with contextlib.suppress(TelegramError):
             self.call("deleteMessage", chat_id=chat_id, message_id=message_id)
 
-    def send_photo(self, chat_id: int, url: str, caption: str, buttons: list[tuple[str, str]]) -> int:
-        return self.call("sendPhoto", chat_id=chat_id, photo=url, caption=caption, reply_markup=_keyboard(buttons))[
-            "message_id"
-        ]
+    def send_photo(
+        self, chat_id: int, url: str, caption: str, buttons: list[tuple[str, str]], entities: list[dict] | None = None
+    ) -> int:
+        return self.call(
+            "sendPhoto",
+            chat_id=chat_id,
+            photo=url,
+            caption=caption,
+            reply_markup=_keyboard(buttons),
+            caption_entities=entities,
+        )["message_id"]
 
     def edit_text(self, chat_id: int, message_id: int, text: str) -> None:
         self.call("editMessageText", chat_id=chat_id, message_id=message_id, text=text)
@@ -76,6 +88,16 @@ class Telegram:
         self.call("setMyDescription", description=description)
         self.call("setMyShortDescription", short_description=short)
         return self.call("getMe")["username"]
+
+
+def strikethrough(text: str, part: str) -> dict:
+    """The entity crossing out the last part of text; Telegram counts in UTF-16 code units."""
+    start = text.rindex(part)
+    return {"type": "strikethrough", "offset": _utf16(text[:start]), "length": _utf16(part)}
+
+
+def _utf16(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
 
 
 def _keyboard(buttons: list[tuple[str, str]] | None) -> dict | None:

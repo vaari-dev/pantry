@@ -102,6 +102,25 @@ def _squash(text: str) -> str:
     return " ".join(text.split()).lower()
 
 
+def _prices(lines: list[str], struck: list[str]) -> tuple[str, str]:
+    """(price, original price) from a card's lines; struck are the texts shown crossed out."""
+    amounts = [
+        line.replace(" ", "")
+        for i, line in enumerate(lines)
+        if re.fullmatch(r"₹\s?[\d,.]+", line) and lines[i + 1 : i + 2] != ["OFF"]  # not a "₹15 OFF" badge
+    ]
+    struck = {s.replace(" ", "") for s in struck}
+    price = next((a for a in amounts if a not in struck), "")
+    mrp = next((a for a in amounts if a in struck), "")
+    if not mrp and len(amounts) > 1 and _rupees(amounts[1]) > _rupees(price):
+        mrp = amounts[1]  # no strike styling found: cards list the price, then the original
+    return price, mrp
+
+
+def _rupees(amount: str) -> float:
+    return float(amount.lstrip("₹").replace(",", "") or 0)
+
+
 class Browser:
     """One Chrome session. Loads and saves state_file (None: neither); fresh: starts logged out."""
 
@@ -292,6 +311,8 @@ class Browser:
         cards = self.page.evaluate("""() => [...document.querySelectorAll('a[data-testid=product-card]')].map(a => ({
             url: a.getAttribute('href'),
             image: (a.querySelector('img') || {}).currentSrc || '',
+            struck: [...a.querySelectorAll('*')].filter(e => !e.children.length
+                && getComputedStyle(e).textDecorationLine.includes('line-through')).map(e => e.innerText.trim()),
             lines: a.innerText.split('\\n').map(s => s.trim()).filter(Boolean)}))""")
         found, seen = [], set()
         for c in cards:
@@ -306,9 +327,9 @@ class Browser:
             if len(body) < 2:
                 continue
             seen.add(c["url"])
-            price = next((line.replace(" ", "") for line in lines if re.fullmatch(r"₹\s?[\d,.]+", line)), "")
+            price, mrp = _prices(lines, c["struck"])
             image = "" if "placeholder" in c["image"].lower() else c["image"].replace("f-auto", "f-jpg")
-            found.append(Product(body[0], body[1], c["url"], price, image))
+            found.append(Product(body[0], body[1], c["url"], price, image, mrp))
             if len(found) == limit:
                 break
         return found
