@@ -80,7 +80,11 @@ log = structlog.get_logger(__name__)
 
 
 class ShopError(Exception):
-    pass
+    """Its text is told to the user; `logged` is the same without their address in it."""
+
+    def __init__(self, text: str, logged: str | None = None):
+        super().__init__(text)
+        self.logged = logged or text
 
 
 @dataclass(frozen=True)
@@ -217,7 +221,9 @@ class Browser:
             raise ShopError("could not read the delivery address") from None
         text = addr.inner_text()
         if not text.startswith(rules.address_label) or rules.address_match not in text:
-            raise ShopError(f"the shop is not set to deliver to '{rules.address_label}'")
+            raise ShopError(
+                f"the shop is not set to deliver to '{rules.address_label}'", "the shop is set to another address"
+            )
         return text
 
     def request_otp(self, phone: str) -> None:
@@ -269,7 +275,7 @@ class Browser:
         except PlaywrightError:  # setup falls back to naming the address
             log.warning("could not read saved addresses", exc_info=True)
             found = []
-        log.info("address picker", saved=len(found))
+        log.info("saved addresses read", saved=len(found))
         if not found:
             self.close_picker()
         return found
@@ -310,7 +316,10 @@ class Browser:
         choice = self.page.locator(MODAL).last.get_by_text(label, exact=True).filter(visible=True)
         if not choice.count():
             self.close_picker()
-            raise ShopError(f"there is no saved address called '{label}'; add it in the shop's app first")
+            raise ShopError(
+                f"there is no saved address called '{label}'; add it in the shop's app first",
+                "no saved address by that name",
+            )
         choice.first.click(timeout=15_000)
         self.page.wait_for_timeout(3000)
         self.goto("/")
@@ -358,7 +367,7 @@ class Browser:
         # Titles drop the "| tagline" of long names, so compare the core name.
         if not _squash(title := self.page.title()).startswith(_squash(product.name.split("|")[0])):
             headings = self.page.locator("h1").all_inner_texts()
-            log.info("listing changed", saved=product.name, title=title, headings=headings)
+            log.info("listing changed", product=product.name, title=title, headings=headings)
             return "listing changed"
         if _squash(product.size) not in _squash(self.page.locator("body").inner_text()):
             return "size changed"
