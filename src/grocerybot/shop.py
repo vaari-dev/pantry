@@ -43,10 +43,11 @@ SKIP_URLS = (
 )
 WALLET = re.compile(r"\bCash\b(?! on [Dd]elivery)")  # the prepaid wallet: used whenever it covers the bill
 COINS = re.compile(r"\bCoins\b")  # reward coins: never used
-COD = re.compile(r"(cash|pay) on delivery", re.I)  # when the wallet falls short
-CHECKOUT = re.compile(r"place order|pay|proceed", re.I)  # the cart's bottom button, whatever it says then
-PLACE = re.compile(r"^\s*(place|confirm) order", re.I)
-UNAVAILABLE = re.compile(r"not available|unavailable", re.I)
+# When the wallet falls short: the cart's bottom button opens Payment Options, where the option
+# "Pay by Cash / UPI on delivery" shows a button "Pay ₹132 on delivery".
+CHECKOUT = re.compile(r"\bpay\b", re.I)  # never "Place Order": that would place it before choosing
+COD = re.compile(r"^\s*pay by cash\b.*\bon delivery\s*$", re.I)
+PAY_COD = re.compile(r"^\s*pay ₹\s?[\d,.]+ on delivery\s*$", re.I)
 LOGGED_OUT = "[data-testid=login-btn]"
 ADDRESS = "[data-testid=user-address]"
 PHONE_FIELD = "input[type=tel], input[inputmode=numeric], input[name*=phone i]"
@@ -489,26 +490,33 @@ class Browser:
         self._skip_upsell()
         self.page.wait_for_timeout(15_000)  # "Confirming your order..."
 
-    def place_cod(self) -> str | None:
-        """Checks out with cash on delivery. None once Place Order is tapped, else why it stopped before.
-        Any click here may already place the order, so the caller confirms it either way."""
-        self.page.locator("[data-testid=cart-screen] button", has_text=CHECKOUT).last.click()
+    def place_cod(self, total: float, dry_run: bool = False) -> str | None:
+        """Checks out with cash on delivery for exactly total. None once its button is tapped (dry_run: found),
+        else why it stopped before."""
+        checkout = self.page.locator("[data-testid=cart-screen] button", has_text=CHECKOUT).filter(visible=True)
+        if not checkout.count():
+            return self._stop("could not find the cart's button to pay")
+        checkout.last.click()
         self.page.wait_for_timeout(3000)
         self._skip_upsell()
         if (option := self._wait_for(COD)) is None:
-            self.screenshot("payment")
-            return "cash on delivery is not offered for this order"
-        if UNAVAILABLE.search(option.evaluate("e => (e.closest('label, li, button, [role=radio]') || e).innerText")):
-            self.screenshot("payment")
-            return "cash on delivery is not available for this order"
-        option.click()
-        self.page.wait_for_timeout(2000)
-        if (button := self._wait_for(PLACE, role="button", seconds=10)) is None:
-            self.screenshot("payment")
-            return "could not find Place Order after choosing cash on delivery"
+            return self._stop("cash on delivery is not offered for this order")
+        if (button := self._wait_for(PAY_COD, role="button", seconds=3)) is None:
+            option.click()  # its button shows once it is selected
+            if (button := self._wait_for(PAY_COD, role="button", seconds=10)) is None:
+                return self._stop("cash on delivery is not available for this order")
+        shown = _money(re.search(r"₹\s?([\d,.]+)", button.inner_text()).group(1))
+        if shown != total:
+            return self._stop(f"the payment page asks ₹{shown:g}, the cart said ₹{total:g}")
+        if dry_run:
+            return None
         button.click()
         self.page.wait_for_timeout(15_000)  # "Confirming your order..."
         return None
+
+    def _stop(self, reason: str) -> str:
+        self.screenshot("payment")
+        return reason
 
     def _wait_for(self, pattern: re.Pattern, role: str | None = None, seconds: int = 30):
         """The last visible match in the page or its frames (payment pages can be embedded), or None."""

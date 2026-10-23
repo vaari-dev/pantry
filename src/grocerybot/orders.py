@@ -96,11 +96,13 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]]) -> Outcome:
             ledger.set_basket(placed_items)
             return out
         if not hh.place_orders:
+            if cart.cod and (stopped := b.place_cod(cart.total, dry_run=True)):
+                out.problems.append(stopped)
             return out
 
         attempt, started = ledger.begin(placed_items, cart.total), datetime.now()
         ledger.set_basket([])  # never ordered twice, even if the outcome is unclear
-        stopped = b.place_cod() if cart.cod else b.place()
+        stopped = b.place_cod(cart.total) if cart.cod else b.place()
         out.placed = b.confirm(cart.total, started)
         if stopped and not out.placed:
             out.problems.append(stopped)
