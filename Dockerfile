@@ -18,15 +18,18 @@ RUN python -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_
  && chmod -R a+rX /opt/hf
 ENV HF_HUB_OFFLINE=1
 
-COPY src ./src
-RUN pip install --no-cache-dir --no-deps .
+# Non-root: Tailscale runs in userspace.
+RUN mkdir -p /data && chown pwuser:pwuser /data
 
-COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/entrypoint
+# Code last, as --link layers that don't need the ones below: a code change then rebuilds
+# without fetching the cached dependencies and model. Runs from source, ahead of the empty
+# grocerybot package the dependencies step installs.
+COPY --link src ./src
+COPY --link --chmod=755 docker/entrypoint.sh /usr/local/bin/entrypoint
+ENV PYTHONPATH=/app/src
 ARG REVISION=dev
 LABEL org.opencontainers.image.source=https://github.com/vaari-dev/grocery-bot org.opencontainers.image.revision=$REVISION
 
-# Non-root: Tailscale runs in userspace.
-RUN mkdir -p /data && chown pwuser:pwuser /data
 USER pwuser
 VOLUME /data
 HEALTHCHECK --interval=1m --timeout=5s --start-period=2m \
