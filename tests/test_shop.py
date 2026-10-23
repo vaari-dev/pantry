@@ -11,6 +11,7 @@ from grocerybot.shop import _prices
         (["₹15", "OFF", "Eggs", "1 pack", "₹89", "₹104", "ADD"], [], ("₹89", "₹104")),
         (["Eggs", "1 pack", "₹1,104", "₹89"], ["₹1,104"], ("₹89", "₹1,104")),
         (["Eggs", "1 pack", "₹89", "₹60"], [], ("₹89", "")),
+        (["Eggs", "1 pack", "₹89", "₹."], [], ("₹89", "")),  # malformed amounts must not raise
     ],
 )
 def test_prices(lines, struck, expected):

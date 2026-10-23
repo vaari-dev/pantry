@@ -118,7 +118,10 @@ def _prices(lines: list[str], struck: list[str]) -> tuple[str, str]:
 
 
 def _rupees(amount: str) -> float:
-    return float(amount.lstrip("₹").replace(",", "") or 0)
+    try:
+        return float(amount.lstrip("₹").replace(",", ""))
+    except ValueError:
+        return 0
 
 
 class Browser:
@@ -311,8 +314,8 @@ class Browser:
         cards = self.page.evaluate("""() => [...document.querySelectorAll('a[data-testid=product-card]')].map(a => ({
             url: a.getAttribute('href'),
             image: (a.querySelector('img') || {}).currentSrc || '',
-            struck: [...a.querySelectorAll('*')].filter(e => !e.children.length
-                && getComputedStyle(e).textDecorationLine.includes('line-through')).map(e => e.innerText.trim()),
+            struck: [...a.querySelectorAll('*')].filter(e => getComputedStyle(e).textDecorationLine
+                .includes('line-through')).map(e => e.innerText.replace(/\\s/g, '')),
             lines: a.innerText.split('\\n').map(s => s.trim()).filter(Boolean)}))""")
         found, seen = [], set()
         for c in cards:
