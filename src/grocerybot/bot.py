@@ -48,6 +48,7 @@ OTP_WAIT = 300  # Chrome waits on the login page meanwhile, holding up every ord
 SHARE_PHONE = {"keyboard": [[{"text": "📱 Share my phone number", "request_contact": True}]], "resize_keyboard": True}
 NO_KEYBOARD = {"remove_keyboard": True}
 HEARTBEAT = Path("/tmp/heartbeat")  # noqa: S108  read by the container healthcheck
+BUSY = Path("/tmp/busy")  # noqa: S108  exists while jobs run; deploys wait for it
 
 
 def _rupees(text: str) -> float:
@@ -127,6 +128,7 @@ class Bot:
         while True:
             job, args = self.jobs.get()
             name, started = job.__name__.lstrip("_"), time.monotonic()
+            BUSY.touch()
             try:
                 job(*args)
                 log.info("job done", job=name, seconds=round(time.monotonic() - started, 1))
@@ -136,6 +138,9 @@ class Bot:
             except Exception:
                 log.exception("job failed", job=name)
                 self._say(args[0], "Something went wrong. Nothing was ordered unless you got a ✅.")
+            finally:
+                if self.jobs.empty():
+                    BUSY.unlink(missing_ok=True)
 
     def _daily(self) -> None:
         while True:

@@ -28,6 +28,10 @@ case "${1:?command}" in
     export APP_IMAGE="${2:?image}"
     echo "APP_IMAGE=$APP_IMAGE" > .image  # so later commands (and reboots) use the same image
     compose pull -q
+    for _ in $(seq 60); do  # let a running order finish (up to 10 min)
+      in_bot test -e /tmp/busy 2>/dev/null || break
+      sleep 10
+    done
     compose up -d --remove-orphans
     wait_healthy
     docker image prune -f --filter "label=org.opencontainers.image.source=https://github.com/vaari-dev/grocery-bot" >/dev/null

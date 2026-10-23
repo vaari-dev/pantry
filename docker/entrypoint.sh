@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# Joins the tailnet in userspace mode and serves a SOCKS5 proxy on 127.0.0.1:1055 that exits through
-# the home exit node, because the shop refuses data-centre IPs. Only Chrome uses it (config.py).
-# Then runs the command on a virtual screen.
-#
-# Tailscale state lives on the data volume, so the box keeps one identity across restarts and
-# TS_AUTHKEY is only needed for the first login.
+# Tailscale (userspace) with a SOCKS5 proxy on :1055 exiting at home, for Chrome only.
+# State is on the volume, so TS_AUTHKEY is needed once. Then runs the command under Xvfb.
 set -euo pipefail
 
 if [[ -n "${TS_EXIT_NODE:-}" ]]; then

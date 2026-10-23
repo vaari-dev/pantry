@@ -24,13 +24,12 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: pytest -q
-      - name: No personal data or secrets in the tree
+      - name: No personal data or secrets
         run: |
-          # Phone numbers, Telegram/Tailscale secrets, and the shop session must never be committed.
           ! git grep -nIE '(\+91[ -]?[0-9]{5}|bot[0-9]{8,}:[A-Za-z0-9_-]{30,}|tskey-[a-z]+-[A-Za-z0-9]{10,})' -- ':!*.md'
           ! git ls-files | grep -E '(^|/)(\.env|session\.json)$'
 
-  image:  # pull requests only: the deploy workflow builds (and pushes) the image itself
+  image:  # PRs only; deploy builds its own
     if: github.event_name == 'pull_request'
     timeout-minutes: 30
     runs-on: ubuntu-24.04-arm

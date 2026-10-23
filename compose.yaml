@@ -1,7 +1,7 @@
 name: grocery-bot
 
 services:
-  grocery-bot:  # also the service_name label of its logs in Loki
+  grocery-bot:  # Loki service_name
     image: ${APP_IMAGE:-grocery-bot:local}
     build: .
     restart: unless-stopped
@@ -9,12 +9,12 @@ services:
       - path: .env
         required: false
     environment:
-      TZ: Asia/Kolkata  # the daily cap and health check follow local time
+      TZ: Asia/Kolkata  # daily cap, health check
     volumes:
-      - data:/data      # shop login, catalog, ledger, Tailscale identity
-    shm_size: 1gb       # Chrome needs more than Docker's 64 MB default
+      - data:/data
+    shm_size: 1gb       # Chrome
     mem_limit: 3g
-    # Unprivileged user, no capabilities. (Chrome does not start on a read-only root filesystem.)
+    # Not read_only: Chrome needs a writable root.
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
