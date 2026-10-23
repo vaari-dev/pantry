@@ -427,7 +427,7 @@ class Browser:
             cart, result.cod = self._pay_with(wallet=False), True
         text = cart["text"]
         if not text.startswith(rules.address_label) or rules.address_match not in text:
-            result.problems.append(f"the cart is not delivering to '{rules.address_label}'")
+            result.problems.append("the cart is not delivering to your saved address (/settings)")  # logged: no label
         for item in cart["items"]:
             name = next((n for n in expected for line in item["lines"] if _squash(line) == _squash(n)), None)
             if name is None:
