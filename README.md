@@ -84,7 +84,7 @@ Logging out on the shop's website ends it.
 ## Operating
 
 *Actions → Operate* (or `gh workflow run operate.yml -f action=…`):
-`check` · `set-login` · `remove` (deletes the bot and its data from the box; confirm with `remove`).
+`check` · `logs` · `set-login` · `remove` (deletes the bot and its data from the box; confirm with `remove`).
 
 ## Development
 

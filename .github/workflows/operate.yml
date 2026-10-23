@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - check            # shop login, delivery address, home exit
+          - logs             # the bot's recent log lines and health
           - set-login        # install the SHOP_SESSION secret as the bot's shop session
           - remove           # stop the bot and delete everything on the box, data included
       confirm:

@@ -5,6 +5,7 @@
 #   deploy IMAGE  pull IMAGE and (re)start
 #   set-login [if-missing]  install the shop session from stdin (if-missing: only when there is none)
 #   check         self-check inside the running bot (login, address, home exit)
+#   logs          the bot's recent log lines and health
 #   remove        stop and delete everything, volume included
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -41,6 +42,10 @@ case "${1:?command}" in
     ;;
   check)
     in_bot xvfb-run -a python -m grocerybot check
+    ;;
+  logs)
+    docker inspect -f 'health: {{.State.Health.Status}}, started {{.State.StartedAt}}' "$(compose ps -q bot)"
+    compose logs --no-log-prefix --tail 200 bot
     ;;
   remove)
     compose down --volumes --rmi all --remove-orphans
