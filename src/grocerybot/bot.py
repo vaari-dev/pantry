@@ -217,7 +217,8 @@ class Bot:
         if command == "/start" and arg:
             return self._join(chat_id, user, arg)
         if not self.accounts.allowed(uid):
-            if command == "/start" and private:
+            # Any first message, not just /start: people often tap /setup in the menu straight away.
+            if private:
                 self._say(
                     chat_id,
                     f"👋 Hi {user.get('first_name') or 'there'}! I order groceries from a voice note or a quick "
