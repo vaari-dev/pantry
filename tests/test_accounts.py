@@ -51,10 +51,11 @@ def test_invite_is_single_use_and_expires(tmp_path, accounts):
 def test_owner_leaving_hands_over_and_last_one_out_deletes(tmp_path, accounts):
     hh = accounts.connect(ASHA, "Asha", "Home", "12B", login(tmp_path))
     accounts.join(RAVI, "Ravi", accounts.invite(hh.id))
-    accounts.leave(ASHA)
+    accounts.leave(ASHA, hh.id)
     assert accounts.get(hh.id).owner == RAVI
+    assert not hh.state_file.exists()  # Asha's shop login leaves with her
     assert accounts.household_of(ASHA) is None and accounts.allowed(ASHA)
-    accounts.leave(RAVI)
+    accounts.leave(RAVI, hh.id)
     assert accounts.get(hh.id) is None and not hh.dir.exists()
 
 
@@ -76,3 +77,11 @@ def test_settings_are_per_household_with_safe_defaults(tmp_path, accounts):
     assert (ravi.daily_cap, ravi.min_order, ravi.place_orders) == (1000, 100, False)
     with pytest.raises(ValueError):
         accounts.update(asha.id, owner=RAVI)  # only settings
+
+
+def test_leave_is_scoped_and_own_invite_is_harmless(tmp_path, accounts):
+    hh = accounts.connect(ASHA, "Asha", "Home", "12B", login(tmp_path))
+    accounts.join(RAVI, "Ravi", accounts.invite(hh.id))
+    assert accounts.join(ASHA, "Asha", accounts.invite(hh.id)).owner == ASHA
+    accounts.leave(RAVI, "elsewhere")
+    assert accounts.get(hh.id).members == (ASHA, RAVI)

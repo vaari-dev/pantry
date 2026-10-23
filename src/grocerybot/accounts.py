@@ -131,17 +131,20 @@ class Accounts:
             hid = invite["household"]
             if datetime.fromisoformat(invite["expires"]) < datetime.now() or hid not in data["households"]:
                 return None
+            if data["users"].get(str(uid), {}).get("household") == hid:
+                return self._household(data, hid)
             _leave(self.root, data, uid)
             data["users"][str(uid)] = {"name": name, "household": hid}
         return self._household(data, hid)
 
-    def leave(self, uid: int) -> None:
+    def leave(self, uid: int, hid: str) -> None:
         with self._edit() as data:
-            _leave(self.root, data, uid)
+            if data["users"].get(str(uid), {}).get("household") == hid:
+                _leave(self.root, data, uid)
 
 
 def _leave(root: Path, data: dict, uid: int) -> None:
-    """An owner hands over to the longest-standing member; the last one out deletes the household."""
+    """An owner hands over to another member, without their shop login; the last one out deletes it all."""
     user = data["users"].get(str(uid), {})
     if not (hid := user.get("household")):
         return
@@ -153,3 +156,4 @@ def _leave(root: Path, data: dict, uid: int) -> None:
         shutil.rmtree(root / hid, ignore_errors=True)
     elif data["households"][hid]["owner"] == uid:
         data["households"][hid]["owner"] = others[0]
+        (root / hid / "session.json").unlink(missing_ok=True)

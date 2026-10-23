@@ -4,6 +4,8 @@ One worker thread does all browser work, one job at a time (one Chrome). /setup 
 on its own thread; the polling thread hands it the person's answers through `replies`.
 """
 
+import itertools
+import math
 import queue
 import re
 import threading
@@ -47,12 +49,13 @@ ANSWER_WAIT = 600
 OTP_WAIT = 300  # Chrome waits on the login page meanwhile, holding up every order
 SHARE_PHONE = {"keyboard": [[{"text": "📱 Share my phone number", "request_contact": True}]], "resize_keyboard": True}
 NO_KEYBOARD = {"remove_keyboard": True}
+PICK_IDS = itertools.count()
 HEARTBEAT = Path("/tmp/heartbeat")  # noqa: S108  read by the container healthcheck
 BUSY = Path("/tmp/busy")  # noqa: S108  exists while jobs run; deploys wait for it
 
 
 def _rupees(text: str) -> float:
-    if (value := float(text)) <= 0:
+    if not 0 < (value := float(text)) < math.inf:
         raise ValueError(text)
     return value
 
@@ -127,6 +130,10 @@ class Bot:
         """Runs jobs (function, (chat_id, ...)); failures are told to chat_id."""
         while True:
             job, args = self.jobs.get()
+            # settings or membership may have changed while queued
+            args = tuple(self.accounts.get(a.id) if isinstance(a, Household) else a for a in args)
+            if None in args:
+                continue
             name, started = job.__name__.lstrip("_"), time.monotonic()
             BUSY.touch()
             try:
@@ -244,12 +251,9 @@ class Bot:
         uid, data = cb.get("from", {}).get("id"), cb["data"]
         kind, _, arg = data.partition(":")
         if kind in ("allow", "remove"):
-            if msg := cb.get("message"):
+            done = self._allow(uid, int(arg)) if kind == "allow" else self._remove(uid, int(arg))
+            if done and (msg := cb.get("message")):
                 self.tg.remove_buttons(msg["chat"]["id"], msg["message_id"])
-            if kind == "allow":
-                self._allow(uid, int(arg))
-            else:
-                self._remove(uid, int(arg))
         elif hh := self.accounts.household_of(uid):
             self._pick(hh, data)
 
@@ -281,7 +285,7 @@ class Bot:
         if not asks:
             return self._order(chat_id, hh, p.ready) if p.ready else self._say(chat_id, "I didn't catch any items.")
 
-        pid = f"{chat_id % 100000}-{int(time.time()) % 100000}"  # callback data is max 64 bytes
+        pid = str(next(PICK_IDS))
         with self.lock:
             self.picking = {k: v for k, v in self.picking.items() if v.chat_id != chat_id}  # newest list wins
             self.picking[pid] = Picking(chat_id, hh.id, p.ready, asks)
@@ -376,12 +380,14 @@ class Bot:
         log.info("access requested", user=uid)
         self.alert(self.cfg.admin_id, f"{name}{handle} wants to use the bot.", [(f"✅ Let {name} in", f"allow:{uid}")])
 
-    def _allow(self, uid: int, new: int) -> None:
-        if uid != self.cfg.admin_id or self.accounts.allowed(new):
-            return
-        self.accounts.allow(new)
-        log.info("access granted", user=new)
-        self._say(new, f"You're in! {NOT_SET_UP}")
+    def _allow(self, uid: int, new: int) -> bool:
+        if uid != self.cfg.admin_id:
+            return False
+        if not self.accounts.allowed(new):
+            self.accounts.allow(new)
+            log.info("access granted", user=new)
+            self._say(new, f"You're in! {NOT_SET_UP}")
+        return True
 
     def _join(self, chat_id: int, user: dict, code: str) -> None:
         uid, name = user.get("id"), user.get("first_name", "")
@@ -408,10 +414,12 @@ class Bot:
         buttons = [(f"Remove {self.accounts.name(m)}", f"remove:{m}") for m in removable]
         self._say(chat_id, f"Ordering with this account: {names}\n/invite adds someone.", buttons)
 
-    def _remove(self, uid: int, member: int) -> None:
+    def _remove(self, uid: int, member: int) -> bool:
         hh = self.accounts.household_of(uid)
-        if hh and hh.owner == uid and member != uid and member in hh.members:
-            self.jobs.put((self._drop, (uid, hh, member)))
+        if not (hh and hh.owner == uid and member != uid):
+            return False
+        self.jobs.put((self._drop, (uid, hh, member)))
+        return True
 
     def _leave(self, chat_id: int, uid: int, hh: Household, arg: str) -> None:
         if len(hh.members) == 1 and arg.lower() != "yes":
@@ -424,13 +432,15 @@ class Bot:
 
     def _drop(self, chat_id: int, hh: Household, member: int) -> None:
         """On the worker, so an account is never deleted mid-order."""
-        self.accounts.leave(member)
+        if member not in hh.members:
+            return
+        self.accounts.leave(member, hh.id)
         log.info("household left", household=hh.id, user=member)
         self._say(member, f"You no longer order with that account. {NOT_SET_UP}")
         if chat_id != member:
             self._say(chat_id, f"Removed {self.accounts.name(member)}.")
         if (now := self.accounts.get(hh.id)) and now.owner != hh.owner:
-            self._say(now.owner, "You now own this shop account.")
+            self._say(now.owner, "You now own this shop account. /setup to log it in with yours.")
 
     def _settings(self, chat_id: int, hh: Household) -> None:
         self._say(
@@ -486,12 +496,14 @@ class Bot:
         except SetupStopped as e:
             self.replies.pop(uid, None)
             return self._say(chat_id, f"{e}. Nothing changed; /setup starts again.", markup=NO_KEYBOARD)
+        self.replies.pop(uid, None)
         if not self.jobs.empty():
             self._say(chat_id, "I'm busy with another order; I'll log in right after.")
         self.jobs.put((self._login, (chat_id, uid, name, phone, label, match)))
 
     def _login(self, chat_id: int, uid: int, name: str, phone: str, label: str, match: str) -> None:
         session = self.cfg.data_dir / f".login-{uid}.json"
+        self.replies[uid] = queue.Queue()
         try:
             with orders.login_browser(self.cfg, session) as b:
                 b.request_otp(phone)
