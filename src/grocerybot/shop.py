@@ -48,6 +48,27 @@ OTP_FIELD = "input[autocomplete=one-time-code], input[maxlength='1'], input[maxl
 CONTINUE = re.compile(r"^\s*(continue|get otp|send otp|login|next)\s*$", re.I)
 VERIFY = re.compile(r"^\s*(verify|continue|login|submit)", re.I)
 PLUS = "button[aria-label='Increase quantity by one']:not([data-hidden=true])"
+MODAL = "[id^=zui-modal], [role=dialog], [aria-modal=true]"  # the address picker; it covers the page
+# The picker's markup has no stable ids: a saved address is the innermost clickable block of two or
+# more lines with a digit or comma after its name. Tags each with data-saved-address=<n>.
+SAVED_ADDRESSES = """() => {
+    const scope = [...document.querySelectorAll(MODAL)].filter(el => el.checkVisibility()).pop();
+    if (!scope) return [];  // never the page itself: product cards behind it look like addresses
+    const header = document.querySelector('[data-testid=user-address]');
+    const skip = /add (a )?new address|current location|detect my location/i;
+    const lines = el => el.innerText.split('\\n').map(s => s.trim()).filter(Boolean);
+    const clickable = el => el.matches('button, a, [role=button], [tabindex]')
+        || getComputedStyle(el).cursor === 'pointer';
+    const found = [...scope.querySelectorAll('*')].filter(el => {
+        if (!el.checkVisibility() || !clickable(el) || header?.contains(el) || el.contains(header)) return false;
+        if (el.querySelector('input') || skip.test(el.innerText)) return false;
+        const l = lines(el);
+        return l.length >= 2 && el.innerText.length < 400 && /[\\d,]/.test(l.slice(1).join(' '));
+    });
+    const cards = found.filter(el => !found.some(o => o !== el && el.contains(o)));
+    document.querySelectorAll('[data-saved-address]').forEach(el => el.removeAttribute('data-saved-address'));
+    return cards.map((el, n) => { el.setAttribute('data-saved-address', n); return lines(el).join('\\n'); });
+}""".replace("MODAL", repr(MODAL))
 log = structlog.get_logger(__name__)
 
 
@@ -199,16 +220,40 @@ class Browser:
         text = self.page.locator(ADDRESS).first.inner_text().strip()
         return "" if text.startswith("Select") else text
 
+    def saved_addresses(self) -> list[str]:
+        """Opens the address picker and lists its saved addresses, in order; pick one with pick_address."""
+        self.page.locator(ADDRESS).first.click()
+        self.page.wait_for_timeout(2500)
+        found = self.page.evaluate(SAVED_ADDRESSES)
+        if not found:
+            self.close_picker()
+        return found
+
+    def pick_address(self, n: int) -> str:
+        """The nth of saved_addresses(); returns the delivery address the shop now shows."""
+        self.page.locator(f"[data-saved-address='{n}']").first.click()
+        self.page.wait_for_timeout(3000)
+        self.goto("/")
+        if not (address := self.delivery_address()):
+            raise ShopError("the shop didn't switch to that address")
+        return address
+
+    def close_picker(self) -> None:
+        self.page.keyboard.press("Escape")
+        self.page.wait_for_timeout(1000)
+
     def choose_address(self, label: str) -> None:
         addr = self.page.locator(ADDRESS).first
         if addr.inner_text().startswith(label):
             return
         addr.click()
         self.page.wait_for_timeout(2500)
-        choice = self.page.get_by_text(label, exact=True).filter(visible=True)
+        # Only inside the picker: the same name on the page behind it can't be clicked.
+        choice = self.page.locator(MODAL).last.get_by_text(label, exact=True).filter(visible=True)
         if not choice.count():
+            self.close_picker()
             raise ShopError(f"there is no saved address called '{label}'; add it in the shop's app first")
-        choice.first.click()
+        choice.first.click(timeout=15_000)
         self.page.wait_for_timeout(3000)
         self.goto("/")
 
