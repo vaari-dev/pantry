@@ -1,4 +1,4 @@
-"""Minimal Telegram Bot API client (long polling: no public URL or open ports needed)."""
+"""Telegram Bot API over long polling: no public URL or open ports."""
 
 import contextlib
 import json
@@ -33,13 +33,13 @@ class Telegram:
     def send(
         self, chat_id: int, text: str, buttons: list[tuple[str, str]] | None = None, markup: dict | None = None
     ) -> int:
-        """buttons: (label, callback data), one per row; markup: any other reply_markup. Returns the message id."""
+        """buttons: (label, callback data), one per row; markup: any other reply_markup."""
         return self.call("sendMessage", chat_id=chat_id, text=text, reply_markup=markup or _keyboard(buttons))[
             "message_id"
         ]
 
     def delete(self, chat_id: int, message_id: int) -> None:
-        with contextlib.suppress(TelegramError):  # too old, or already gone
+        with contextlib.suppress(TelegramError):
             self.call("deleteMessage", chat_id=chat_id, message_id=message_id)
 
     def send_photo(self, chat_id: int, url: str, caption: str, buttons: list[tuple[str, str]]) -> int:
@@ -51,7 +51,7 @@ class Telegram:
         self.call("editMessageText", chat_id=chat_id, message_id=message_id, text=text)
 
     def remove_buttons(self, chat_id: int, message_id: int) -> None:
-        with contextlib.suppress(TelegramError):  # already without buttons
+        with contextlib.suppress(TelegramError):
             self.call(
                 "editMessageReplyMarkup", chat_id=chat_id, message_id=message_id, reply_markup={"inline_keyboard": []}
             )
@@ -71,11 +71,10 @@ class Telegram:
             f.write(r.read())
         return Path(out)
 
-    def setup(self, commands: dict[str, str], description: str, short: str) -> str:
-        """Register the '/' menu and the intro text. Returns the bot's username."""
+    def setup(self, commands: dict[str, str], description: str) -> str:
+        """Returns the bot's username."""
         self.call("setMyCommands", commands=[{"command": c, "description": d} for c, d in commands.items()])
         self.call("setMyDescription", description=description)
-        self.call("setMyShortDescription", short_description=short)
         return self.call("getMe")["username"]
 
 

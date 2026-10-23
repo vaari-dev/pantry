@@ -1,17 +1,12 @@
-"""Who orders with which shop account, and each account's settings.
+"""Households: one shop account each, shared by the Telegram users in it.
 
-A household is one shop account (its login, settings, picks, basket and order history) shared by
-one or more Telegram users. Everyone in it can order; its owner can log it in again, change its
-settings and invite others. The admin (TELEGRAM_ADMIN_ID) lets new people in.
-
-households.json (on the data volume):
-  {"households": {"<id>": {"owner": uid, "address_label": "Home", "address_match": "12B",
-                           "daily_cap": 1000, "min_order": 100, "place_orders": false}},
+households.json:
+  {"households": {"<id>": {"owner": uid, "address_label", "address_match", "daily_cap", "min_order", "place_orders"}},
    "users": {"<uid>": {"name": "Asha", "household": "<id>" | null}},
    "invites": {"<code>": {"household": "<id>", "expires": "<iso time>"}}}
-Each household's files live in households/<id>/: session.json, catalog.json, ledger.json, debug/.
 """
 
+import contextlib
 import os
 import secrets
 import shutil
@@ -20,18 +15,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import structlog
-
 from . import store
 from .catalog import Catalog
 from .ledger import Ledger
 
 INVITE_VALID = timedelta(hours=24)
-INVITE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O or 1/I
-LEGACY_FILES = ("session.json", "catalog.json", "ledger.json", "debug")  # single-account layout
-# What a new account starts with; its owner changes them in Telegram (see Bot._settings).
+INVITE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 DEFAULTS = {"address_label": "", "address_match": "", "daily_cap": 1000.0, "min_order": 100.0, "place_orders": False}
-log = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -40,22 +30,18 @@ class Household:
     dir: Path
     owner: int
     members: tuple[int, ...]
-    address_label: str  # name of the saved address on the shop, e.g. "Home"
-    address_match: str  # text that must appear in that address, e.g. a flat number
-    daily_cap: float  # ₹ a day, counting unconfirmed attempts
-    min_order: float  # the shop adds a delivery fee below this, so smaller lists wait in the basket
-    place_orders: bool  # False: fill and check the cart only
+    address_label: str  # name of the saved address on the shop
+    address_match: str  # text that must appear in that address
+    daily_cap: float
+    min_order: float  # the shop charges a delivery fee below this
+    place_orders: bool
 
     @property
-    def state_file(self) -> Path:  # shop login (cookies); secret
+    def state_file(self) -> Path:
         return self.dir / "session.json"
 
     @property
-    def logged_in(self) -> bool:
-        return self.state_file.exists()
-
-    @property
-    def debug_dir(self) -> Path:  # screenshots of failed runs only, pruned
+    def debug_dir(self) -> Path:
         return self.dir / "debug"
 
     def catalog(self) -> Catalog:
@@ -69,20 +55,24 @@ class Accounts:
     def __init__(self, data_dir: Path, admin: int):
         self.root, self.admin = data_dir / "households", admin
         self.path = data_dir / "households.json"
-        self._lock = threading.RLock()  # read-modify-write from the polling and worker threads
+        self._lock = threading.Lock()
 
     def _read(self) -> dict:
         return {"households": {}, "users": {}, "invites": {}, **store.read(self.path, {})}
 
-    def _household(self, data: dict, hid: str) -> Household | None:
-        h = data["households"].get(hid)
-        if h is None:
+    @contextlib.contextmanager
+    def _edit(self):
+        with self._lock:
+            data = self._read()
+            yield data
+            store.write(self.path, data)
+
+    def _household(self, data: dict, hid: str | None) -> Household | None:
+        if (h := data["households"].get(hid)) is None:
             return None
-        members = tuple(int(u) for u, user in data["users"].items() if user.get("household") == hid)
+        members = tuple(int(u) for u, user in data["users"].items() if user["household"] == hid)
         settings = {**DEFAULTS, **h}
         return Household(hid, self.root / hid, h["owner"], members, *(settings[k] for k in DEFAULTS))
-
-    # ------------------------------------------------------------- reading
 
     def allowed(self, uid: int) -> bool:
         return uid == self.admin or str(uid) in self._read()["users"]
@@ -92,118 +82,74 @@ class Accounts:
 
     def household_of(self, uid: int) -> Household | None:
         data = self._read()
-        hid = data["users"].get(str(uid), {}).get("household")
-        return self._household(data, hid) if hid else None
+        return self._household(data, data["users"].get(str(uid), {}).get("household"))
 
     def all(self) -> list[Household]:
         data = self._read()
-        return [h for hid in data["households"] if (h := self._household(data, hid))]
+        return [self._household(data, hid) for hid in data["households"]]
 
     def name(self, uid: int) -> str:
         return self._read()["users"].get(str(uid), {}).get("name") or str(uid)
 
-    # ------------------------------------------------------------- changes
-
-    def bootstrap(self, data_dir: Path) -> None:
-        """First start: turn a single-account box (its files directly in /data) into the household
-        "home", owned by the admin. Its address is unset and ordering off until the admin sets them."""
-        with self._lock:
-            if self.path.exists():
-                return
-            data = self._read()
-            if any((data_dir / name).exists() for name in LEGACY_FILES):
-                home = self.root / "home"
-                home.mkdir(parents=True, exist_ok=True)
-                for name in LEGACY_FILES:
-                    if (data_dir / name).exists():
-                        os.replace(data_dir / name, home / name)
-                data["households"]["home"] = {**DEFAULTS, "owner": self.admin}
-                data["users"][str(self.admin)] = {"name": "", "household": "home"}
-                log.info("household created from the single-account setup", household="home")
-            store.write(self.path, data)
-
-    def allow(self, uid: int, name: str = "") -> None:
-        """An admin let this person in; they can now /setup their own account."""
-        with self._lock:
-            data = self._read()
-            data["users"].setdefault(str(uid), {"name": name, "household": None})
-            store.write(self.path, data)
+    def allow(self, uid: int) -> None:
+        with self._edit() as data:
+            data["users"].setdefault(str(uid), {"name": "", "household": None})
 
     def connect(self, uid: int, name: str, address_label: str, address_match: str, session: Path) -> Household:
-        """Install a fresh shop login. The owner of a household logs that one in again (picks and
-        history are kept); anyone else gets a new household of their own."""
-        with self._lock:
-            data = self._read()
+        """Install a shop login: into the household uid owns (keeping its picks and history), else a new one."""
+        with self._edit() as data:
             user = data["users"].setdefault(str(uid), {"name": name, "household": None})
-            user["name"] = name or user.get("name", "")
-            hid = user.get("household")
-            if not hid or data["households"].get(hid, {}).get("owner") != uid:
-                if hid:
-                    self._leave(data, uid)
-                hid = secrets.token_hex(4)
+            user["name"] = name or user["name"]
+            hid = user["household"]
+            if data["households"].get(hid, {}).get("owner") != uid:
+                _leave(self.root, data, uid)
+                hid = user["household"] = secrets.token_hex(4)
                 data["households"][hid] = {**DEFAULTS, "owner": uid}
-                user["household"] = hid
             data["households"][hid].update(address_label=address_label, address_match=address_match)
             (self.root / hid).mkdir(parents=True, exist_ok=True)
             os.replace(session, self.root / hid / "session.json")
-            store.write(self.path, data)
-            return self._household(data, hid)
+        return self._household(data, hid)
 
     def update(self, hid: str, **settings) -> None:
-        """Change some of a household's settings (keys of DEFAULTS)."""
         if not settings.keys() <= DEFAULTS.keys():
             raise ValueError(f"not settings: {settings.keys() - DEFAULTS.keys()}")
-        with self._lock:
-            data = self._read()
+        with self._edit() as data:
             data["households"][hid].update(settings)
-            store.write(self.path, data)
 
     def invite(self, hid: str) -> str:
-        """A one-time code that lets one person join the household, valid for INVITE_VALID."""
-        with self._lock:
-            data = self._read()
-            now = datetime.now()
+        now = datetime.now()
+        code = "".join(secrets.choice(INVITE_LETTERS) for _ in range(6))
+        with self._edit() as data:
             data["invites"] = {c: i for c, i in data["invites"].items() if datetime.fromisoformat(i["expires"]) > now}
-            code = "".join(secrets.choice(INVITE_LETTERS) for _ in range(6))
             data["invites"][code] = {"household": hid, "expires": (now + INVITE_VALID).isoformat(timespec="seconds")}
-            store.write(self.path, data)
-            return code
+        return code
 
     def join(self, uid: int, name: str, code: str) -> Household | None:
-        """Use an invite code. None if it is unknown, used or expired. Owners must /leave first."""
-        with self._lock:
-            data = self._read()
-            invite = data["invites"].pop(code.strip().upper(), None)
-            if not invite or datetime.fromisoformat(invite["expires"]) < datetime.now():
-                return None
+        """None if the code is unknown, used or expired."""
+        with self._edit() as data:
+            invite = data["invites"].pop(code.strip().upper(), {"household": None, "expires": "2000-01-01"})
             hid = invite["household"]
-            if hid not in data["households"]:
+            if datetime.fromisoformat(invite["expires"]) < datetime.now() or hid not in data["households"]:
                 return None
-            if data["users"].get(str(uid), {}).get("household"):
-                self._leave(data, uid)
+            _leave(self.root, data, uid)
             data["users"][str(uid)] = {"name": name, "household": hid}
-            store.write(self.path, data)
-            return self._household(data, hid)
+        return self._household(data, hid)
 
     def leave(self, uid: int) -> None:
-        """Leave the household. An owner hands it to the longest-standing other member; the last
-        one out deletes it, shop login and all."""
-        with self._lock:
-            data = self._read()
-            self._leave(data, uid)
-            store.write(self.path, data)
+        with self._edit() as data:
+            _leave(self.root, data, uid)
 
-    def _leave(self, data: dict, uid: int) -> None:
-        user = data["users"].get(str(uid), {})
-        hid = user.get("household")
-        if not hid:
-            return
-        user["household"] = None
-        others = [int(u) for u, o in data["users"].items() if o.get("household") == hid]
-        if others and data["households"][hid]["owner"] == uid:
-            data["households"][hid]["owner"] = others[0]
-        elif not others:
-            del data["households"][hid]
-            data["invites"] = {c: i for c, i in data["invites"].items() if i["household"] != hid}
-            shutil.rmtree(self.root / hid, ignore_errors=True)
-            log.info("household deleted", household=hid)
+
+def _leave(root: Path, data: dict, uid: int) -> None:
+    """An owner hands over to the longest-standing member; the last one out deletes the household."""
+    user = data["users"].get(str(uid), {})
+    if not (hid := user.get("household")):
+        return
+    user["household"] = None
+    others = [int(u) for u, o in data["users"].items() if o["household"] == hid]
+    if not others:
+        del data["households"][hid]
+        data["invites"] = {c: i for c, i in data["invites"].items() if i["household"] != hid}
+        shutil.rmtree(root / hid, ignore_errors=True)
+    elif data["households"][hid]["owner"] == uid:
+        data["households"][hid]["owner"] = others[0]

@@ -1,10 +1,6 @@
-"""The family's approved items: words people say -> shop products, best first, with limits.
+"""Words people say -> shop products, best first.
 
-catalog.json (on the data volume):
-  {"egg": {"aliases": ["anda", "eggs"], "max_qty": 3,
-           "options": [{"name": "...", "size": "1 pack (10 pcs)", "url": "/pn/.../pvid/..."}, ...]}}
-
-Items are added by picking a search result in Telegram, so the file grows from real use.
+catalog.json: {"egg": {"aliases": ["anda"], "max_qty": 3, "options": [{"name", "size", "url"}, ...]}}
 """
 
 import difflib
@@ -15,9 +11,8 @@ from pathlib import Path
 from . import store
 
 DEFAULT_MAX_QTY = 3
-MAX_OPTIONS = 3  # the pick + two backups
+MAX_OPTIONS = 3
 
-# Words around a spoken list ("order bread and eggs please", "mujhe anda chahiye").
 FILLER = frozenset(
     """order please pls get buy bring some a an the me us i want need and also mujhe hume
     humko chahiye lao le aao bhej dena dedo kar karo mangwa mangao ka ki ke packet packets pack packs""".split()
@@ -138,7 +133,6 @@ class Catalog:
         return [Product(o["name"], o["size"], o["url"]) for o in entry.get("options", []) if o.get("url")]
 
     def vocabulary(self) -> list[str]:
-        """Every name and alias, for the speech-to-text prompt."""
         return [n for key, entry in self._load().items() for n in (key, *entry.get("aliases", []))]
 
     def max_qty(self, key: str) -> int:
@@ -157,13 +151,12 @@ class Catalog:
 
 @dataclass
 class Plan:
-    ready: list[tuple[str, int]]  # catalog key, quantity
-    to_pick: list[tuple[str, int]]  # spoken name, quantity (needs a search + pick)
+    ready: list[tuple[str, int]]
+    to_pick: list[tuple[str, int]]
     notes: list[str]
 
 
 def plan(text: str, catalog: Catalog) -> Plan:
-    """Split a spoken/typed list into what can be ordered now and what needs picking."""
     merged: dict[str, int] = {}
     to_pick, notes = [], []
     for name, qty in split_spoken(text):

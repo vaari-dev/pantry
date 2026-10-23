@@ -1,5 +1,4 @@
-"""Settings of the bot itself, from the environment (see .env.example). Each account's own settings
-(address, limits, ordering on/off) are kept in households.json and changed in Telegram."""
+"""The bot's settings, from the environment (see .env.example). Accounts keep their own in households.json."""
 
 import os
 from dataclasses import dataclass
@@ -17,16 +16,16 @@ def _required(name: str) -> str:
 
 @dataclass(frozen=True)
 class Config:
-    shop_url: str  # the shop's website, e.g. https://www.example.com
+    shop_url: str
     telegram_token: str
-    admin_id: int  # Telegram user who lets new people in and gets the bot's own alerts
+    admin_id: int  # lets new people in, gets the bot's own alerts
     whisper_model: str
     data_dir: Path
-    proxy: str | None  # SOCKS5 proxy that exits through the home connection
-    health_hour: int  # local hour for the daily self-check
+    proxy: str | None  # exits through the home connection
+    health_hour: int
 
     @property
-    def debug_dir(self) -> Path:  # screenshots of failed logins and checks only, pruned
+    def debug_dir(self) -> Path:
         return self.data_dir / "debug"
 
 
@@ -37,7 +36,7 @@ def load() -> Config:
         admin_id=int(_required("TELEGRAM_ADMIN_ID")),
         whisper_model=os.environ.get("WHISPER_MODEL", "small"),
         data_dir=Path(os.environ.get("DATA_DIR", "/data")),
-        # docker/entrypoint.sh serves this SOCKS5 proxy (exiting at home) whenever TS_EXIT_NODE is set.
+        # served by docker/entrypoint.sh
         proxy=TAILSCALE_PROXY if os.environ.get("TS_EXIT_NODE") else None,
         health_hour=int(os.environ.get("HEALTH_CHECK_HOUR", "9")),
     )

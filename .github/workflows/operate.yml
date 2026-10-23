@@ -9,9 +9,8 @@ on:
         description: What to do
         type: choice
         options:
-          - check            # home exit; each account's shop login and delivery address
+          - check            # home exit, each account's login and address
           - logs             # the bot's recent log lines and health
-          - set-login        # install the SHOP_SESSION secret as the "home" account's shop login
           - remove           # stop the bot and delete everything on the box, data included
       confirm:
         description: Type the action name again to confirm "remove"
@@ -46,12 +45,4 @@ jobs:
           user: ${{ vars.SSH_USER }}
           known-hosts: ${{ vars.SSH_KNOWN_HOSTS }}
           private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-      - if: inputs.action == 'set-login'
-        env:
-          SHOP_SESSION: ${{ secrets.SHOP_SESSION }}
-        run: |
-          [ -n "$SHOP_SESSION" ] || { echo "::error::Set the SHOP_SESSION secret first (README: Shop login)." >&2; exit 1; }
-          printf '%s' "$SHOP_SESSION" | ssh box "'$DIR/box.sh' set-login"
-          ssh box "'$DIR/box.sh' check"
-      - if: inputs.action != 'set-login'
-        run: ssh box "'$DIR/box.sh' $ACTION"
+      - run: ssh box "'$DIR/box.sh' $ACTION"

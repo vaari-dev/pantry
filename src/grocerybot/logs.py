@@ -1,9 +1,4 @@
-"""Logs: one JSON object per line on stdout ({"ts", "level", "logger", "msg", ...fields}).
-
-Docker keeps them and the Grafana/Loki stack on the box collects them, labelled by compose
-service, with `level` read from each line. Log events and ids, never message text, tokens or
-addresses.
-"""
+"""JSON lines on stdout, collected by Loki. Never log message text, tokens or addresses."""
 
 import logging
 import sys
@@ -19,7 +14,6 @@ _shared = [
 
 
 def setup(level: str = "INFO") -> None:
-    """Route structlog and the standard library (third-party loggers too) through one JSON renderer."""
     structlog.configure(
         processors=[*_shared, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
         logger_factory=structlog.stdlib.LoggerFactory(),
@@ -41,4 +35,4 @@ def setup(level: str = "INFO") -> None:
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level.upper())
-    logging.getLogger("httpx").setLevel(logging.WARNING)  # huggingface/whisper model fetch noise
+    logging.getLogger("httpx").setLevel(logging.WARNING)

@@ -1,8 +1,6 @@
-"""Voice note -> text with Whisper (runs on the server's CPU; the model is baked into the image)."""
-
 from pathlib import Path
 
-# An example in the way the family talks nudges Whisper to write Hindi words in Latin script.
+# Nudges Whisper to write Hindi words in Latin script.
 PROMPT = "Bread aur do anda, ek doodh, teen kela, dhania aur aloo. Grocery items: {items}."
 
 
@@ -11,9 +9,8 @@ class Transcriber:
         self._model_name, self._model = model, None
 
     def __call__(self, audio: Path, vocabulary: list[str]) -> str:
-        """vocabulary: the household's item names, so Whisper spells them the way the catalog does."""
         if self._model is None:
-            from faster_whisper import WhisperModel  # heavy import; only once a voice note arrives
+            from faster_whisper import WhisperModel
 
             self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8")
         items = ", ".join(vocabulary[:80])

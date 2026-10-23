@@ -1,5 +1,3 @@
-"""Turning a planned list into an order, safely."""
-
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -18,11 +16,12 @@ log = structlog.get_logger(__name__)
 class Outcome:
     placed: bool = False
     total: float | None = None
-    lines: list[str] = field(default_factory=list)  # what went into the cart
-    unavailable: list[str] = field(default_factory=list)  # catalog keys none of whose options could be added
-    problems: list[str] = field(default_factory=list)  # why it was not placed
+    lines: list[str] = field(default_factory=list)
+    unavailable: list[str] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
     item_total: float = 0
-    waiting: bool = False  # under the shop's minimum: kept in the basket for the next list
+    waiting: bool = False
+    unconfirmed: bool = False  # tapped Place Order, but no such order on the Orders page
 
     @property
     def result(self) -> str:
@@ -34,15 +33,12 @@ class Outcome:
             return "waiting"
         return "blocked" if self.problems else "cart ready"
 
-    unconfirmed: bool = False  # Place Order was tapped but the order could not be found afterwards
-
 
 def browser(cfg: Config, hh: Household, images: bool = False) -> Browser:
     return Browser(cfg.shop_url, hh.state_file, cfg.proxy, hh.debug_dir, images=images)
 
 
 def login_browser(cfg: Config, state_file: Path) -> Browser:
-    """A logged-out Chrome whose session, once logged in, is saved to state_file."""
     return Browser(cfg.shop_url, state_file, cfg.proxy, cfg.debug_dir, fresh=True)
 
 
@@ -51,24 +47,18 @@ def rules(hh: Household) -> Rules:
 
 
 def exit_ip(cfg: Config) -> str:
-    """The address the shop sees (should be home's), from a logged-out Chrome. Raises ShopError."""
     with Browser(cfg.shop_url, None, cfg.proxy, cfg.debug_dir) as b:
         return b.public_ip()
 
 
 def check(cfg: Config, hh: Household) -> None:
-    """Self-check of one account: login valid, right address. Raises ShopError."""
     with browser(cfg, hh) as b:
         b.check_session(rules(hh))
 
 
 def order(cfg: Config, hh: Household, items: list[tuple[str, int]]) -> Outcome:
-    """Add the list to the basket, fill the cart with each item's first available option, verify
-    every rule, and place it once the item total reaches the shop's minimum.
-
-    The attempt is written to the ledger before Place Order is tapped, so a crash can never lead
-    to a silent second order: an unfinished attempt is reported, not retried.
-    """
+    """The attempt is written to the ledger before Place Order is tapped, so a crash can never lead
+    to a silent second order: an unfinished attempt is reported, not retried."""
     catalog, ledger = hh.catalog(), hh.ledger()
     out, limits = Outcome(), rules(hh)
     if limits.budget <= 0:
@@ -99,10 +89,10 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]]) -> Outcome:
         out.total, out.problems, out.item_total = cart.total, cart.problems, cart.item_total
         if cart.problems:
             b.screenshot("cart")
-            return out  # the basket stays as it was
+            return out
         if cart.item_total < hh.min_order:
             out.waiting = True
-            ledger.set_basket(placed_items)  # ordered together with the next list
+            ledger.set_basket(placed_items)
             return out
         if not hh.place_orders:
             return out

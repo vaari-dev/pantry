@@ -1,10 +1,7 @@
-"""Order history kept by the bot: daily spend cap, no double orders, "what's due", and the basket.
+"""ledger.json: {"orders": [{"id", "day", "at", "status", "total", "items"}], "basket": [[key, qty]]}
 
-ledger.json: {"orders": [{"id", "day", "at", "status", "total", "items": [[key, qty], ...]}],
-              "basket": [[key, qty], ...]}
-status: placing -> placed | failed | unknown. "placing" left over after a crash means the
-order may or may not have gone through; it is reported to the user, never retried.
-The basket holds items waiting for the order to reach the shop's minimum.
+status: placing -> placed | failed | unknown. "placing" left over after a crash may or may not
+have gone through: it is reported, never retried.
 """
 
 import statistics
@@ -37,7 +34,7 @@ class Ledger:
 
     def spent_today(self) -> float:
         today = date.today().isoformat()
-        # Unconfirmed attempts count too: better to under-spend than to over-spend.
+        # unconfirmed attempts count: better to under-spend
         return sum(
             o["total"] or 0
             for o in self._orders()
@@ -45,7 +42,6 @@ class Ledger:
         )
 
     def begin(self, items: list[tuple[str, int]], total: float) -> str:
-        """Record an attempt right before Place Order is tapped."""
         order_id = uuid.uuid4().hex[:8]
         now = datetime.now()
         orders = self._orders()

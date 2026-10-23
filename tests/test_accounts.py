@@ -18,21 +18,7 @@ def login(tmp_path, name="s.json"):
     return tmp_path / name
 
 
-def test_bootstrap_moves_single_account_files_into_home(tmp_path, accounts):
-    for name in ("session.json", "catalog.json", "ledger.json"):
-        (tmp_path / name).write_text("{}")
-    accounts.bootstrap(tmp_path)
-    home = accounts.household_of(ADMIN)
-    assert (home.id, home.owner, home.members) == ("home", ADMIN, (ADMIN,))
-    assert home.logged_in and not (tmp_path / "session.json").exists()
-    assert (home.address_label, home.place_orders) == ("", False)  # until the admin sets them
-    accounts.update("home", address_label="Home")
-    accounts.bootstrap(tmp_path)  # only ever once
-    assert accounts.get("home").address_label == "Home"
-
-
-def test_bootstrap_of_a_new_box_starts_empty(tmp_path, accounts):
-    accounts.bootstrap(tmp_path)
+def test_only_admin_is_allowed_at_first(accounts):
     assert accounts.all() == []
     assert accounts.allowed(ADMIN) and not accounts.allowed(ASHA)
 
@@ -41,7 +27,7 @@ def test_setup_creates_own_household_then_logs_it_in_again(tmp_path, accounts):
     accounts.allow(ASHA)
     assert accounts.allowed(ASHA) and accounts.household_of(ASHA) is None
     hh = accounts.connect(ASHA, "Asha", "Home", "12B", login(tmp_path))
-    assert (hh.owner, hh.members, hh.logged_in) == (ASHA, (ASHA,), True)
+    assert (hh.owner, hh.members, hh.state_file.exists()) == (ASHA, (ASHA,), True)
     hh.ledger().set_basket([("bread", 1)])
     again = accounts.connect(ASHA, "Asha", "Work", "Tower 3", login(tmp_path))
     assert again.id == hh.id and again.address_label == "Work"
