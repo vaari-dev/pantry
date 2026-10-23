@@ -394,7 +394,7 @@ class Bot:
             self.picking[pid] = Picking(chat_id, hh.id, p.ready, asks)
         if p.ready:
             self._say(chat_id, f"Got: {_items(p.ready)}. Pick the rest:")
-        for n, (name, qty, options, ids) in asks.items():
+        for n, (name, qty, options, ids) in list(asks.items()):  # taps answer (pop) items while these go out
             ids.append(self._say(chat_id, f'Which "{name}" (×{qty})?', [("Skip this item", f"{pid}:{n}:x")]))
             ids += [self._offer(chat_id, product, f"{pid}:{n}:{i}") for i, product in enumerate(options)]
 

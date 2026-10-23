@@ -156,6 +156,9 @@ class FakeBrowser:
 
     def screenshot(self, tag): ...
 
+    def search(self, query):
+        return [Product(f"{query.title()} {n}", "1 pc", f"https://shop.example/{query}/{n}") for n in (1, 2)]
+
 
 @pytest.fixture
 def shop(bot, monkeypatch):
@@ -363,3 +366,25 @@ def test_busy_clears_after_a_skipped_job(bot, shop):
         bot._queue(bot._clear, NEW, dataclasses.replace(hh, id="gone"))
     idle(bot)
     assert not botmod.BUSY.exists()
+
+
+def test_a_pick_while_the_options_are_still_coming_in(bot, shop):
+    """Tapping the first item's option while the second's are still being sent."""
+    hh, _ = shop
+    send = bot.tg.send
+
+    def tap_first_option(chat_id, text, buttons=None, markup=None, entities=None):
+        if text.startswith('Which "jam"'):
+            pid = buttons[0][1].split(":")[0]
+            bot._pick(hh, f"{pid}:0:0")
+        return send(chat_id, text, buttons, markup, entities)
+
+    bot.tg.send = tap_first_option
+    bot.tg.edit_text = lambda *_: None
+    bot._on_message(message("eggs, jam"))
+    said(bot, "Jam 2")
+    idle(bot)
+    assert not [t for _, t, _ in bot.tg.sent if t.startswith("Something went wrong")]
+    pid = next(iter(bot.picking))
+    bot._pick(hh, f"{pid}:1:1")
+    said(bot, "⏳ Cart ready (₹120)")
