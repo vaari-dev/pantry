@@ -37,9 +37,10 @@ COMMANDS = {
     "leave": "Stop ordering with this account",
     "help": "How to order",
 }
-DESCRIPTION = (  # what Telegram shows before someone taps Start
-    "🛒 Groceries from a voice note.\n\n"
-    'Say "bread aur do anda" and I\'ll order it on your own shop account, paid from its wallet. '
+SHORT = "Groceries from a voice note."
+DESCRIPTION = (
+    f"🛒 {SHORT}\n\n"
+    'Say "bread aur do anda" and I\'ll order it on your shop account, paid from its wallet. '
     "No app to open, no browsing, no upsells."
 )
 HELP = (
@@ -47,12 +48,12 @@ HELP = (
     '• "bread aur do anda"\n'
     '• "2 milk, bananas"\n\n'
     "Something new? I'll show you options with photos: tap ✅ Pick and I'll remember it next time.\n"
-    "Small lists wait in the /basket until they reach the shop's minimum."
+    "Small lists wait in the /basket until they reach the smallest order (/settings)."
 )
 TRY = 'Try it now 👉 send a voice note saying "bread aur do anda", or type "2 milk, bananas".'
 CONNECT = "🛒 Connect my shop account"
 CONNECT_BUTTON = {"keyboard": [[{"text": CONNECT}]], "resize_keyboard": True}
-NOT_SET_UP = "Connect your shop account to start ordering: it takes a minute. (Family can also send you an /invite.)"
+NOT_SET_UP = "Connect your shop account to start ordering: it takes a minute. Or open an invite link from family."
 DEBUG_KEEP = timedelta(days=7)
 ALERT_REPEAT = timedelta(hours=6)
 ANSWER_WAIT = 600
@@ -111,7 +112,7 @@ class Bot:
         self.username = ""
 
     def run(self) -> None:
-        self.username = self.tg.setup(COMMANDS, DESCRIPTION, "Groceries from a voice note.")
+        self.username = self.tg.setup(COMMANDS, DESCRIPTION, SHORT)
         log.info("bot started", bot=self.username, households=len(self.accounts.all()))
         for hh in self.accounts.all():
             for o in hh.ledger().interrupted():
@@ -230,7 +231,7 @@ class Bot:
             if hh:
                 self._say(chat_id, HELP)
             else:
-                self._say(chat_id, f"{HELP}\n\n{NOT_SET_UP}", markup=CONNECT_BUTTON)
+                self._not_set_up(chat_id, f"{HELP}\n\n")
         elif command == "/setup":
             if private:
                 self.replies[uid] = queue.Queue()
@@ -239,7 +240,7 @@ class Bot:
             else:
                 self._say(chat_id, "Send /setup in a private chat with me: it needs your phone number and OTP.")
         elif not hh:
-            self._say(chat_id, NOT_SET_UP, markup=CONNECT_BUTTON)
+            self._not_set_up(chat_id)
         elif command == "/leave":
             self._leave(chat_id, uid, hh, arg)
         elif command == "/members":
@@ -407,8 +408,12 @@ class Bot:
         if not self.accounts.allowed(new):
             self.accounts.allow(new)
             log.info("access granted", user=new)
-            self._say(new, f"🎉 You're in! {NOT_SET_UP}", markup=CONNECT_BUTTON)
+            self._not_set_up(new, "🎉 You're in! ")
         return True
+
+    def _not_set_up(self, chat_id: int, prefix: str = "") -> None:
+        # Group chats have negative ids; a reply keyboard there would pop up for everyone.
+        self._say(chat_id, prefix + NOT_SET_UP, markup=CONNECT_BUTTON if chat_id > 0 else None)
 
     def _join(self, chat_id: int, user: dict, code: str) -> None:
         uid, name = user.get("id"), user.get("first_name", "")
@@ -419,7 +424,8 @@ class Bot:
             return self._say(chat_id, "That invite link has expired or was used. Ask for a new one.")
         log.info("household joined", household=hh.id, user=uid)
         owner = self.accounts.name(hh.owner)
-        self._say(chat_id, f"🎉 Welcome! You now order with {owner}'s shop account.\n\n{TRY}\n\n/help shows the rest.")
+        welcome = f"🎉 Welcome! You now order with {owner}'s shop account.\n\n{TRY}\n\n/help shows the rest."
+        self._say(chat_id, welcome, markup=NO_KEYBOARD)
         self._say(hh.owner, f"👋 {name or uid} joined your account and can order now.")
 
     def _invite(self, chat_id: int, hh: Household) -> None:
@@ -459,7 +465,7 @@ class Bot:
             return
         self.accounts.leave(member, hh.id)
         log.info("household left", household=hh.id, user=member)
-        self._say(member, f"You no longer order with that account. {NOT_SET_UP}", markup=CONNECT_BUTTON)
+        self._not_set_up(member, "You no longer order with that account. ")
         if chat_id != member:
             self._say(chat_id, f"Removed {self.accounts.name(member)}.")
         if (now := self.accounts.get(hh.id)) and now.owner != hh.owner:
@@ -543,10 +549,11 @@ class Bot:
                 label, match = self._choose_address(chat_id, uid, b)
             hh = self.accounts.connect(uid, name, label, match, session)
             log.info("household connected", household=hh.id, user=uid)
+            paid = "paid from your shop wallet" if hh.place_orders else "carts filled for you to pay (/ordering on)"
             self._say(
                 chat_id,
                 f"🎉 You're all set{', ' + name if name else ''}!\n\n{TRY}\n\n"
-                f"Orders go to {hh.address_label}, paid from your shop wallet, up to ₹{hh.daily_cap:g} a day "
+                f"Orders go to {hh.address_label}, {paid}, up to ₹{hh.daily_cap:g} a day "
                 "(/settings). Want family to order too? Send /invite.",
                 markup=NO_KEYBOARD,
             )
