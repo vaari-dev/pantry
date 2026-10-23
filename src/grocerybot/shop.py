@@ -46,6 +46,7 @@ SKIP_URLS = (
 )
 WALLET = re.compile(r"\bCash\b")  # the prepaid wallet: the only way the bot pays
 COINS = re.compile(r"\bCoins\b")  # reward coins: never used
+LOGGED_OUT = "[data-testid=login-btn]"
 PLUS = "button[aria-label='Increase quantity by one']:not([data-hidden=true])"
 log = logging.getLogger(__name__)
 
@@ -143,7 +144,7 @@ class Browser:
         try:
             addr.wait_for(timeout=20_000)
         except PlaywrightTimeout:
-            if self.page.get_by_text("Login", exact=True).count():
+            if self.page.locator(LOGGED_OUT).count():
                 raise ShopError("the shop login has expired") from None
             raise ShopError("could not read the delivery address") from None
         text = addr.inner_text()

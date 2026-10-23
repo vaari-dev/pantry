@@ -3,7 +3,7 @@
 # Only ever touches its own directory, the grocery-bot compose project and its volume.
 #
 #   deploy IMAGE  pull IMAGE and (re)start
-#   set-login     replace the shop session with the one on stdin
+#   set-login [if-missing]  install the shop session from stdin (if-missing: only when there is none)
 #   check         self-check inside the running bot (login, address, home exit)
 #   remove        stop and delete everything, volume included
 set -euo pipefail
@@ -33,6 +33,10 @@ case "${1:?command}" in
     docker image prune -f --filter "label=org.opencontainers.image.source=https://github.com/vaari-dev/grocery-bot" >/dev/null
     ;;
   set-login)
+    if [ "${2:-}" = if-missing ] && in_bot test -s /data/session.json; then
+      echo "keeping the bot's shop session"
+      exit 0
+    fi
     in_bot sh -c 'umask 077; cat > /data/session.json'
     ;;
   check)

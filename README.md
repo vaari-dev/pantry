@@ -50,6 +50,9 @@ Create a reusable auth key for the bot (Settings → Keys).
 | Variables | |
 |---|---|
 | `SHOP_URL` | the shop's website |
+| `TELEGRAM_USER_IDS` | who may order, comma-separated (each can send `/id` to the bot); the first gets alerts |
+| `ADDRESS_LABEL` | name of the saved delivery address on the shop, e.g. `Home` |
+| `ADDRESS_MATCH` | text that must be in that address, e.g. the flat number |
 | `SSH_HOST`, `SSH_USER` | the box |
 | `SSH_KNOWN_HOSTS` | `ssh-keyscan <host>` output |
 | `TS_EXIT_NODE` | Tailscale IP of the home exit node |
@@ -60,22 +63,19 @@ Create a reusable auth key for the bot (Settings → Keys).
 |---|---|
 | `SSH_PRIVATE_KEY` | deploy key for the box |
 | `TELEGRAM_BOT_TOKEN` | from @BotFather |
-| `TELEGRAM_USER_ID` | yours (send `/id` to the bot) |
-| `ADDRESS_LABEL` | name of the saved delivery address on the shop, e.g. `Home` |
-| `ADDRESS_MATCH` | text that must be in that address, e.g. the flat number |
 | `TS_AUTHKEY` | Tailscale auth key (only used for the first login) |
-| `SHOP_SESSION` | your shop session, see below |
+| `SHOP_SESSION` | your shop session, see below (installed on the first deploy) |
 
 **3. Deploy.** Push to `main`. The *Deploy* workflow runs the checks, builds the arm64 image to
-ghcr.io, restarts the bot on the box, and runs the self-check.
+ghcr.io, installs Docker on a fresh box, restarts the bot, and runs the self-check.
 
-**4. Shop login** (first time, and whenever the bot reports it expired):
+**4. Shop login** (before the first deploy, and whenever the bot reports it expired):
 
 ```sh
 pip install playwright && playwright install chromium
 SHOP_URL=https://... python scripts/login.py session.json   # log in with phone + OTP in the window
 gh secret set SHOP_SESSION --env oracle-cloud < session.json && rm session.json
-gh workflow run operate.yml -f action=set-login
+gh workflow run operate.yml -f action=set-login   # only to replace an expired login
 ```
 
 `SHOP_SESSION` is your logged-in session: anyone holding it can use the account and its wallet.

@@ -70,21 +70,25 @@ jobs:
         env:
           SHOP_URL: ${{ vars.SHOP_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
-          ADDRESS_LABEL: ${{ secrets.ADDRESS_LABEL }}
-          ADDRESS_MATCH: ${{ secrets.ADDRESS_MATCH }}
+          TELEGRAM_USER_IDS: ${{ vars.TELEGRAM_USER_IDS }}
+          ADDRESS_LABEL: ${{ vars.ADDRESS_LABEL }}
+          ADDRESS_MATCH: ${{ vars.ADDRESS_MATCH }}
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
           TS_EXIT_NODE: ${{ vars.TS_EXIT_NODE }}
           DAILY_CAP_INR: ${{ vars.DAILY_CAP_INR || '1000' }}
           MIN_ORDER_INR: ${{ vars.MIN_ORDER_INR || '100' }}
           PLACE_ORDERS: ${{ vars.PLACE_ORDERS || 'false' }}
         run: |
-          required=(SHOP_URL TELEGRAM_BOT_TOKEN TELEGRAM_USER_ID ADDRESS_LABEL ADDRESS_MATCH TS_EXIT_NODE)
+          required=(SHOP_URL TELEGRAM_BOT_TOKEN TELEGRAM_USER_IDS ADDRESS_LABEL ADDRESS_MATCH TS_EXIT_NODE)
           names=("${required[@]}" TS_AUTHKEY DAILY_CAP_INR MIN_ORDER_INR PLACE_ORDERS)
           for name in "${required[@]}"; do
             [ -n "${!name}" ] || { echo "::error::$name is unset in the oracle-cloud environment." >&2; exit 1; }
           done
           (umask 077; for name in "${names[@]}"; do printf '%s=%s\n' "$name" "${!name}"; done > bot.env)
+
+      - name: Prepare the box (Docker, first time only)
+        run: |
+          ssh box 'command -v docker >/dev/null || { curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker "$USER"; }'
 
       - name: Ship config
         run: |
@@ -103,6 +107,13 @@ jobs:
           printf '%s' "$GHCR_TOKEN" | ssh box "docker login ghcr.io -u '$ACTOR' --password-stdin" >/dev/null
           trap 'ssh box "docker logout ghcr.io" >/dev/null' EXIT
           ssh box "'$DIR/box.sh' deploy '$IMAGE:${{ github.sha }}'"
+
+      - name: Shop login (first deploy only; later ones keep the bot's refreshed session)
+        env:
+          SHOP_SESSION: ${{ secrets.SHOP_SESSION }}
+        run: |
+          [ -n "$SHOP_SESSION" ] || { echo "::warning::SHOP_SESSION is unset; the bot keeps its current shop login."; exit 0; }
+          printf '%s' "$SHOP_SESSION" | ssh box "'$DIR/box.sh' set-login if-missing"
 
       - name: Self-check (shop login, address, home exit)
         run: ssh box "'$DIR/box.sh' check"

@@ -95,7 +95,7 @@ class Bot:
                 job(*args)
             except ShopError as e:
                 chat_id = args[0] if args else None
-                self._say(chat_id or self.cfg.user_id, f"❌ Couldn't order: {e}.")
+                self._say(chat_id or self.cfg.user_ids[0], f"❌ Couldn't order: {e}.")
             except Exception:
                 log.exception("job failed")
                 if args:
@@ -131,22 +131,22 @@ class Bot:
             return None
 
     def alert(self, text: str) -> None:
-        """Tell the user about a problem that needs them, at most once per ALERT_REPEAT."""
+        """Tell the first user about a problem that needs them, at most once per ALERT_REPEAT."""
         last = self.alerted.get(text)
         if last and datetime.now() - last < ALERT_REPEAT:
             return
         self.alerted[text] = datetime.now()
-        self._say(self.cfg.user_id, text)
+        self._say(self.cfg.user_ids[0], text)
 
     # ------------------------------------------------------------- incoming
 
     def _on_message(self, msg: dict) -> None:
         chat_id, user = msg["chat"]["id"], msg.get("from", {})
         uid, text = user.get("id"), (msg.get("text") or "").strip()
-        if text.startswith("/id") or (text.startswith("/start") and uid != self.cfg.user_id):
+        if text.startswith("/id") or (text.startswith("/start") and uid not in self.cfg.user_ids):
             self._say(chat_id, f"Your Telegram id is {uid}.")
             return
-        if uid != self.cfg.user_id:
+        if uid not in self.cfg.user_ids:
             log.info("ignored a message from a user who is not allowed")
             return
         if text.startswith(("/start", "/help")):
@@ -225,7 +225,7 @@ class Bot:
 
     def _on_pick(self, cb: dict) -> None:
         self.tg.answer(cb["id"])
-        if cb.get("from", {}).get("id") != self.cfg.user_id:
+        if cb.get("from", {}).get("id") not in self.cfg.user_ids:
             return
         try:
             pid, n, choice = cb["data"].rsplit(":", 2)

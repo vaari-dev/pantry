@@ -28,8 +28,8 @@ def main() -> None:
         page.goto(url)
         print("Log in in the browser window and pick the delivery address...")
         address = page.locator("[data-testid=user-address]").first
-        logged_out = page.get_by_text("Login", exact=True)
-        while not (address.count() and address.inner_text().strip() and not logged_out.count()):
+        logged_out = page.locator("[data-testid=login-btn]")
+        while logged_out.count() or not address.count() or address.inner_text().startswith("Select Location"):
             time.sleep(2)
         time.sleep(3)  # let the session settle
         ctx.storage_state(path=out)

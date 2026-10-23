@@ -18,7 +18,7 @@ def _required(name: str) -> str:
 class Config:
     shop_url: str  # the shop's website, e.g. https://www.example.com
     telegram_token: str
-    user_id: int  # the one Telegram user who may order; also gets the alerts
+    user_ids: tuple[int, ...]  # Telegram users who may order; the first also gets the alerts
     address_label: str  # name of the saved address on the shop, e.g. "Home"
     address_match: str  # text that must appear in that address, e.g. a flat number
     daily_cap: float
@@ -50,7 +50,7 @@ def load() -> Config:
     return Config(
         shop_url=_required("SHOP_URL"),
         telegram_token=_required("TELEGRAM_BOT_TOKEN"),
-        user_id=int(_required("TELEGRAM_USER_ID")),
+        user_ids=tuple(int(i) for i in _required("TELEGRAM_USER_IDS").replace(" ", "").split(",") if i),
         address_label=_required("ADDRESS_LABEL"),
         address_match=_required("ADDRESS_MATCH"),
         daily_cap=float(os.environ.get("DAILY_CAP_INR", "1000")),
