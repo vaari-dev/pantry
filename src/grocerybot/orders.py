@@ -22,6 +22,7 @@ class Outcome:
     item_total: float = 0
     waiting: bool = False
     unconfirmed: bool = False  # tapped Place Order, but no such order on the Orders page
+    cod: bool = False  # cash on delivery: the wallet falls short
 
     @property
     def result(self) -> str:
@@ -86,7 +87,7 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]]) -> Outcome:
             return out
 
         cart = b.review_cart(expected, limits)
-        out.total, out.problems, out.item_total = cart.total, cart.problems, cart.item_total
+        out.total, out.problems, out.item_total, out.cod = cart.total, cart.problems, cart.item_total, cart.cod
         if cart.problems:
             b.screenshot("cart")
             return out
@@ -99,8 +100,12 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]]) -> Outcome:
 
         attempt, started = ledger.begin(placed_items, cart.total), datetime.now()
         ledger.set_basket([])  # never ordered twice, even if the outcome is unclear
-        b.place()
+        stopped = b.place_cod() if cart.cod else b.place()
         out.placed = b.confirm(cart.total, started)
+        if stopped and not out.placed:
+            out.problems.append(stopped)
+            ledger.finish(attempt, "failed")
+            return out
         out.unconfirmed = not out.placed
         ledger.finish(attempt, "placed" if out.placed else "unknown")
         if out.unconfirmed:

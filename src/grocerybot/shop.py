@@ -41,8 +41,12 @@ SKIP_URLS = (
     "~partytown",
     "/proxy/",
 )
-WALLET = re.compile(r"\bCash\b")  # the prepaid wallet: the only way the bot pays
+WALLET = re.compile(r"\bCash\b(?! on [Dd]elivery)")  # the prepaid wallet: used whenever it covers the bill
 COINS = re.compile(r"\bCoins\b")  # reward coins: never used
+COD = re.compile(r"(cash|pay) on delivery", re.I)  # when the wallet falls short
+CHECKOUT = re.compile(r"place order|pay|proceed", re.I)  # the cart's bottom button, whatever it says then
+PLACE = re.compile(r"^\s*(place|confirm) order", re.I)
+UNAVAILABLE = re.compile(r"not available|unavailable", re.I)
 LOGGED_OUT = "[data-testid=login-btn]"
 ADDRESS = "[data-testid=user-address]"
 PHONE_FIELD = "input[type=tel], input[inputmode=numeric], input[name*=phone i]"
@@ -106,10 +110,17 @@ class Cart:
     item_total: float = 0
     items: list[tuple[str, int]] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
+    cod: bool = False  # the wallet falls short: cash on delivery for the whole bill
 
 
 def _money(text: str) -> float:
     return float(text.replace(",", ""))
+
+
+def _amount(text: str, label: str) -> float | None:
+    """The amount on the bill line after label; a struck-out price before it is skipped."""
+    m = re.search(label + r"\s*\n(?:-?₹[\d,.]+\s*\n)?-?₹([\d,.]+)", text)
+    return _money(m.group(1)) if m else None
 
 
 def _mask(value):
@@ -418,17 +429,24 @@ class Browser:
             self.page.wait_for_timeout(700)
         self.page.keyboard.press("Escape")
 
-    def review_cart(self, expected: dict[str, int], rules: Rules) -> Cart:
-        """Selects the wallet, never reward coins, and checks every rule."""
+    def _pay_with(self, wallet: bool) -> dict:
+        """Ticks or unticks the wallet, unticks reward coins; returns the cart as it then is."""
         cart = self._open_cart()
         for i, box in enumerate(cart["boxes"]):
-            want = bool(WALLET.search(box["label"]))
-            if (want or COINS.search(box["label"])) and box["checked"] != want:
+            want = wallet and bool(WALLET.search(box["label"]))
+            if (WALLET.search(box["label"]) or COINS.search(box["label"])) and box["checked"] != want:
                 self.page.locator("[data-testid=cart-screen] input[type=checkbox]").nth(i).click(force=True)
                 self.page.wait_for_timeout(1500)
                 cart = self._open_cart()
+        return cart
 
-        text, result, seen = cart["text"], Cart(), set()
+    def review_cart(self, expected: dict[str, int], rules: Rules) -> Cart:
+        """Pays from the wallet when it covers the whole bill, else cash on delivery; never reward coins.
+        Checks every rule."""
+        cart, result, seen = self._pay_with(wallet=True), Cart(), set()
+        if (_amount(cart["text"], "To Pay") or 0) > 0:
+            cart, result.cod = self._pay_with(wallet=False), True
+        text = cart["text"]
         if not text.startswith(rules.address_label) or rules.address_match not in text:
             result.problems.append(f"the cart is not delivering to '{rules.address_label}'")
         for item in cart["items"]:
@@ -444,35 +462,75 @@ class Browser:
         for box in cart["boxes"]:
             if COINS.search(box["label"]) and box["checked"]:
                 result.problems.append("reward coins are selected")
-            if WALLET.search(box["label"]) and not box["checked"]:
-                result.problems.append("the wallet is not selected")
+            if WALLET.search(box["label"]) and box["checked"] == result.cod:
+                result.problems.append("the wallet is still selected" if result.cod else "the wallet is not selected")
 
-        amount = lambda label: re.search(label + r"\s*\n(?:-?₹[\d,.]+\s*\n)?-?₹([\d,.]+)", text)  # noqa: E731
-        item_total, to_pay, cash = amount("Item Total"), amount("To Pay"), amount(r"[^\n]*\bCash")
-        if item_total:
-            result.item_total = _money(item_total.group(1))
+        item_total, to_pay = _amount(text, "Item Total"), _amount(text, "To Pay")
+        if item_total is not None:
+            result.item_total = item_total
         else:
             result.problems.append("could not read the item total")
-        if not to_pay or _money(to_pay.group(1)) != 0:
-            result.problems.append("the wallet does not cover the whole bill")
-        result.total = _money(cash.group(1)) if cash else None
+        if result.cod:
+            result.total = to_pay
+        else:
+            if to_pay != 0:
+                result.problems.append("the wallet does not cover the whole bill")
+            result.total = _amount(text, r"[^\n]*\bCash")
         if result.total is None:
-            result.problems.append("could not read the amount paid from the wallet")
+            result.problems.append("could not read the amount to pay")
         elif result.total > rules.budget:
             result.problems.append(f"₹{result.total:g} is more than what is left of today's limit (₹{rules.budget:g})")
         return result
 
     def place(self) -> None:
-        """Also confirms the "Missed something?" upsell pop-up, adding nothing."""
+        """Pays from the wallet."""
         self.page.locator("[data-testid=cart-screen] button", has_text="Place Order").click()
         self.page.wait_for_timeout(3000)
+        self._skip_upsell()
+        self.page.wait_for_timeout(15_000)  # "Confirming your order..."
+
+    def place_cod(self) -> str | None:
+        """Checks out with cash on delivery. None once Place Order is tapped, else why it stopped before.
+        Any click here may already place the order, so the caller confirms it either way."""
+        self.page.locator("[data-testid=cart-screen] button", has_text=CHECKOUT).last.click()
+        self.page.wait_for_timeout(3000)
+        self._skip_upsell()
+        if (option := self._wait_for(COD)) is None:
+            self.screenshot("payment")
+            return "cash on delivery is not offered for this order"
+        if UNAVAILABLE.search(option.evaluate("e => (e.closest('label, li, button, [role=radio]') || e).innerText")):
+            self.screenshot("payment")
+            return "cash on delivery is not available for this order"
+        option.click()
+        self.page.wait_for_timeout(2000)
+        if (button := self._wait_for(PLACE, role="button", seconds=10)) is None:
+            self.screenshot("payment")
+            return "could not find Place Order after choosing cash on delivery"
+        button.click()
+        self.page.wait_for_timeout(15_000)  # "Confirming your order..."
+        return None
+
+    def _wait_for(self, pattern: re.Pattern, role: str | None = None, seconds: int = 30):
+        """The last visible match in the page or its frames (payment pages can be embedded), or None."""
+        for _ in range(seconds):
+            for frame in self.page.frames:
+                found = (frame.get_by_role(role, name=pattern) if role else frame.get_by_text(pattern)).filter(
+                    visible=True
+                )
+                if found.count():
+                    return found.last
+            self.page.wait_for_timeout(1000)
+        return None
+
+    def _skip_upsell(self) -> None:
+        """Confirms the "Missed something?" upsell pop-up, adding nothing."""
         if self.page.get_by_text("Missed something?", exact=True).count():
             self.page.evaluate("""() => {
                 const pop = [...document.querySelectorAll('[role=dialog], div')].find(d =>
                     d.innerText.startsWith('Missed something?') && d.querySelector('button'));
                 [...pop.querySelectorAll('button')].find(b => b.innerText.trim() === 'Place Order').click();
             }""")
-        self.page.wait_for_timeout(15_000)  # "Confirming your order..."
+            self.page.wait_for_timeout(3000)
 
     def confirm(self, total: float, since: datetime) -> bool:
         for _ in range(3):
