@@ -22,7 +22,7 @@ class Outcome:
     item_total: float = 0
     waiting: bool = False
     unconfirmed: bool = False  # tapped Place Order, but no such order on the Orders page
-    cod: bool = False  # cash on delivery: the wallet falls short
+    cod: bool = False
 
     @property
     def result(self) -> str:
@@ -95,20 +95,21 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]]) -> Outcome:
             out.waiting = True
             ledger.set_basket(placed_items)
             return out
+        if cart.cod and not b.has_pay_button(cart.total):
+            out.problems.append(f"could not find the cart's Pay ₹{cart.total:g} button")
+            b.screenshot("cart")
+            return out
         if not hh.place_orders:
-            if cart.cod and (stopped := b.place_cod(cart.total, dry_run=True)):
-                out.problems.append(stopped)
             return out
 
         attempt, started = ledger.begin(placed_items, cart.total), datetime.now()
         ledger.set_basket([])  # never ordered twice, even if the outcome is unclear
-        stopped = b.place_cod(cart.total) if cart.cod else b.place()
+        if stopped := (b.place_cod(cart.total) if cart.cod else b.place()):
+            b.screenshot("payment")
         out.placed = b.confirm(cart.total, started)
-        if stopped and not out.placed:
-            out.problems.append(stopped)
-            ledger.finish(attempt, "failed")
-            return out
         out.unconfirmed = not out.placed
+        if stopped and out.unconfirmed:
+            out.problems.append(stopped)
         ledger.finish(attempt, "placed" if out.placed else "unknown")
         if out.unconfirmed:
             b.screenshot("unconfirmed")

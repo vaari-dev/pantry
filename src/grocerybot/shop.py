@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 import structlog
 from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import Page, Route, sync_playwright
+from playwright.sync_api import Locator, Page, Route, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from .catalog import Product
@@ -41,13 +41,12 @@ SKIP_URLS = (
     "~partytown",
     "/proxy/",
 )
-WALLET = re.compile(r"\bCash\b(?! on [Dd]elivery)")  # the prepaid wallet: used whenever it covers the bill
+WALLET = re.compile(r"\bCash\b(?! on [Dd]elivery)")  # the prepaid wallet
 COINS = re.compile(r"\bCoins\b")  # reward coins: never used
-# When the wallet falls short: the cart's bottom button opens Payment Options, where the option
-# "Pay by Cash / UPI on delivery" shows a button "Pay ₹132 on delivery".
-CHECKOUT = re.compile(r"\bpay\b", re.I)  # never "Place Order": that would place it before choosing
-COD = re.compile(r"^\s*pay by cash\b.*\bon delivery\s*$", re.I)
-PAY_COD = re.compile(r"^\s*pay ₹\s?[\d,.]+ on delivery\s*$", re.I)
+# Wallet short: the cart's pay button opens Payment Options; "Pay by Cash / UPI on delivery" shows "Pay ₹N on delivery".
+PAY = re.compile(r"^\s*(?:click to )?pay ₹\s?([\d,.]+)(?: on delivery)?\s*$", re.I)
+COD = re.compile(r"^\s*pay by cash\b.*on delivery\s*$", re.I)
+PAY_COD = re.compile(r"^\s*pay ₹\s?([\d,.]+) on delivery\s*$", re.I)
 LOGGED_OUT = "[data-testid=login-btn]"
 ADDRESS = "[data-testid=user-address]"
 PHONE_FIELD = "input[type=tel], input[inputmode=numeric], input[name*=phone i]"
@@ -111,7 +110,7 @@ class Cart:
     item_total: float = 0
     items: list[tuple[str, int]] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
-    cod: bool = False  # the wallet falls short: cash on delivery for the whole bill
+    cod: bool = False
 
 
 def _money(text: str) -> float:
@@ -119,9 +118,13 @@ def _money(text: str) -> float:
 
 
 def _amount(text: str, label: str) -> float | None:
-    """The amount on the bill line after label; a struck-out price before it is skipped."""
+    """The bill line's amount, after any struck-out one."""
     m = re.search(label + r"\s*\n(?:-?₹[\d,.]+\s*\n)?-?₹([\d,.]+)", text)
     return _money(m.group(1)) if m else None
+
+
+def _owed(cart: dict) -> bool:
+    return (_amount(cart["text"], "To Pay") or 0) > 0
 
 
 def _mask(value):
@@ -431,21 +434,20 @@ class Browser:
         self.page.keyboard.press("Escape")
 
     def _pay_with(self, wallet: bool) -> dict:
-        """Ticks or unticks the wallet, unticks reward coins; returns the cart as it then is."""
+        """Sets the wallet box, unticks reward coins; returns the cart as it then is."""
         cart = self._open_cart()
         for i, box in enumerate(cart["boxes"]):
-            want = wallet and bool(WALLET.search(box["label"]))
-            if (WALLET.search(box["label"]) or COINS.search(box["label"])) and box["checked"] != want:
+            is_wallet = bool(WALLET.search(box["label"]))
+            if (is_wallet or COINS.search(box["label"])) and box["checked"] != (wallet and is_wallet):
                 self.page.locator("[data-testid=cart-screen] input[type=checkbox]").nth(i).click(force=True)
                 self.page.wait_for_timeout(1500)
                 cart = self._open_cart()
         return cart
 
     def review_cart(self, expected: dict[str, int], rules: Rules) -> Cart:
-        """Pays from the wallet when it covers the whole bill, else cash on delivery; never reward coins.
-        Checks every rule."""
+        """Pays from the wallet if it covers the whole bill, else cash on delivery. Checks every rule."""
         cart, result, seen = self._pay_with(wallet=True), Cart(), set()
-        if (_amount(cart["text"], "To Pay") or 0) > 0:
+        if _owed(cart) and _owed(self._open_cart()):  # twice: the bill can lag behind the wallet tick
             cart, result.cod = self._pay_with(wallet=False), True
         text = cart["text"]
         if not text.startswith(rules.address_label) or rules.address_match not in text:
@@ -484,60 +486,64 @@ class Browser:
         return result
 
     def place(self) -> None:
-        """Pays from the wallet."""
         self.page.locator("[data-testid=cart-screen] button", has_text="Place Order").click()
         self.page.wait_for_timeout(3000)
-        self._skip_upsell()
+        self._skip_upsell("Place Order")
         self.page.wait_for_timeout(15_000)  # "Confirming your order..."
 
-    def place_cod(self, total: float, dry_run: bool = False) -> str | None:
-        """Checks out with cash on delivery for exactly total. None once its button is tapped (dry_run: found),
-        else why it stopped before."""
-        checkout = self.page.locator("[data-testid=cart-screen] button", has_text=CHECKOUT).filter(visible=True)
-        if not checkout.count():
-            return self._stop("could not find the cart's button to pay")
-        checkout.last.click()
-        self.page.wait_for_timeout(3000)
-        self._skip_upsell()
-        if (option := self._wait_for(COD)) is None:
-            return self._stop("cash on delivery is not offered for this order")
-        if (button := self._wait_for(PAY_COD, role="button", seconds=3)) is None:
-            option.click()  # its button shows once it is selected
-            if (button := self._wait_for(PAY_COD, role="button", seconds=10)) is None:
-                return self._stop("cash on delivery is not available for this order")
-        shown = _money(re.search(r"₹\s?([\d,.]+)", button.inner_text()).group(1))
-        if shown != total:
-            return self._stop(f"the payment page asks ₹{shown:g}, the cart said ₹{total:g}")
-        if dry_run:
-            return None
+    def has_pay_button(self, total: float) -> bool:
+        """Taps nothing."""
+        if self._pay_button(PAY, total, 5):
+            return True
+        labels = self.page.locator("[data-testid=cart-screen] button").all_inner_texts()
+        log.info("no pay button", labels=[t for t in labels if re.search(r"₹|pay|order", t, re.I)])
+        return False
+
+    def place_cod(self, total: float) -> str | None:
+        """None once "Pay ₹total on delivery" is tapped, else where it stopped."""
+        if not (button := self._pay_button(PAY, total, 5)):
+            return f"the cart's Pay ₹{total:g} button went away"
+        label = " ".join(button.inner_text().split())
         button.click()
+        self.page.wait_for_timeout(3000)
+        self._skip_upsell(label)
+        option = self.page.get_by_text(COD).filter(visible=True).first
+        if not self._shown(option, 20):
+            return "cash on delivery is not offered for this order"
+        if not (pay := self._pay_button(PAY_COD, total, 3)):
+            option.click()  # its button shows once it is selected
+            if not (pay := self._pay_button(PAY_COD, total, 10)):
+                return f"no Pay ₹{total:g} on delivery button"
+        pay.click()
         self.page.wait_for_timeout(15_000)  # "Confirming your order..."
         return None
 
-    def _stop(self, reason: str) -> str:
-        self.screenshot("payment")
-        return reason
+    def _pay_button(self, pattern: re.Pattern, total: float, seconds: int) -> Locator | None:
+        """Only a button for exactly ₹total."""
+        button = self.page.get_by_role("button", name=pattern).filter(visible=True).first
+        if not self._shown(button, seconds):
+            return None
+        m = pattern.search(" ".join(button.inner_text().split()))
+        return button if m and _money(m.group(1)) == total else None
 
-    def _wait_for(self, pattern: re.Pattern, role: str | None = None, seconds: int = 30):
-        """The last visible match in the page or its frames (payment pages can be embedded), or None."""
-        for _ in range(seconds):
-            for frame in self.page.frames:
-                found = (frame.get_by_role(role, name=pattern) if role else frame.get_by_text(pattern)).filter(
-                    visible=True
-                )
-                if found.count():
-                    return found.last
-            self.page.wait_for_timeout(1000)
-        return None
+    def _shown(self, locator: Locator, seconds: int) -> bool:
+        try:
+            locator.wait_for(timeout=seconds * 1000)
+            return True
+        except PlaywrightTimeout:
+            return False
 
-    def _skip_upsell(self) -> None:
-        """Confirms the "Missed something?" upsell pop-up, adding nothing."""
+    def _skip_upsell(self, label: str) -> None:
+        """Gets past the "Missed something?" pop-up, adding nothing, by its button labelled like the one tapped."""
         if self.page.get_by_text("Missed something?", exact=True).count():
-            self.page.evaluate("""() => {
+            self.page.evaluate(
+                """label => {
                 const pop = [...document.querySelectorAll('[role=dialog], div')].find(d =>
                     d.innerText.startsWith('Missed something?') && d.querySelector('button'));
-                [...pop.querySelectorAll('button')].find(b => b.innerText.trim() === 'Place Order').click();
-            }""")
+                [...pop.querySelectorAll('button')].find(b => b.innerText.trim() === label)?.click();
+            }""",
+                label,
+            )
             self.page.wait_for_timeout(3000)
 
     def confirm(self, total: float, since: datetime) -> bool:
