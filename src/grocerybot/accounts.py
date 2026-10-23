@@ -22,7 +22,7 @@ from .ledger import Ledger
 
 INVITE_VALID = timedelta(hours=24)
 INVITE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-DEFAULTS = {"address_label": "", "address_match": "", "daily_cap": 1000.0, "min_order": 100.0, "place_orders": False}
+DEFAULTS = {"address_label": "", "address_match": "", "daily_cap": 1000.0, "min_order": 100.0, "place_orders": True}
 
 
 @dataclass(frozen=True)

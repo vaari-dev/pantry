@@ -70,11 +70,11 @@ def test_member_running_setup_gets_their_own_account(tmp_path, accounts):
 def test_settings_are_per_household_with_safe_defaults(tmp_path, accounts):
     asha = accounts.connect(ASHA, "Asha", "Home", "12B", login(tmp_path))
     ravi = accounts.connect(RAVI, "Ravi", "Flat", "4A", login(tmp_path))
-    assert (asha.daily_cap, asha.min_order, asha.place_orders) == (1000, 100, False)
-    accounts.update(asha.id, daily_cap=1500, min_order=99, place_orders=True)
+    assert (asha.daily_cap, asha.min_order, asha.place_orders) == (1000, 100, True)
+    accounts.update(asha.id, daily_cap=1500, min_order=99, place_orders=False)
     asha, ravi = accounts.get(asha.id), accounts.get(ravi.id)
-    assert (asha.daily_cap, asha.min_order, asha.place_orders) == (1500, 99, True)
-    assert (ravi.daily_cap, ravi.min_order, ravi.place_orders) == (1000, 100, False)
+    assert (asha.daily_cap, asha.min_order, asha.place_orders) == (1500, 99, False)
+    assert (ravi.daily_cap, ravi.min_order, ravi.place_orders) == (1000, 100, True)
     with pytest.raises(ValueError):
         accounts.update(asha.id, owner=RAVI)  # only settings
 

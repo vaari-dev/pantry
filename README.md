@@ -26,7 +26,7 @@ Each attempt is recorded before *Place Order*, so an interrupted order is report
 |---|---|
 | voice or text | order it |
 | `/basket`, `/clear`, `/usual` | waiting items, empty them, what is due |
-| `/settings` | the account's settings; the owner changes them with `/limit 1500`, `/minimum 99`, `/ordering on` (new accounts only fill the cart), `/setup` (address, login) |
+| `/settings` | the account's settings; the owner changes them with `/limit 1500`, `/minimum 99`, `/ordering off`, `/setup` (address, login) |
 | `/members`, `/invite`, `/leave` | who orders here; add one person; leave (the last one out deletes the account) |
 | `/id` | your Telegram id |
 
