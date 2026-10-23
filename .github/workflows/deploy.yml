@@ -1,0 +1,108 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time, and never cancel one halfway.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+
+  image:
+    needs: checks
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          build-args: REVISION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+  deploy:
+    needs: image
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04-arm
+    environment: oracle-cloud
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DIR: ${{ vars.DEPLOY_DIR || 'grocery-bot' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/box
+        with:
+          host: ${{ vars.SSH_HOST }}
+          user: ${{ vars.SSH_USER }}
+          known-hosts: ${{ vars.SSH_KNOWN_HOSTS }}
+          private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Write the bot's settings
+        env:
+          SHOP_URL: ${{ vars.SHOP_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+          ADDRESS_LABEL: ${{ secrets.ADDRESS_LABEL }}
+          ADDRESS_MATCH: ${{ secrets.ADDRESS_MATCH }}
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+          TS_EXIT_NODE: ${{ vars.TS_EXIT_NODE }}
+          DAILY_CAP_INR: ${{ vars.DAILY_CAP_INR || '1000' }}
+          MIN_ORDER_INR: ${{ vars.MIN_ORDER_INR || '100' }}
+          PLACE_ORDERS: ${{ vars.PLACE_ORDERS || 'false' }}
+        run: |
+          required=(SHOP_URL TELEGRAM_BOT_TOKEN TELEGRAM_USER_ID ADDRESS_LABEL ADDRESS_MATCH TS_EXIT_NODE)
+          names=("${required[@]}" TS_AUTHKEY DAILY_CAP_INR MIN_ORDER_INR PLACE_ORDERS)
+          for name in "${required[@]}"; do
+            [ -n "${!name}" ] || { echo "::error::$name is unset in the oracle-cloud environment." >&2; exit 1; }
+          done
+          (umask 077; for name in "${names[@]}"; do printf '%s=%s\n' "$name" "${!name}"; done > bot.env)
+
+      - name: Ship config
+        run: |
+          ssh box "mkdir -p '$DIR'"
+          scp -q compose.yaml scripts/box.sh box:"$DIR/"
+          scp -q bot.env box:"$DIR/.env"
+          ssh box "chmod 600 '$DIR/.env' && chmod 700 '$DIR/box.sh'"
+          rm bot.env
+
+      - name: Pull and restart
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          # The box logs in to ghcr only for this pull; the short-lived token is not kept.
+          printf '%s' "$GHCR_TOKEN" | ssh box "docker login ghcr.io -u '$ACTOR' --password-stdin" >/dev/null
+          trap 'ssh box "docker logout ghcr.io" >/dev/null' EXIT
+          ssh box "'$DIR/box.sh' deploy '$IMAGE:${{ github.sha }}'"
+
+      - name: Self-check (shop login, address, home exit)
+        run: ssh box "'$DIR/box.sh' check"

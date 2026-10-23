@@ -1,0 +1,9 @@
+.env
+data/
+*.json.bak
+session.json
+__pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/

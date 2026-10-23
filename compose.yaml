@@ -1,0 +1,27 @@
+name: grocery-bot
+
+services:
+  bot:
+    image: ${APP_IMAGE:-grocery-bot:local}
+    build: .
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TZ: Asia/Kolkata  # the daily cap and health check follow local time
+    volumes:
+      - data:/data      # shop login, catalog, ledger, Tailscale identity
+    shm_size: 1gb       # Chrome needs more than Docker's 64 MB default
+    mem_limit: 3g
+    # Unprivileged user, no capabilities. (Chrome does not start on a read-only root filesystem.)
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+
+volumes:
+  data:

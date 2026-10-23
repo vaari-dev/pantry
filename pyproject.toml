@@ -1,0 +1,35 @@
+[project]
+name = "grocerybot"
+version = "0.1.0"
+description = "Order groceries online from Telegram voice notes"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+runtime = [
+  "playwright==1.64.1",
+  "faster-whisper==1.2.1",
+  "av>=13,<14",  # faster-whisper passes an option that av 14 removed
+]
+dev = ["pytest>=8", "ruff>=0.8"]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
+ignore = ["S101", "S310", "SIM905", "RUF001", "RUF003"]  # tests; fixed https URLs; word lists; ₹ and × intended
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

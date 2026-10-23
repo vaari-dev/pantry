@@ -1,0 +1,56 @@
+name: Operate
+run-name: ${{ inputs.action }}
+
+# Day-two tasks on the box, so nobody needs to SSH in by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do
+        type: choice
+        options:
+          - check            # shop login, delivery address, home exit
+          - set-login        # install the SHOP_SESSION secret as the bot's shop session
+          - remove           # stop the bot and delete everything on the box, data included
+      confirm:
+        description: Type the action name again to confirm "remove"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  run:
+    timeout-minutes: 10
+    runs-on: ubuntu-24.04-arm
+    environment: oracle-cloud
+    env:
+      DIR: ${{ vars.DEPLOY_DIR || 'grocery-bot' }}
+      ACTION: ${{ inputs.action }}
+    steps:
+      - if: inputs.action == 'remove' && inputs.confirm != 'remove'
+        run: |
+          echo "::error::Type 'remove' in confirm to delete the bot and its data." >&2
+          exit 1
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/actions
+      - uses: ./.github/actions/box
+        with:
+          host: ${{ vars.SSH_HOST }}
+          user: ${{ vars.SSH_USER }}
+          known-hosts: ${{ vars.SSH_KNOWN_HOSTS }}
+          private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+      - if: inputs.action == 'set-login'
+        env:
+          SHOP_SESSION: ${{ secrets.SHOP_SESSION }}
+        run: |
+          [ -n "$SHOP_SESSION" ] || { echo "::error::Set the SHOP_SESSION secret first (README: Shop login)." >&2; exit 1; }
+          printf '%s' "$SHOP_SESSION" | ssh box "'$DIR/box.sh' set-login"
+          ssh box "'$DIR/box.sh' check"
+      - if: inputs.action != 'set-login'
+        run: ssh box "'$DIR/box.sh' $ACTION"

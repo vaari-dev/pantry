@@ -1,0 +1,34 @@
+name: Box
+description: Reaches the OCI box as `ssh box` (same setup as the other vaari-dev services)
+inputs:
+  host: { required: true }
+  user: { required: true }
+  known-hosts: { required: true }
+  private-key: { required: true }
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        SSH_HOST: ${{ inputs.host }}
+        SSH_USER: ${{ inputs.user }}
+        SSH_KNOWN_HOSTS: ${{ inputs.known-hosts }}
+        SSH_PRIVATE_KEY: ${{ inputs.private-key }}
+      run: |
+        for name in SSH_HOST SSH_USER SSH_KNOWN_HOSTS SSH_PRIVATE_KEY; do
+          [ -n "${!name}" ] || { echo "::error::$name is unset in the oracle-cloud environment." >&2; exit 1; }
+        done
+        mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        (umask 077; printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/box)
+        printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+        cat > ~/.ssh/config <<CONFIG
+        Host box
+          HostName $SSH_HOST
+          User $SSH_USER
+          IdentityFile ~/.ssh/box
+          IdentitiesOnly yes
+          StrictHostKeyChecking yes
+          ConnectTimeout 15
+          ServerAliveInterval 15
+          ServerAliveCountMax 4
+        CONFIG
