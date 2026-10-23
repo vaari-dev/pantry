@@ -30,9 +30,17 @@ class Telegram:
             raise TelegramError(f"{method}: {data.get('description')}")
         return data["result"]
 
-    def send(self, chat_id: int, text: str, buttons: list[tuple[str, str]] | None = None) -> int:
-        """buttons: (label, callback data), one per row. Returns the message id."""
-        return self.call("sendMessage", chat_id=chat_id, text=text, reply_markup=_keyboard(buttons))["message_id"]
+    def send(
+        self, chat_id: int, text: str, buttons: list[tuple[str, str]] | None = None, markup: dict | None = None
+    ) -> int:
+        """buttons: (label, callback data), one per row; markup: any other reply_markup. Returns the message id."""
+        return self.call("sendMessage", chat_id=chat_id, text=text, reply_markup=markup or _keyboard(buttons))[
+            "message_id"
+        ]
+
+    def delete(self, chat_id: int, message_id: int) -> None:
+        with contextlib.suppress(TelegramError):  # too old, or already gone
+            self.call("deleteMessage", chat_id=chat_id, message_id=message_id)
 
     def send_photo(self, chat_id: int, url: str, caption: str, buttons: list[tuple[str, str]]) -> int:
         return self.call("sendPhoto", chat_id=chat_id, photo=url, caption=caption, reply_markup=_keyboard(buttons))[

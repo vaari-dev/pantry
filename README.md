@@ -6,7 +6,21 @@ website, checks it against your rules, and places the order, paid from the shop'
 
 Nobody browses the shop: no home feed, no ads, no "you might also like".
 
+Several families can use one bot, each with **their own shop account**: they connect it from
+Telegram (phone number + OTP), and the people they invite order from it too.
+
 ## How it works
+
+- **Accounts (households):** one shop account each: its login, delivery address, picks, basket,
+  order history and daily limit. Whoever connected it (`/setup`) is its owner: they can log it in
+  again, `/invite` family and change the `/limit`. Everyone in it orders from its wallet.
+- **Getting in:** someone new sends `/start`; the first admin gets a *Let them in* button. Once in,
+  they `/setup` their own account. Or an owner's `/invite` code (one person, 24 hours) lets them
+  straight into that account with `/join CODE`.
+- **Connecting** (`/setup`, private chat only): share your phone number, name the saved address
+  (as in the shop's app) and something always in it, like the flat number. The bot opens the
+  shop's login, you send it the OTP the shop texts you, and it picks that address. Your phone
+  number and OTP messages are deleted from the chat. Re-run `/setup` when the login expires.
 
 ```
 Telegram ⇄ bot (OCI box, Docker)
@@ -28,8 +42,10 @@ Telegram ⇄ bot (OCI box, Docker)
 - **Why a real Chrome through home:** the shop refuses headless browsers and data-centre IP
   addresses. Chrome runs normally (Xvfb) and only its traffic leaves through your home connection
   via a Tailscale exit node. Nothing about the browser is faked.
-- **Daily self-check** at `HEALTH_CHECK_HOUR`: shop login, delivery address, home exit. You get a
-  Telegram message only when something is wrong.
+- **Daily self-check** at `HEALTH_CHECK_HOUR`: home exit (the first admin hears if it fails), then
+  each account's login and delivery address (its owner hears if it fails). Silent when all is well.
+- **All accounts leave through the same home exit node.** Delivery follows each account's own saved
+  address, wherever it is.
 
 ## Commands
 
@@ -38,6 +54,10 @@ Telegram ⇄ bot (OCI box, Docker)
 | voice note or text | order it (`2 milk, bread`, `anda aur doodh`); small lists wait in the basket until the total reaches `MIN_ORDER_INR` |
 | `/basket`, `/clear` | show or empty the waiting basket |
 | `/usual` | items that are due, based on how often you have ordered them |
+| `/setup` | connect your shop account, or log it in again (private chat; `/cancel` stops it) |
+| `/invite`, `/join CODE` | owner: a code for one person to order with your account; they send `/join CODE` |
+| `/members`, `/limit [₹]` | who orders with this account; show or (owner) change its daily limit |
+| `/leave` | stop ordering with this account (the last one out deletes it here) |
 | `/id` | your Telegram user id |
 
 ## Setup
@@ -51,26 +71,33 @@ Create a reusable auth key for the bot (Settings → Keys).
 | Variables | |
 |---|---|
 | `SHOP_URL` | the shop's website |
-| `TELEGRAM_USER_IDS` | who may order, comma-separated (each can send `/id` to the bot); the first gets alerts |
-| `ADDRESS_LABEL` | name of the saved delivery address on the shop, e.g. `Home` |
-| `ADDRESS_MATCH` | text that must be in that address, e.g. the flat number |
+| `TELEGRAM_USER_IDS` | admins, comma-separated (each can send `/id` to the bot): they let new people in; the first gets the bot's alerts |
+| `ADDRESS_LABEL`, `ADDRESS_MATCH` | optional, see *Upgrading* below |
 | `SSH_HOST`, `SSH_USER` | the box |
 | `SSH_KNOWN_HOSTS` | `ssh-keyscan <host>` output |
 | `TS_EXIT_NODE` | Tailscale IP of the home exit node |
 | `PLACE_ORDERS` | `true` to place orders (default `false`: cart only) |
-| `DAILY_CAP_INR`, `MIN_ORDER_INR`, `DEPLOY_DIR` | optional (1000, 100, `/opt/grocery-bot`) |
+| `DAILY_CAP_INR`, `MIN_ORDER_INR`, `DEPLOY_DIR` | optional (1000: each new account's starting limit, 100, `/opt/grocery-bot`) |
 
 | Secrets | |
 |---|---|
 | `SSH_PRIVATE_KEY` | deploy key for the box |
 | `TELEGRAM_BOT_TOKEN` | from @BotFather |
 | `TS_AUTHKEY` | Tailscale auth key (only used for the first login) |
-| `SHOP_SESSION` | your shop session, see below (installed on the first deploy) |
+| `SHOP_SESSION` | optional, see *Upgrading* below |
 
 **3. Deploy.** Push to `main`. The *Deploy* workflow runs the checks, builds the arm64 image to
 ghcr.io, installs Docker on a fresh box, restarts the bot, and runs the self-check.
 
-**4. Shop login** (before the first deploy, and whenever the bot reports it expired):
+**4. Accounts.** Send `/setup` to the bot in a private chat and follow it. Others send `/start`
+(you get a button to let them in) or `/join` with a code from your `/invite`.
+
+**Upgrading a single-account box.** On its first start the bot turns the old setup into the
+account `home`: if `ADDRESS_LABEL` (name of the saved delivery address, e.g. `Home`) and
+`ADDRESS_MATCH` (text that must be in it, e.g. the flat number) are set, the shop login, catalog
+and ledger already in the volume move into it, owned by the first admin, with every admin in it.
+After that the two variables are not read again. To install its login from your own computer
+instead of `/setup`:
 
 ```sh
 pip install playwright && playwright install chromium
@@ -79,13 +106,13 @@ gh secret set SHOP_SESSION --env oracle-cloud < session.json && rm session.json
 gh workflow run operate.yml -f action=set-login   # only to replace an expired login
 ```
 
-`SHOP_SESSION` is your logged-in session: anyone holding it can use the account and its wallet.
-Logging out on the shop's website ends it.
+A shop login is a logged-in session: anyone holding it can use the account and its wallet. Logging
+out on the shop's website ends it.
 
 ## Operating
 
 *Actions → Operate* (or `gh workflow run operate.yml -f action=…`):
-`check` · `logs` · `set-login` · `remove` (deletes the bot and its data from the box; confirm with `remove`).
+`check` (home exit; each account is reported, only the exit fails the run) · `logs` · `set-login` · `remove` (deletes the bot and its data from the box; confirm with `remove`).
 
 **Logs** are JSON lines on stdout (`ts`, `level`, `logger`, `msg`, plus fields such as `result`,
 `item_total`, `job`, `seconds`). The Grafana/Loki stack on the box picks them up; query
@@ -98,5 +125,7 @@ pip install -e '.[dev]' && ruff check . && ruff format --check . && pytest
 docker compose up --build      # needs a .env (see .env.example) and a shop session in the volume
 ```
 
-Data on the box lives in the `grocery-bot_data` volume: `session.json`, `catalog.json`,
-`ledger.json`, `tailscale/`, and `debug/` (screenshots of failed runs, kept 7 days).
+Data on the box lives in the `grocery-bot_data` volume: `households.json` (accounts, who is in
+which, invites), `households/<id>/` with each account's `session.json`, `catalog.json`,
+`ledger.json` and `debug/`, plus `tailscale/` and `debug/` (screenshots of failed runs and logins,
+kept 7 days).

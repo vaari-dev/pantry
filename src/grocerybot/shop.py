@@ -47,6 +47,10 @@ SKIP_URLS = (
 WALLET = re.compile(r"\bCash\b")  # the prepaid wallet: the only way the bot pays
 COINS = re.compile(r"\bCoins\b")  # reward coins: never used
 LOGGED_OUT = "[data-testid=login-btn]"
+ADDRESS = "[data-testid=user-address]"
+PHONE_FIELD = "input[type=tel], input[inputmode=numeric], input[name*=phone i]"
+OTP_FIELD = "input[autocomplete=one-time-code], input[maxlength='1'], input[maxlength='4'], input[maxlength='6']"
+CONTINUE = re.compile(r"(?i)^\s*(continue|get otp|send otp|login|next)\s*$")
 PLUS = "button[aria-label='Increase quantity by one']:not([data-hidden=true])"
 log = structlog.get_logger(__name__)
 
@@ -79,22 +83,35 @@ def _squash(text: str) -> str:
 
 
 class Browser:
-    """One Chrome session with the saved shop login. Use as a context manager."""
+    """One Chrome session with a saved shop login. Use as a context manager.
 
-    def __init__(self, base_url: str, state_file: Path, proxy: str | None, debug_dir: Path, images: bool = False):
+    fresh: start logged out (to log in); the session is still saved to state_file on exit.
+    state_file None: logged out and nothing saved (the home-exit check).
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        state_file: Path | None,
+        proxy: str | None,
+        debug_dir: Path,
+        images: bool = False,
+        fresh: bool = False,
+    ):
         self.base = base_url.rstrip("/")
-        self.state_file, self.proxy, self.debug_dir = state_file, proxy, debug_dir
+        self.state_file, self.proxy, self.debug_dir, self.fresh = state_file, proxy, debug_dir, fresh
         self.skip_types = SKIP_TYPES if images else SKIP_TYPES | {"image"}
 
     def __enter__(self) -> "Browser":
-        if not self.state_file.exists():
-            raise ShopError("not logged in to the shop yet (see README: Shop login)")
+        stored = self.state_file is not None and not self.fresh
+        if stored and not self.state_file.exists():
+            raise ShopError("this account is not logged in to the shop; its owner can send /setup")
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(
             headless=False, args=CHROME_ARGS, proxy={"server": self.proxy} if self.proxy else None
         )
         self._ctx = self._browser.new_context(
-            storage_state=str(self.state_file), viewport={"width": 1024, "height": 700}
+            storage_state=str(self.state_file) if stored else None, viewport={"width": 1024, "height": 700}
         )
         self._ctx.route("**/*", self._filter)
         self.page: Page = self._ctx.new_page()
@@ -105,8 +122,9 @@ class Browser:
         try:
             if exc_type:
                 self.screenshot("error")
-            self._ctx.storage_state(path=str(self.state_file))  # keep refreshed cookies
-            self.state_file.chmod(0o600)
+            if self.state_file is not None:
+                self._ctx.storage_state(path=str(self.state_file))  # keep refreshed cookies
+                self.state_file.chmod(0o600)
         finally:
             self._browser.close()
             self._pw.stop()
@@ -140,17 +158,69 @@ class Browser:
         """Logged in and delivering to the family address. Works on any page of the site."""
         if not self.page.url.startswith(self.base):
             self.goto("/")
-        addr = self.page.locator("[data-testid=user-address]").first
+        addr = self.page.locator(ADDRESS).first
         try:
             addr.wait_for(timeout=20_000)
         except PlaywrightTimeout:
             if self.page.locator(LOGGED_OUT).count():
-                raise ShopError("the shop login has expired") from None
+                raise ShopError("the shop login has expired; the account's owner can send /setup") from None
             raise ShopError("could not read the delivery address") from None
         text = addr.inner_text()
         if not text.startswith(rules.address_label) or rules.address_match not in text:
             raise ShopError(f"the shop is not set to deliver to '{rules.address_label}'")
         return text
+
+    def request_otp(self, phone: str) -> None:
+        """Start logging in with a 10-digit phone number; the shop texts it a one-time code."""
+        self.goto("/")
+        self.page.locator(LOGGED_OUT).first.click()
+        field = self.page.locator(PHONE_FIELD).filter(visible=True).first
+        try:
+            field.wait_for(timeout=20_000)
+        except PlaywrightTimeout:
+            raise ShopError("the shop's login form did not open") from None
+        field.fill(phone)
+        self.page.wait_for_timeout(500)
+        button = self.page.get_by_role("button", name=CONTINUE).filter(visible=True)
+        if button.count():
+            button.first.click()
+        else:
+            field.press("Enter")
+        try:
+            self.page.locator(OTP_FIELD).filter(visible=True).first.wait_for(timeout=20_000)
+        except PlaywrightTimeout:
+            raise ShopError("the shop did not ask for a code; is the number right?") from None
+
+    def enter_otp(self, code: str) -> None:
+        """Type the code (one field or one box per digit) and wait until the shop shows us logged in."""
+        self.page.locator(OTP_FIELD).filter(visible=True).first.click()
+        self.page.keyboard.type(code, delay=150)
+        self.page.wait_for_timeout(1000)
+        button = self.page.get_by_role("button", name=re.compile(r"(?i)^\s*(verify|continue|login|submit)")).filter(
+            visible=True
+        )
+        if button.count():
+            button.first.click()
+        try:
+            self.page.locator(LOGGED_OUT).first.wait_for(state="detached", timeout=30_000)
+            self.page.locator(ADDRESS).first.wait_for(timeout=20_000)
+        except PlaywrightTimeout:
+            raise ShopError("the shop did not accept that code") from None
+        self.page.wait_for_timeout(3000)  # let the session settle
+
+    def choose_address(self, label: str) -> None:
+        """Deliver to the saved address with this name, picking it in the address list if needed."""
+        addr = self.page.locator(ADDRESS).first
+        if addr.inner_text().startswith(label):
+            return
+        addr.click()
+        self.page.wait_for_timeout(2500)
+        choice = self.page.get_by_text(label, exact=True).filter(visible=True)
+        if not choice.count():
+            raise ShopError(f"there is no saved address called '{label}'; add it in the shop's app first")
+        choice.first.click()
+        self.page.wait_for_timeout(3000)
+        self.goto("/")
 
     def public_ip(self) -> str:
         self.goto("https://api.ipify.org")

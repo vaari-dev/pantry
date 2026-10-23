@@ -9,9 +9,9 @@ on:
         description: What to do
         type: choice
         options:
-          - check            # shop login, delivery address, home exit
+          - check            # home exit; each account's shop login and delivery address
           - logs             # the bot's recent log lines and health
-          - set-login        # install the SHOP_SESSION secret as the bot's shop session
+          - set-login        # install the SHOP_SESSION secret as the "home" account's shop login
           - remove           # stop the bot and delete everything on the box, data included
       confirm:
         description: Type the action name again to confirm "remove"

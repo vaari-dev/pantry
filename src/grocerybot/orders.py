@@ -2,12 +2,13 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 import structlog
 
-from .catalog import Catalog, Product, combine
+from .accounts import Household
+from .catalog import combine
 from .config import Config
-from .ledger import Ledger
 from .shop import Browser, Rules
 
 log = structlog.get_logger(__name__)
@@ -36,41 +37,46 @@ class Outcome:
     unconfirmed: bool = False  # Place Order was tapped but the order could not be found afterwards
 
 
-def browser(cfg: Config, images: bool = False) -> Browser:
-    return Browser(cfg.shop_url, cfg.state_file, cfg.proxy, cfg.debug_dir, images=images)
+def browser(cfg: Config, hh: Household, images: bool = False) -> Browser:
+    return Browser(cfg.shop_url, hh.state_file, cfg.proxy, hh.debug_dir, images=images)
 
 
-def rules(cfg: Config, ledger: Ledger) -> Rules:
-    return Rules(cfg.address_label, cfg.address_match, cfg.daily_cap - ledger.spent_today())
+def login_browser(cfg: Config, state_file: Path) -> Browser:
+    """A logged-out Chrome whose session, once logged in, is saved to state_file."""
+    return Browser(cfg.shop_url, state_file, cfg.proxy, cfg.debug_dir, fresh=True)
 
 
-def search(cfg: Config, query: str) -> list[Product]:
-    with browser(cfg, images=True) as b:
-        return b.search(query)
+def rules(hh: Household) -> Rules:
+    return Rules(hh.address_label, hh.address_match, hh.daily_cap - hh.ledger().spent_today())
 
 
-def check(cfg: Config) -> str:
-    """Self-check: login valid, right address, traffic leaving from home. Raises ShopError."""
-    with browser(cfg) as b:
-        ip = b.public_ip()
-        b.check_session(rules(cfg, Ledger(cfg.ledger_file)))
-        return ip
+def exit_ip(cfg: Config) -> str:
+    """The address the shop sees (should be home's), from a logged-out Chrome. Raises ShopError."""
+    with Browser(cfg.shop_url, None, cfg.proxy, cfg.debug_dir) as b:
+        return b.public_ip()
 
 
-def order(cfg: Config, catalog: Catalog, ledger: Ledger, items: list[tuple[str, int]]) -> Outcome:
+def check(cfg: Config, hh: Household) -> None:
+    """Self-check of one account: login valid, right address. Raises ShopError."""
+    with browser(cfg, hh) as b:
+        b.check_session(rules(hh))
+
+
+def order(cfg: Config, hh: Household, items: list[tuple[str, int]]) -> Outcome:
     """Add the list to the basket, fill the cart with each item's first available option, verify
     every rule, and place it once the item total reaches the shop's minimum.
 
     The attempt is written to the ledger before Place Order is tapped, so a crash can never lead
     to a silent second order: an unfinished attempt is reported, not retried.
     """
-    out, limits = Outcome(), rules(cfg, ledger)
+    catalog, ledger = hh.catalog(), hh.ledger()
+    out, limits = Outcome(), rules(hh)
     if limits.budget <= 0:
-        out.problems.append(f"today's limit of ₹{cfg.daily_cap:g} is used up")
+        out.problems.append(f"today's limit of ₹{hh.daily_cap:g} is used up")
         return out
 
     items = combine(ledger.basket(), items, catalog)
-    with browser(cfg) as b:
+    with browser(cfg, hh) as b:
         b.check_session(limits)
         b.empty_cart()
         expected, placed_items = {}, []

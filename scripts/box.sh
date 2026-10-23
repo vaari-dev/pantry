@@ -3,8 +3,9 @@
 # Only ever touches its own directory, the grocery-bot compose project and its volume.
 #
 #   deploy IMAGE  pull IMAGE and (re)start
-#   set-login [if-missing]  install the shop session from stdin (if-missing: only when there is none)
-#   check         self-check inside the running bot (login, address, home exit)
+#   set-login [if-missing]  install the shop session from stdin as the "home" account's login
+#                 (if-missing: only when it has none). Other accounts log in with /setup in Telegram.
+#   check         self-check inside the running bot (home exit, each account's login and address)
 #   logs          the bot's recent log lines and health
 #   remove        stop and delete everything, volume included
 set -euo pipefail
@@ -34,11 +35,16 @@ case "${1:?command}" in
     docker image prune -f --filter "label=org.opencontainers.image.source=https://github.com/vaari-dev/grocery-bot" >/dev/null
     ;;
   set-login)
-    if [ "${2:-}" = if-missing ] && in_bot test -s /data/session.json; then
+    home=/data/households/home
+    if ! in_bot test -d "$home"; then
+      echo "there is no \"home\" account (ADDRESS_LABEL/ADDRESS_MATCH were unset on the first start); use /setup in Telegram" >&2
+      exit 1
+    fi
+    if [ "${2:-}" = if-missing ] && in_bot test -s "$home/session.json"; then
       echo "keeping the bot's shop session"
       exit 0
     fi
-    in_bot sh -c 'umask 077; cat > /data/session.json'
+    in_bot sh -c "umask 077; cat > $home/session.json"
     ;;
   check)
     in_bot xvfb-run -a python -m grocerybot check
