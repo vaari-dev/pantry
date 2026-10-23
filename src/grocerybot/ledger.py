@@ -1,10 +1,7 @@
-"""Order history kept by the bot: daily spend cap, no double orders, "what's due", and the basket.
+"""Orders and the basket: daily cap, no double orders, what's due.
 
-ledger.json: {"orders": [{"id", "day", "at", "status", "total", "items": [[key, qty], ...]}],
-              "basket": [[key, qty], ...]}
-status: placing -> placed | failed | unknown. "placing" left over after a crash means the
-order may or may not have gone through; it is reported to the user, never retried.
-The basket holds items waiting for the order to reach the shop's minimum.
+ledger.json: {"orders": [{"id", "day", "at", "status", "total", "items"}], "basket": [[key, qty]]}
+status: placing -> placed | unknown | failed. "placing" after a crash is reported, never retried.
 """
 
 import statistics
@@ -37,7 +34,7 @@ class Ledger:
 
     def spent_today(self) -> float:
         today = date.today().isoformat()
-        # Unconfirmed attempts count too: better to under-spend than to over-spend.
+        # Unconfirmed attempts count too.
         return sum(
             o["total"] or 0
             for o in self._orders()
@@ -45,7 +42,7 @@ class Ledger:
         )
 
     def begin(self, items: list[tuple[str, int]], total: float) -> str:
-        """Record an attempt right before Place Order is tapped."""
+        """Record an attempt before Place Order."""
         order_id = uuid.uuid4().hex[:8]
         now = datetime.now()
         orders = self._orders()
@@ -70,7 +67,7 @@ class Ledger:
         self._save(orders)
 
     def interrupted(self) -> list[dict]:
-        """Attempts still 'placing' (the bot stopped mid-order). Marks them 'unknown'."""
+        """Attempts left 'placing'; marks them 'unknown'."""
         orders = self._orders()
         stuck = [o for o in orders if o["status"] == "placing"]
         for o in stuck:
@@ -80,7 +77,7 @@ class Ledger:
         return stuck
 
     def due(self, today: date | None = None) -> list[tuple[str, int]]:
-        """Items bought 3+ times whose usual gap has passed (but not lapsed: > 3 gaps)."""
+        """Items bought 3+ times, past their usual gap but not 3x it."""
         today = today or date.today()
         history: dict[str, list[tuple[date, int]]] = {}
         for o in self._orders():

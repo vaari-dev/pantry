@@ -1,10 +1,6 @@
-"""The family's approved items: words people say -> shop products, best first, with limits.
+"""Spoken words -> shop products (best first), with quantity limits. Grows from Telegram picks.
 
-catalog.json (on the data volume):
-  {"egg": {"aliases": ["anda", "eggs"], "max_qty": 3,
-           "options": [{"name": "...", "size": "1 pack (10 pcs)", "url": "/pn/.../pvid/..."}, ...]}}
-
-Items are added by picking a search result in Telegram, so the file grows from real use.
+catalog.json: {"egg": {"aliases": ["anda"], "max_qty": 3, "options": [{"name", "size", "url"}, ...]}}
 """
 
 import difflib
@@ -15,9 +11,9 @@ from pathlib import Path
 from . import store
 
 DEFAULT_MAX_QTY = 3
-MAX_OPTIONS = 3  # the pick + two backups
+MAX_OPTIONS = 3  # pick + 2 backups
 
-# Words around a spoken list ("order bread and eggs please", "mujhe anda chahiye").
+# Ignored words around items.
 FILLER = frozenset(
     """order please pls get buy bring some a an the me us i want need and also mujhe hume
     humko chahiye lao le aao bhej dena dedo kar karo mangwa mangao ka ki ke packet packets pack packs""".split()
@@ -45,7 +41,7 @@ NUMBERS = {
     "nau": 9,
     "das": 10,
 }
-# How speech-to-text tends to spell Hindi words.
+# Speech-to-text spellings of Hindi words.
 SPELLINGS = {
     "dudh": "doodh",
     "dood": "doodh",
@@ -101,7 +97,7 @@ def split_spoken(text: str) -> list[tuple[str, int]]:
                 qty = 2
             elif m := re.fullmatch(r"x(\d+)", w):
                 qty = int(m.group(1))
-            elif m := re.fullmatch(r"(?:do|du|doo)(anda|ande|anday|unda)", w):  # "duanda": glued "do anda"
+            elif m := re.fullmatch(r"(?:do|du|doo)(anda|ande|anday|unda)", w):  # "duanda"
                 qty, name = 2, [*name, m.group(1)]
             elif w not in FILLER:
                 name.append(w)
@@ -125,7 +121,7 @@ class Catalog:
         return index
 
     def lookup(self, name: str) -> str | None:
-        """Catalog key for a spoken name: exact (normalized), else a close spelling."""
+        """Catalog key: exact (normalized), else closest spelling."""
         index = self._index(self._load())
         norm = normalize(name)
         if norm in index:
@@ -138,14 +134,14 @@ class Catalog:
         return [Product(o["name"], o["size"], o["url"]) for o in entry.get("options", []) if o.get("url")]
 
     def vocabulary(self) -> list[str]:
-        """Every name and alias, for the speech-to-text prompt."""
+        """All names and aliases, for the speech prompt."""
         return [n for key, entry in self._load().items() for n in (key, *entry.get("aliases", []))]
 
     def max_qty(self, key: str) -> int:
         return self._load().get(key, {}).get("max_qty", DEFAULT_MAX_QTY)
 
     def learn(self, spoken: str, product: Product) -> str:
-        """Remember a picked product as the first choice for what was said. Returns the catalog key."""
+        """Make a pick the first option for the spoken name. Returns the key."""
         items = self._load()
         key = self._index(items).get(normalize(spoken)) or normalize(spoken)
         entry = items.setdefault(key, {"aliases": [], "max_qty": DEFAULT_MAX_QTY, "options": []})
@@ -158,12 +154,12 @@ class Catalog:
 @dataclass
 class Plan:
     ready: list[tuple[str, int]]  # catalog key, quantity
-    to_pick: list[tuple[str, int]]  # spoken name, quantity (needs a search + pick)
+    to_pick: list[tuple[str, int]]  # spoken name, quantity
     notes: list[str]
 
 
 def plan(text: str, catalog: Catalog) -> Plan:
-    """Split a spoken/typed list into what can be ordered now and what needs picking."""
+    """Split a list into orderable items and items needing a pick."""
     merged: dict[str, int] = {}
     to_pick, notes = [], []
     for name, qty in split_spoken(text):
@@ -182,7 +178,7 @@ def plan(text: str, catalog: Catalog) -> Plan:
 
 
 def combine(basket: list[tuple[str, int]], items: list[tuple[str, int]], catalog: Catalog) -> list[tuple[str, int]]:
-    """The waiting basket plus a new list; repeats add up, within each item's limit."""
+    """Basket + new list, summed per item within limits."""
     merged: dict[str, int] = {}
     for key, qty in [*basket, *items]:
         merged[key] = min(merged.get(key, 0) + qty, catalog.max_qty(key))

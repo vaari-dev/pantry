@@ -1,4 +1,4 @@
-"""Turning a planned list into an order, safely."""
+"""A list -> a checked, placed order."""
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -17,11 +17,11 @@ log = structlog.get_logger(__name__)
 class Outcome:
     placed: bool = False
     total: float | None = None
-    lines: list[str] = field(default_factory=list)  # what went into the cart
-    unavailable: list[str] = field(default_factory=list)  # catalog keys none of whose options could be added
-    problems: list[str] = field(default_factory=list)  # why it was not placed
+    lines: list[str] = field(default_factory=list)  # added to the cart
+    unavailable: list[str] = field(default_factory=list)  # keys with no addable option
+    problems: list[str] = field(default_factory=list)  # why not placed
     item_total: float = 0
-    waiting: bool = False  # under the shop's minimum: kept in the basket for the next list
+    waiting: bool = False  # under the minimum; in the basket
 
     @property
     def result(self) -> str:
@@ -33,7 +33,7 @@ class Outcome:
             return "waiting"
         return "blocked" if self.problems else "cart ready"
 
-    unconfirmed: bool = False  # Place Order was tapped but the order could not be found afterwards
+    unconfirmed: bool = False  # tapped, not found on Orders page
 
 
 def browser(cfg: Config, images: bool = False) -> Browser:
@@ -50,7 +50,7 @@ def search(cfg: Config, query: str) -> list[Product]:
 
 
 def check(cfg: Config) -> str:
-    """Self-check: login valid, right address, traffic leaving from home. Raises ShopError."""
+    """Login, address, home exit. Returns the exit IP; raises ShopError."""
     with browser(cfg) as b:
         ip = b.public_ip()
         b.check_session(rules(cfg, Ledger(cfg.ledger_file)))
@@ -58,11 +58,9 @@ def check(cfg: Config) -> str:
 
 
 def order(cfg: Config, catalog: Catalog, ledger: Ledger, items: list[tuple[str, int]]) -> Outcome:
-    """Add the list to the basket, fill the cart with each item's first available option, verify
-    every rule, and place it once the item total reaches the shop's minimum.
+    """Basket + list -> cart (first available option each) -> checks -> place once at the minimum.
 
-    The attempt is written to the ledger before Place Order is tapped, so a crash can never lead
-    to a silent second order: an unfinished attempt is reported, not retried.
+    The attempt is recorded before Place Order, so a crash never causes a second order.
     """
     out, limits = Outcome(), rules(cfg, ledger)
     if limits.budget <= 0:
@@ -93,16 +91,16 @@ def order(cfg: Config, catalog: Catalog, ledger: Ledger, items: list[tuple[str, 
         out.total, out.problems, out.item_total = cart.total, cart.problems, cart.item_total
         if cart.problems:
             b.screenshot("cart")
-            return out  # the basket stays as it was
+            return out
         if cart.item_total < cfg.min_order:
             out.waiting = True
-            ledger.set_basket(placed_items)  # ordered together with the next list
+            ledger.set_basket(placed_items)
             return out
         if not cfg.place_orders:
             return out
 
         attempt, started = ledger.begin(placed_items, cart.total), datetime.now()
-        ledger.set_basket([])  # never ordered twice, even if the outcome is unclear
+        ledger.set_basket([])  # never twice
         b.place()
         out.placed = b.confirm(cart.total, started)
         out.unconfirmed = not out.placed

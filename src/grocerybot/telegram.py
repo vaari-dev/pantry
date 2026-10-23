@@ -1,4 +1,4 @@
-"""Minimal Telegram Bot API client (long polling: no public URL or open ports needed)."""
+"""Telegram Bot API client (long polling)."""
 
 import contextlib
 import json
@@ -24,14 +24,14 @@ class Telegram:
                 f"{self._api}/{method}", data=urllib.parse.urlencode(body).encode(), timeout=http_timeout
             ) as r:
                 data = json.load(r)
-        except Exception as e:  # never let the token-bearing URL reach the logs
+        except Exception as e:  # keep the token out of logs
             raise TelegramError(f"{method}: {type(e).__name__}") from None
         if not data.get("ok"):
             raise TelegramError(f"{method}: {data.get('description')}")
         return data["result"]
 
     def send(self, chat_id: int, text: str, buttons: list[tuple[str, str]] | None = None) -> int:
-        """buttons: (label, callback data), one per row. Returns the message id."""
+        """buttons: (label, data), one per row. Returns the message id."""
         return self.call("sendMessage", chat_id=chat_id, text=text, reply_markup=_keyboard(buttons))["message_id"]
 
     def send_photo(self, chat_id: int, url: str, caption: str, buttons: list[tuple[str, str]]) -> int:
@@ -43,7 +43,7 @@ class Telegram:
         self.call("editMessageText", chat_id=chat_id, message_id=message_id, text=text)
 
     def remove_buttons(self, chat_id: int, message_id: int) -> None:
-        with contextlib.suppress(TelegramError):  # already without buttons
+        with contextlib.suppress(TelegramError):
             self.call(
                 "editMessageReplyMarkup", chat_id=chat_id, message_id=message_id, reply_markup={"inline_keyboard": []}
             )
@@ -64,7 +64,7 @@ class Telegram:
         return Path(out)
 
     def setup(self, commands: dict[str, str], description: str, short: str) -> str:
-        """Register the '/' menu and the intro text. Returns the bot's username."""
+        """Set commands and descriptions. Returns the username."""
         self.call("setMyCommands", commands=[{"command": c, "description": d} for c, d in commands.items()])
         self.call("setMyDescription", description=description)
         self.call("setMyShortDescription", short_description=short)

@@ -1,8 +1,4 @@
-"""Telegram front end: voice/text lists in, grocery orders out.
-
-One worker thread does all browser work in order (one Chrome, one cart at a time); the polling
-thread only parses messages and button presses, so the bot stays responsive during an order.
-"""
+"""Telegram front end. One worker thread runs all browser jobs in order; polling stays responsive."""
 
 import queue
 import threading
@@ -38,17 +34,17 @@ HELP = (
 )
 DEBUG_KEEP = timedelta(days=7)
 ALERT_REPEAT = timedelta(hours=6)
-# Touched by the polling loop; the container healthcheck reads its age (/tmp is a private tmpfs).
+# Polling loop liveness, read by the container healthcheck.
 HEARTBEAT = Path("/tmp/heartbeat")  # noqa: S108
 
 
 @dataclass
 class Picking:
-    """A list waiting for the family to pick products for some of its items."""
+    """A list waiting for product picks."""
 
     chat_id: int
     ready: list[tuple[str, int]]
-    asks: dict[int, tuple[str, int, list[Product], list[int]]]  # n -> spoken, qty, options, message ids
+    asks: dict[int, tuple[str, int, list[Product], list[int]]]  # n -> name, qty, options, message ids
     picked: list[tuple[str, int]] = field(default_factory=list)
 
 
@@ -63,8 +59,6 @@ class Bot:
         self.picking: dict[str, Picking] = {}
         self.lock = threading.Lock()
         self.alerted: dict[str, datetime] = {}
-
-    # ------------------------------------------------------------- lifecycle
 
     def run(self) -> None:
         name = self.tg.setup(COMMANDS, DESCRIPTION, "Order groceries by voice or text.")
@@ -115,7 +109,7 @@ class Bot:
                 self.jobs.task_done()
 
     def _daily(self) -> None:
-        """Once a day: self-check (login, address, home exit) and prune debug screenshots."""
+        """Daily self-check and screenshot pruning."""
         while True:
             now = datetime.now()
             run_at = now.replace(hour=self.cfg.health_hour, minute=0, second=0, microsecond=0)
@@ -133,8 +127,6 @@ class Bot:
             log.error("health check failed", reason=str(e))
             self.alert(f"⚠️ Daily check failed: {e}. Orders will fail until this is fixed.")
 
-    # ------------------------------------------------------------- messaging
-
     def _say(self, chat_id: int, text: str, buttons=None) -> int | None:
         try:
             return self.tg.send(chat_id, text, buttons)
@@ -143,14 +135,12 @@ class Bot:
             return None
 
     def alert(self, text: str) -> None:
-        """Tell the first user about a problem that needs them, at most once per ALERT_REPEAT."""
+        """Message the first user, at most once per ALERT_REPEAT."""
         last = self.alerted.get(text)
         if last and datetime.now() - last < ALERT_REPEAT:
             return
         self.alerted[text] = datetime.now()
         self._say(self.cfg.user_ids[0], text)
-
-    # ------------------------------------------------------------- incoming
 
     def _on_message(self, msg: dict) -> None:
         chat_id, user = msg["chat"]["id"], msg.get("from", {})
@@ -170,7 +160,7 @@ class Bot:
                 "Waiting: " + ", ".join(f"{k} ×{q}" for k, q in basket) if basket else "The basket is empty.",
             )
         elif text.startswith("/clear"):
-            self.jobs.put((self._clear, (chat_id,)))  # on the worker, so it never races an order
+            self.jobs.put((self._clear, (chat_id,)))  # on the worker: never races an order
         elif text.startswith("/usual"):
             due = self.ledger.due()
             self._say(
@@ -200,8 +190,6 @@ class Bot:
             self._say(chat_id, "Another order is in progress; yours is next.")
         self.jobs.put((self._handle_list, (chat_id, text)))
 
-    # ------------------------------------------------------------- lists and picks
-
     def _handle_list(self, chat_id: int, text: str) -> None:
         p = plan(text, self.catalog)
         for note in p.notes:
@@ -218,7 +206,7 @@ class Bot:
         if not asks:
             return self._order(chat_id, p.ready) if p.ready else None
 
-        pid = f"{chat_id % 100000}-{int(time.time()) % 100000}"  # short: callback data is max 64 bytes
+        pid = f"{chat_id % 100000}-{int(time.time()) % 100000}"  # callback data <= 64 bytes
         with self.lock:
             self.picking = {k: v for k, v in self.picking.items() if v.chat_id != chat_id}  # newest list wins
             self.picking[pid] = Picking(chat_id, p.ready, asks)
@@ -255,7 +243,7 @@ class Bot:
         with self.lock:
             picking = self.picking.get(pid)
             if not picking or int(n) not in picking.asks:
-                return  # already answered, or replaced by a newer list
+                return  # answered or superseded
             name, qty, options, ids = picking.asks.pop(int(n))
             if choice == "x":
                 result = "✖ skipped"
@@ -276,8 +264,6 @@ class Bot:
                 self.jobs.put((self._order, (picking.chat_id, items)))
             else:
                 self._say(picking.chat_id, "Nothing left to order.")
-
-    # ------------------------------------------------------------- ordering
 
     def _clear(self, chat_id: int) -> None:
         self.ledger.set_basket([])

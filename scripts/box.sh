@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
-# Runs on the box, copied next to compose.yaml by the deploy workflow and called over `ssh box`.
-# Only ever touches its own directory, the grocery-bot compose project and its volume.
-#
-#   deploy IMAGE  pull IMAGE and (re)start
-#   set-login [if-missing]  install the shop session from stdin (if-missing: only when there is none)
-#   check         self-check inside the running bot (login, address, home exit)
-#   logs          the bot's recent log lines and health
-#   remove        stop and delete everything, volume included
+# On the box, via `ssh box`. Touches only this directory, its compose project and volume.
+#   deploy IMAGE | set-login [if-missing] (session on stdin) | check | logs | remove
 set -euo pipefail
 cd "$(dirname "$0")"
 export COMPOSE_PROJECT_NAME=grocery-bot
@@ -27,7 +21,7 @@ wait_healthy() {
 case "${1:?command}" in
   deploy)
     export APP_IMAGE="${2:?image}"
-    echo "APP_IMAGE=$APP_IMAGE" > .image  # so later commands (and reboots) use the same image
+    echo "APP_IMAGE=$APP_IMAGE" > .image  # for later commands
     compose pull -q
     compose up -d --remove-orphans
     wait_healthy
@@ -49,7 +43,7 @@ case "${1:?command}" in
     ;;
   remove)
     compose down --volumes --rmi all --remove-orphans
-    sudo rm -rf -- "$PWD"  # the directory sits in /opt
+    sudo rm -rf -- "$PWD"
     ;;
   *)
     echo "unknown command: $1" >&2

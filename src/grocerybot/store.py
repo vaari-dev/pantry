@@ -1,4 +1,4 @@
-"""Small JSON files on the data volume, written atomically and readable only by the owner."""
+"""JSON files, written atomically, owner-only."""
 
 import json
 import os
@@ -18,7 +18,6 @@ def read(path: Path, default: Any) -> Any:
 
 
 def write(path: Path, data: Any) -> None:
-    """Write via a temp file + rename so a crash never leaves a half-written file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with _lock:
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")

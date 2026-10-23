@@ -9,7 +9,6 @@ on:
 permissions:
   contents: read
 
-# One deploy at a time, and never cancel one halfway.
 concurrency:
   group: deploy
   cancel-in-progress: false
@@ -86,7 +85,7 @@ jobs:
           done
           (umask 077; for name in "${names[@]}"; do printf '%s=%s\n' "$name" "${!name}"; done > bot.env)
 
-      - name: Prepare the box (Docker and the deploy directory, first time only)
+      - name: Prepare the box (first time)
         run: |
           ssh box 'command -v docker >/dev/null || { curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker "$USER"; }'
           ssh box "[ -w '$DIR' ] || sudo install -d -m 700 -o \"\$USER\" '$DIR'"
@@ -103,18 +102,17 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
         run: |
-          # The box logs in to ghcr only for this pull; the short-lived token is not kept.
+          # Short-lived token, logged out after the pull.
           printf '%s' "$GHCR_TOKEN" | ssh box "docker login ghcr.io -u '$ACTOR' --password-stdin" >/dev/null
           trap 'ssh box "docker logout ghcr.io" >/dev/null' EXIT
           ssh box "'$DIR/box.sh' deploy '$IMAGE:${{ github.sha }}'"
-          ssh box 'rm -rf ~/grocery-bot'  # earlier deploy directory (one-off; remove this line later)
 
-      - name: Shop login (first deploy only; later ones keep the bot's refreshed session)
+      - name: Shop login (if missing)
         env:
           SHOP_SESSION: ${{ secrets.SHOP_SESSION }}
         run: |
-          [ -n "$SHOP_SESSION" ] || { echo "::warning::SHOP_SESSION is unset; the bot keeps its current shop login."; exit 0; }
+          [ -n "$SHOP_SESSION" ] || { echo "::warning::SHOP_SESSION is unset."; exit 0; }
           printf '%s' "$SHOP_SESSION" | ssh box "'$DIR/box.sh' set-login if-missing"
 
-      - name: Self-check (shop login, address, home exit)
+      - name: Self-check
         run: ssh box "'$DIR/box.sh' check"

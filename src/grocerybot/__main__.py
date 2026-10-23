@@ -1,5 +1,5 @@
 """python -m grocerybot            run the bot
-python -m grocerybot check      self-check: shop login, delivery address, home exit IP (exit 1 on failure)
+python -m grocerybot check      self-check: login, address, home exit
 """
 
 import os

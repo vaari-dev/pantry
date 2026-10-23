@@ -1,7 +1,6 @@
 name: Operate
 run-name: ${{ inputs.action }}
 
-# Day-two tasks on the box, so nobody needs to SSH in by hand.
 on:
   workflow_dispatch:
     inputs:
@@ -9,12 +8,12 @@ on:
         description: What to do
         type: choice
         options:
-          - check            # shop login, delivery address, home exit
-          - logs             # the bot's recent log lines and health
-          - set-login        # install the SHOP_SESSION secret as the bot's shop session
-          - remove           # stop the bot and delete everything on the box, data included
+          - check
+          - logs
+          - set-login        # install SHOP_SESSION
+          - remove           # delete bot and data
       confirm:
-        description: Type the action name again to confirm "remove"
+        description: Type "remove" to confirm
         required: false
 
 permissions:
