@@ -269,7 +269,7 @@ class Browser:
         except PlaywrightError:  # setup falls back to naming the address
             log.warning("could not read saved addresses", exc_info=True)
             found = []
-        log.info("address picker", saved=len(found))
+        log.info("saved addresses read", saved=len(found))
         if not found:
             self.close_picker()
         return found
