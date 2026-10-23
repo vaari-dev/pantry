@@ -159,7 +159,7 @@ class Bot:
             job, args, context = self.jobs.get()
             name = job.__name__.lstrip("_")
             clear_contextvars()
-            bind_contextvars(**context, job=name)
+            bind_contextvars(**{**context, "job": name})
             # settings or membership may have changed while queued
             args = tuple(self.accounts.get(a.id) if isinstance(a, Household) else a for a in args)
             if None in args:
@@ -173,7 +173,7 @@ class Bot:
                 job(*args)
                 log.info("job done", seconds=round(time.monotonic() - started, 1))
             except ShopError as e:
-                log.warning("job stopped by the shop", error=str(e))
+                log.warning("job stopped by the shop", error=e.logged)
                 self._say(args[0], f"❌ Couldn't order: {e}.")
             except Exception:
                 log.exception("job failed")
@@ -197,7 +197,7 @@ class Bot:
         try:
             log.info("home exit ok", exit_ip=orders.exit_ip(self.cfg))
         except ShopError as e:
-            log.error("home exit failed", error=str(e))
+            log.error("home exit failed", error=e.logged)
             return self.alert(admin, f"⚠️ Daily check failed: {e}. Orders will fail until this is fixed.")
         for hh in self.accounts.all():
             with bound_contextvars(household_id=hh.id):
@@ -205,7 +205,7 @@ class Bot:
                     orders.check(self.cfg, hh)
                     log.info("health check ok")
                 except ShopError as e:
-                    log.warning("health check failed", error=str(e))
+                    log.warning("health check failed", error=e.logged)
                     self.alert(hh.owner, f"⚠️ Daily check of your shop account failed: {e}.")
 
     def _say(self, chat_id: int, text: str, buttons=None, markup=None, entities=None) -> int | None:
@@ -232,7 +232,14 @@ class Bot:
             return self.replies[uid].put(msg)
         command, _, arg = ("/setup", "", "") if text == CONNECT else text.partition(" ")
         command = command.split("@")[0] if command.startswith("/") else ""
-        kind = "voice" if msg.get("voice") or msg.get("audio") else command or ("text" if text else "other")
+        if msg.get("voice") or msg.get("audio"):
+            kind = "voice"
+        elif not command:
+            kind = "text" if text else "other"
+        elif command[1:] in COMMANDS or command in ("/start", "/id", *SETTINGS):
+            kind = command
+        else:
+            kind = "unknown command"  # never log what they typed
         log.info("message received", kind=kind, private=private)
         if command == "/id":
             return self._say(chat_id, f"Your Telegram id is {uid}.")
@@ -607,7 +614,7 @@ class Bot:
                 markup=NO_KEYBOARD,
             )
         except (SetupStopped, ShopError) as e:
-            log.info("setup stopped", error=str(e))
+            log.info("setup stopped", error=getattr(e, "logged", str(e)))
             self._stopped(uid, str(e))
         except Exception:
             log.exception("setup failed")
@@ -648,6 +655,6 @@ class Bot:
         try:
             b.choose_address(name)
         except ShopError as e:
-            log.info("address not chosen", error=str(e))
+            log.info("address not chosen", error=e.logged)
             self._say(uid, f"Hmm, {e}.")
         return ""
