@@ -1,7 +1,5 @@
 """The shop's website, through real Chrome: the site refuses headless browsers and data-centre IPs."""
 
-import json
-import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -74,18 +72,6 @@ SAVED_ADDRESSES = """() => {
     document.querySelectorAll('[data-saved-address]').forEach(el => el.removeAttribute('data-saved-address'));
     return cards.map((el, n) => { el.setAttribute('data-saved-address', n); return lines(el).join('\\n'); });
 }""".replace("MODAL", repr(MODAL))
-# The picker's markup with its text masked like _mask; structural attribute values kept, others emptied.
-MASKED_PICKER = """m => {
-    const keep = new Set(['class', 'id', 'role', 'tabindex', 'type', 'data-testid', 'aria-modal']);
-    const mask = s => s.replace(/\\p{L}/gu, 'x').replace(/\\p{N}/gu, '0');
-    const root = ([...document.querySelectorAll(m)].pop() || document.body).cloneNode(true);
-    const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    while (walk.nextNode()) walk.currentNode.nodeValue = mask(walk.currentNode.nodeValue);
-    for (const el of [root, ...root.querySelectorAll('*')])
-        for (const a of el.attributes) if (!keep.has(a.name)) a.value = '';
-    return root.outerHTML;
-}"""
-LOG_PART = 10_000  # characters; JSON escaping grows them
 log = structlog.get_logger(__name__)
 
 
@@ -110,19 +96,6 @@ class Cart:
 
 def _money(text: str) -> float:
     return float(text.replace(",", ""))
-
-
-def _mask(value):
-    """Keeps the shape of JSON, not its content: letters become x, digits 0; keys, booleans and nulls stay."""
-    if isinstance(value, dict):
-        return {k: _mask(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_mask(v) for v in value]
-    if isinstance(value, str):
-        return re.sub(r"\d", "0", re.sub(r"[^\W\d_]", "x", value))
-    if isinstance(value, bool) or value is None:
-        return value
-    return 0
 
 
 def _squash(text: str) -> str:
@@ -246,34 +219,21 @@ class Browser:
         self.page.wait_for_timeout(3000)
 
     def delivery_address(self) -> str:
-        """'' when none is chosen."""
         text = self.page.locator(ADDRESS).first.inner_text().strip()
         return "" if text.startswith("Select") else text
 
     def saved_addresses(self) -> list[str]:
         """Opens the address picker and lists its saved addresses, in order; pick one with pick_address."""
-        replies = []
-
-        def record(response):
-            if "address" in response.url.split("?")[0].lower() and "json" in response.headers.get("content-type", ""):
-                replies.append(response)
-
-        self.page.on("response", record)
+        if not self.open_picker():
+            return []
+        self.page.wait_for_timeout(1500)  # the list fills in after the picker shows
         try:
-            opened = self.open_picker()
-            self.page.wait_for_timeout(1500)  # the list fills in after the picker shows
-        finally:
-            self.page.remove_listener("response", record)
-        if logging.getLogger(__name__).isEnabledFor(logging.DEBUG):
-            self._log_picker(replies)
-        found = []
-        if opened:
-            try:
-                found = self.page.evaluate(SAVED_ADDRESSES)
-            except PlaywrightError:  # setup falls back to naming the address
-                log.warning("could not read saved addresses", exc_info=True)
-        log.info("address picker", opened=opened, saved=len(found), replies=len(replies))
-        if opened and not found:
+            found = self.page.evaluate(SAVED_ADDRESSES)
+        except PlaywrightError:  # setup falls back to naming the address
+            log.warning("could not read saved addresses", exc_info=True)
+            found = []
+        log.info("address picker", saved=len(found))
+        if not found:
             self.close_picker()
         return found
 
@@ -288,25 +248,6 @@ class Browser:
             except PlaywrightTimeout:
                 pass
         return False
-
-    def _log_picker(self, replies: list) -> None:
-        """LOG_LEVEL=DEBUG: the shape of the picker and of the shop's address replies, to build the address
-        reader against. Masked first (letters x, digits 0; markup and keys kept), so no address is logged.
-        In parts: Docker splits log lines over 16 KB."""
-        try:
-            html = self.page.evaluate(MASKED_PICKER, MODAL)
-            api = []
-            for r in replies:
-                try:
-                    api.append({"path": _mask(r.url.split("?")[0]), "status": r.status, "body": _mask(r.json())})
-                except Exception:  # redirects and aborted requests have no body
-                    log.debug("address reply unreadable")
-            for kind, text in (("html", html), ("api", json.dumps(api))):
-                parts = [text[i : i + LOG_PART] for i in range(0, len(text), LOG_PART)] or [""]
-                for n, part in enumerate(parts, 1):
-                    log.debug("address picker", kind=kind, part=n, parts=len(parts), text=part)
-        except Exception:  # only a diagnostic: never stop setup over it
-            log.warning("could not log the address picker", exc_info=True)
 
     def pick_address(self, n: int) -> str:
         """The nth of saved_addresses(); returns the delivery address the shop now shows."""

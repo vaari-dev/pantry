@@ -11,7 +11,6 @@ WORKDIR /app
 COPY pyproject.toml ./
 RUN mkdir -p src/grocerybot && touch src/grocerybot/__init__.py && pip install --no-cache-dir ".[runtime]"
 
-# Bake the speech model.
 ARG WHISPER_MODEL=small
 ENV HF_HOME=/opt/hf PYTHONUNBUFFERED=1 DATA_DIR=/data
 RUN python -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL}', device='cpu', compute_type='int8')" \
@@ -21,9 +20,8 @@ ENV HF_HUB_OFFLINE=1
 # Non-root: Tailscale runs in userspace.
 RUN mkdir -p /data && chown pwuser:pwuser /data
 
-# Code last, as --link layers that don't need the ones below: a code change then rebuilds
-# without fetching the cached dependencies and model. Runs from source, ahead of the empty
-# grocerybot package the dependencies step installs.
+# Code last, as --link layers: a code change rebuilds without refetching dependencies or the model.
+# Runs from source, ahead of the empty package installed above.
 COPY --link src ./src
 COPY --link --chmod=755 docker/entrypoint.sh /usr/local/bin/entrypoint
 ENV PYTHONPATH=/app/src
