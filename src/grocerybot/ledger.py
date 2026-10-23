@@ -1,8 +1,7 @@
 """ledger.json: {"orders": [{"id", "day", "at", "status", "total", "items"}], "basket": [[key, qty]],
-"hold": {"chat", "until"} or null, "offer": {"chat", "message"} or null}
+"hold": [chat, until] | null, "offer": [chat, message] | null}
 
-hold: the basket reached the smallest order and is placed at `until` unless more is added.
-offer: the one message whose Order now button still works.
+hold: when the basket gets placed. offer: the one message whose Order now button works.
 
 status: placing -> placed | failed | unknown. "placing" left over after a crash may or may not
 have gone through: it is reported, never retried.
@@ -33,28 +32,23 @@ class Ledger:
     def basket(self) -> list[tuple[str, int]]:
         return [(key, qty) for key, qty in self._read()["basket"]]
 
+    def _set(self, key: str, value) -> None:
+        store.write(self.path, {**self._read(), key: value})
+
     def set_basket(self, items: list[tuple[str, int]]) -> None:
-        store.write(self.path, {**self._read(), "basket": [list(i) for i in items]})
+        self._set("basket", [list(i) for i in items])
 
     def hold(self) -> tuple[int, datetime] | None:
-        """(chat id, when to place it) for a held basket."""
-        if h := self._read()["hold"]:
-            return h["chat"], datetime.fromisoformat(h["until"])
-        return None
+        return (h[0], datetime.fromisoformat(h[1])) if (h := self._read()["hold"]) else None
 
-    def set_hold(self, chat_id: int | None, until: datetime | None = None) -> None:
-        hold = {"chat": chat_id, "until": until.isoformat(timespec="seconds")} if until else None
-        store.write(self.path, {**self._read(), "hold": hold})
+    def set_hold(self, chat_id: int | None = None, until: datetime | None = None) -> None:
+        self._set("hold", until and [chat_id, until.isoformat(timespec="seconds")])
 
     def offer(self) -> tuple[int, int] | None:
-        """(chat id, message id) of the live Order now button."""
-        if o := self._read()["offer"]:
-            return o["chat"], o["message"]
-        return None
+        return tuple(o) if (o := self._read()["offer"]) else None
 
-    def set_offer(self, chat_id: int | None, message_id: int | None = None) -> None:
-        offer = {"chat": chat_id, "message": message_id} if message_id else None
-        store.write(self.path, {**self._read(), "offer": offer})
+    def set_offer(self, chat_id: int | None = None, message_id: int | None = None) -> None:
+        self._set("offer", message_id and [chat_id, message_id])
 
     def spent_today(self) -> float:
         today = date.today().isoformat()

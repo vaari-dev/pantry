@@ -21,9 +21,9 @@ class Outcome:
     problems: list[str] = field(default_factory=list)
     item_total: float = 0
     waiting: bool = False
-    held: bool = False  # reached the smallest order; kept in the basket until it's placed
+    held: bool = False
     unconfirmed: bool = False  # tapped Place Order, but no such order on the Orders page
-    over_limit: bool = False  # today's limit can't cover it; trying again today won't help
+    over_limit: bool = False
     cod: bool = False
 
     @property
@@ -62,16 +62,15 @@ def check(cfg: Config, hh: Household) -> None:
 
 
 def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool = False) -> Outcome:
-    """hold: fill and check the cart, but keep an order-ready basket for later instead of placing it.
-
-    The new items join the basket before the shop is touched, so a failure loses nothing.
+    """hold: check the cart but leave it in the basket. New items join the basket first, so a failure
+    loses nothing.
 
     The attempt is written to the ledger before Place Order is tapped, so a crash can never lead
     to a silent second order: an unfinished attempt is reported, not retried."""
     catalog, ledger = hh.catalog(), hh.ledger()
     out, limits = Outcome(), rules(hh)
     items = combine(ledger.basket(), items, catalog)
-    if hh.place_orders:  # with ordering off the cart is filled for someone to pay; nothing is kept for later
+    if hh.place_orders:
         ledger.set_basket(items)
     if limits.budget <= 0:
         out.over_limit = True

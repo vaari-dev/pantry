@@ -65,8 +65,8 @@ def bot(tmp_path, monkeypatch):
     b.tg = FakeTelegram()
     botmod.threading.Thread(target=b._worker, daemon=True).start()
     yield b
-    for hold in b.holds.values():
-        hold.timer.cancel()
+    for timer in b.holds.values():
+        timer.cancel()
 
 
 def message(text="", uid=NEW, **extra):
@@ -277,7 +277,7 @@ def test_more_items_restart_the_wait_and_clear_ends_it(bot, shop):
     first, offer = bot.holds[hh.id], hh.ledger().offer()
     bot._on_message(message("milk"))
     said(bot, "⏳ Cart ready (₹180)")
-    assert first.timer.finished.is_set()
+    assert first.finished.is_set()
     assert offer in bot.tg.unbuttoned
     bot._on_message(message("/clear"))
     said(bot, "Basket emptied")
