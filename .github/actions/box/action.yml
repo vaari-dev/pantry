@@ -29,6 +29,9 @@ runs:
           IdentitiesOnly yes
           StrictHostKeyChecking yes
           ConnectTimeout 15
+          ControlMaster auto
+          ControlPath ~/.ssh/cm-%C
+          ControlPersist 10m
           ServerAliveInterval 15
           ServerAliveCountMax 4
         CONFIG
