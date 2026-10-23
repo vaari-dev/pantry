@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import structlog
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page, Route, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
@@ -60,6 +61,7 @@ SAVED_ADDRESSES = """() => {
     const clickable = el => el.matches('button, a, [role=button], [tabindex]')
         || getComputedStyle(el).cursor === 'pointer';
     const found = [...scope.querySelectorAll('*')].filter(el => {
+        if (!(el instanceof HTMLElement)) return false;  // svg icons have no innerText
         if (!el.checkVisibility() || !clickable(el) || header?.contains(el) || el.contains(header)) return false;
         if (el.querySelector('input') || skip.test(el.innerText)) return false;
         const l = lines(el);
@@ -224,7 +226,11 @@ class Browser:
         """Opens the address picker and lists its saved addresses, in order; pick one with pick_address."""
         self.page.locator(ADDRESS).first.click()
         self.page.wait_for_timeout(2500)
-        found = self.page.evaluate(SAVED_ADDRESSES)
+        try:
+            found = self.page.evaluate(SAVED_ADDRESSES)
+        except PlaywrightError:  # setup falls back to naming the address
+            log.warning("could not read saved addresses", exc_info=True)
+            found = []
         if not found:
             self.close_picker()
         return found
