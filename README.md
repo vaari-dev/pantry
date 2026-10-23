@@ -21,8 +21,9 @@ the number and code from the chat. Family joins through an owner's `/invite` lin
 
 Every cart is checked before it is placed: only the expected items, the account's address, paid
 fully from the wallet or fully on delivery, within the daily limit. Lists under the
-smallest order wait in the basket. Each attempt is recorded before *Place Order*, so an interrupted
-order is reported, never retried.
+smallest order wait in the basket; a cart that reaches it is placed 3 minutes later, or at once with
+*Order now*. Each attempt is recorded before *Place Order*, so an interrupted order is reported,
+never retried.
 
 | | |
 |---|---|

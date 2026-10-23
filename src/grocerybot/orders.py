@@ -21,7 +21,9 @@ class Outcome:
     problems: list[str] = field(default_factory=list)
     item_total: float = 0
     waiting: bool = False
+    held: bool = False
     unconfirmed: bool = False  # tapped Place Order, but no such order on the Orders page
+    over_limit: bool = False
     cod: bool = False
 
     @property
@@ -32,6 +34,8 @@ class Outcome:
             return "unconfirmed"
         if self.waiting:
             return "waiting"
+        if self.held:
+            return "held"
         return "blocked" if self.problems else "cart ready"
 
 
@@ -57,16 +61,22 @@ def check(cfg: Config, hh: Household) -> None:
         b.check_session(rules(hh))
 
 
-def order(cfg: Config, hh: Household, items: list[tuple[str, int]]) -> Outcome:
-    """The attempt is written to the ledger before Place Order is tapped, so a crash can never lead
+def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool = False) -> Outcome:
+    """hold: check the cart but leave it in the basket. New items join the basket first, so a failure
+    loses nothing.
+
+    The attempt is written to the ledger before Place Order is tapped, so a crash can never lead
     to a silent second order: an unfinished attempt is reported, not retried."""
     catalog, ledger = hh.catalog(), hh.ledger()
     out, limits = Outcome(), rules(hh)
+    items = combine(ledger.basket(), items, catalog)
+    if hh.place_orders:
+        ledger.set_basket(items)
     if limits.budget <= 0:
+        out.over_limit = True
         out.problems.append(f"today's limit of ₹{hh.daily_cap:g} is used up")
         return out
 
-    items = combine(ledger.basket(), items, catalog)
     with browser(cfg, hh) as b:
         b.check_session(limits)
         b.empty_cart()
@@ -88,6 +98,7 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]]) -> Outcome:
 
         cart = b.review_cart(expected, limits)
         out.total, out.problems, out.item_total, out.cod = cart.total, cart.problems, cart.item_total, cart.cod
+        out.over_limit = cart.total is not None and cart.total > limits.budget
         if cart.problems:
             b.screenshot("cart")
             return out
@@ -100,6 +111,10 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]]) -> Outcome:
             b.screenshot("cart")
             return out
         if not hh.place_orders:
+            return out
+        if hold:
+            out.held = True
+            ledger.set_basket(placed_items)
             return out
 
         attempt, started = ledger.begin(placed_items, cart.total), datetime.now()

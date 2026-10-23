@@ -1,4 +1,7 @@
-"""ledger.json: {"orders": [{"id", "day", "at", "status", "total", "items"}], "basket": [[key, qty]]}
+"""ledger.json: {"orders": [{"id", "day", "at", "status", "total", "items"}], "basket": [[key, qty]],
+"hold": [chat, until] | null, "offer": [chat, message] | null}
+
+hold: when the basket gets placed. offer: the one message whose Order now button works.
 
 status: placing -> placed | failed | unknown. "placing" left over after a crash may or may not
 have gone through: it is reported, never retried.
@@ -18,7 +21,7 @@ class Ledger:
         self.path = path
 
     def _read(self) -> dict:
-        return {"orders": [], "basket": [], **store.read(self.path, {})}
+        return {"orders": [], "basket": [], "hold": None, "offer": None, **store.read(self.path, {})}
 
     def _orders(self) -> list[dict]:
         return self._read()["orders"]
@@ -29,8 +32,23 @@ class Ledger:
     def basket(self) -> list[tuple[str, int]]:
         return [(key, qty) for key, qty in self._read()["basket"]]
 
+    def _set(self, key: str, value) -> None:
+        store.write(self.path, {**self._read(), key: value})
+
     def set_basket(self, items: list[tuple[str, int]]) -> None:
-        store.write(self.path, {**self._read(), "basket": [list(i) for i in items]})
+        self._set("basket", [list(i) for i in items])
+
+    def hold(self) -> tuple[int, datetime] | None:
+        return (h[0], datetime.fromisoformat(h[1])) if (h := self._read()["hold"]) else None
+
+    def set_hold(self, chat_id: int | None = None, until: datetime | None = None) -> None:
+        self._set("hold", until and [chat_id, until.isoformat(timespec="seconds")])
+
+    def offer(self) -> tuple[int, int] | None:
+        return tuple(o) if (o := self._read()["offer"]) else None
+
+    def set_offer(self, chat_id: int | None = None, message_id: int | None = None) -> None:
+        self._set("offer", message_id and [chat_id, message_id])
 
     def spent_today(self) -> float:
         today = date.today().isoformat()

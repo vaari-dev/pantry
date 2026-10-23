@@ -68,8 +68,8 @@ class Telegram:
                 "editMessageReplyMarkup", chat_id=chat_id, message_id=message_id, reply_markup={"inline_keyboard": []}
             )
 
-    def answer(self, callback_id: str) -> None:
-        self.call("answerCallbackQuery", callback_query_id=callback_id)
+    def answer(self, callback_id: str, text: str | None = None) -> None:
+        self.call("answerCallbackQuery", callback_query_id=callback_id, text=text)
 
     def updates(self, offset: int | None) -> list[dict]:
         return self.call(
