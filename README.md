@@ -1,7 +1,8 @@
 # grocery-bot
 
 Order groceries by Telegram voice note or text, like *"bread aur do anda"*. Each family connects
-its own shop account; the bot fills the cart, checks it, and pays from the shop's wallet.
+its own shop account; the bot fills the cart, checks it, and pays from the shop's wallet, or cash
+on delivery when that falls short.
 
 ```
 Telegram ⇄ bot (OCI box, Docker)
@@ -19,8 +20,9 @@ phone number, the code the shop texts, and one of the account's saved addresses;
 the number and code from the chat. Family joins through an owner's `/invite` link.
 
 Every cart is checked before it is placed: only the expected items, the account's address, paid
-fully from the wallet, within the daily limit. Lists under the smallest order wait in the basket.
-Each attempt is recorded before *Place Order*, so an interrupted order is reported, never retried.
+fully from the wallet or fully on delivery, within the daily limit. Lists under the
+smallest order wait in the basket. Each attempt is recorded before *Place Order*, so an interrupted
+order is reported, never retried.
 
 | | |
 |---|---|

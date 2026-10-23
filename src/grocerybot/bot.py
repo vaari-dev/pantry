@@ -40,7 +40,7 @@ COMMANDS = {
 SHORT = "Groceries from a voice note."
 DESCRIPTION = (
     f"🛒 {SHORT}\n\n"
-    'Say "bread aur do anda" and I\'ll order it on your shop account, paid from its wallet. '
+    'Say "bread aur do anda" and I\'ll order it on your shop account, paid from its wallet or cash on delivery. '
     "No app to open, no browsing, no upsells."
 )
 HELP = (
@@ -372,21 +372,24 @@ class Bot:
             items=len(out.lines),
             unavailable=out.unavailable,
             item_total=out.item_total,
-            wallet=out.total,
+            total=out.total,
+            cod=out.cod,
             problems=out.problems,
         )
         details = "\n".join([*out.lines, *(f"Couldn't add {k} (out of stock or changed)" for k in out.unavailable)])
         total = f"₹{out.total:g}" if out.total is not None else ""
+        problems = "".join(f"\n- {p}" for p in out.problems)
         if out.placed:
-            text = f"✅ Ordered, {total} from the wallet:"
+            text = f"✅ Ordered, {total} {'cash on delivery' if out.cod else 'from the wallet'}:"
         elif out.unconfirmed:
-            text = "⚠️ I tapped Place Order but couldn't confirm it. Check the shop's app before resending."
+            text = f"⚠️ I couldn't confirm the order. Check the shop's app before resending.{problems}"
         elif out.waiting:
             text = f"🧺 In the basket, ₹{out.item_total:g} so far. I'll order at ₹{hh.min_order:g}; send more to add."
         elif not out.problems:
-            text = f"🛒 Cart ready ({total}); placing orders is off (/settings)."
+            how = ", cash on delivery" if out.cod else ""
+            text = f"🛒 Cart ready ({total}{how}); placing orders is off (/settings)."
         else:
-            text = "❌ Not ordered:\n" + "\n".join(f"- {p}" for p in out.problems)
+            text = f"❌ Not ordered:{problems}"
         self._say(chat_id, f"{text}\n{details}".strip())
 
     def _owner(self, chat_id: int, uid: int, hh: Household) -> bool:
@@ -553,7 +556,7 @@ class Bot:
                 label, match = self._choose_address(uid, b)
             hh = self.accounts.connect(uid, name, label, match, session)
             log.info("household connected", household=hh.id, user=uid)
-            paid = "paid from your shop wallet" if hh.place_orders else "carts filled for you to pay (/ordering on)"
+            paid = "paid from your wallet or on delivery" if hh.place_orders else "carts filled for you (/ordering on)"
             self._say(
                 uid,
                 f"🎉 You're all set{', ' + name if name else ''}!\n\n{TRY}\n\n"
