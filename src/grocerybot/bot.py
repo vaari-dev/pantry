@@ -170,7 +170,7 @@ class Bot:
             time.sleep(((run_at if run_at > now else run_at + timedelta(days=1)) - now).total_seconds())
             self.jobs.put((self._health, (self.cfg.admin_id,)))
             cutoff = (datetime.now() - DEBUG_KEEP).timestamp()
-            for f in self.cfg.data_dir.glob("**/debug/*.png"):
+            for f in self.cfg.data_dir.glob("**/debug/*-*.*"):
                 if f.stat().st_mtime < cutoff:
                     f.unlink(missing_ok=True)
 
