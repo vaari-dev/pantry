@@ -34,5 +34,6 @@ def setup(level: str = "INFO") -> None:
     )
     root = logging.getLogger()
     root.handlers[:] = [handler]
-    root.setLevel(level.upper())
+    root.setLevel(max(logging.getLevelName(level.upper()), logging.INFO))  # DEBUG is for our own code only
+    logging.getLogger("grocerybot").setLevel(level.upper())
     logging.getLogger("httpx").setLevel(logging.WARNING)

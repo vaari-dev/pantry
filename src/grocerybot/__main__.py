@@ -12,7 +12,7 @@ from .shop import ShopError
 
 
 def main() -> None:
-    logs.setup(os.environ.get("LOG_LEVEL", "INFO"))
+    logs.setup(os.environ.get("LOG_LEVEL") or "INFO")
     cfg = config.load()
     if sys.argv[1:] != ["check"]:
         return Bot(cfg).run()
