@@ -1,92 +1,130 @@
 import json
 from types import SimpleNamespace
 
-from grocerybot.apimap import Recorder, shape, source, template
+import pytest
+
+from grocerybot.apimap import Recorder, name, shape
 
 TOKEN = "eyJhbGciOiJIUzI1NiJ9.c2VjcmV0.c2ln"
+SECRETS = [
+    "Rahul",
+    "rahul:s3cret",
+    TOKEN,
+    "9876543210",
+    "560001",
+    "MG Road",
+    "12.9716",
+    "77.5946",
+    "amul",
+    "RAHUL",
+    "KA01AB1234",
+    "4821",
+]
 CART = {
-    "phone": "9876543210",
-    "pincode": 560001,
-    "address": {"line": "T6/503, MG Road", "lat": 12.97, "lng": 77.59},
-    "items": [{"productVariantId": "0f8fad5b-d9cb-469f-a165-70867728950e", "quantity": 2}, {"quantity": 1}],
-    "paymentMode": "COD",
+    "phone": "+919876543210",
+    "address": {"line": "T6/503, MG Road", "lat": 12.9716, "name": "RAHUL", "vehicle": "KA01AB1234"},
+    "items": [{"productVariantId": "0f8fad5b-d9cb-469f-a165-70867728950e", "quantity": 2}],
+    "otp": 4821,
     "useWallet": False,
-    "f3a1c9e07b2d4c11": {"qty": 1},
+    "suggestions": {"amul milk": 1, "+919876543210": 1, "f3a1c9e07b2d4c11": 1, "Rahul": 1},
 }
 
 
-def test_shape_keeps_structure_not_values():
+@pytest.mark.parametrize(
+    ("text", "kept"),
+    [
+        ("/api/v2/cart/send-otp", "/api/v2/cart/send-otp"),
+        ("/api/v2/product/0f8fad5b-d9cb-469f-a165-70867728950e", "/api/v2/product/{x}"),
+        ("/pn/amul-taaza-toned-milk/pvid/123", "/pn/{x}/pvid/{x}"),
+        ("/api/search/amul%20milk", "/api/search/{x}"),
+        ("/api/loc/12.9716,77.5946", "/api/loc/{x}.{x},{x}.{x}"),
+        ("/city/bangalore-560001/vytxeTZskVKR7C7WgdSP3d", "/city/{x}/{x}"),
+        ("local:mp_0123456789abcdef_mixpanel", "local:{x}"),
+        ("/user/RahulSharma/loc/Bengaluru,Koramangala", "/user/{x}/loc/{x},{x}"),
+        ("/u/rahul.sharma@gmail.com", "/u/{x}"),
+        ("/api/product/amul_taaza_toned_fresh_milk", "/api/product/{x}"),
+        ("_ga", "_ga"),
+    ],
+)
+def test_name_keeps_only_words(text, kept):
+    assert name(text) == kept
+
+
+def test_shape_keeps_types_not_values():
     assert shape(CART) == {
         "phone": "str",
-        "pincode": "int",
-        "address": {"line": "str", "lat": "float", "lng": "float"},
-        "items": [{"productVariantId": "str", "quantity": 2}],
-        "paymentMode": "COD",
+        "address": {"line": "str", "lat": "float", "name": "str", "vehicle": "str"},
+        "items": [{"productVariantId": "str", "quantity": "int"}],
+        "otp": "int",
         "useWallet": False,
-        "{id}": {"qty": 1},
+        "suggestions": {"{x}": "int"},
     }
 
 
-def test_template_blanks_ids():
-    assert template("/api/v2/product/0f8fad5b-d9cb-469f-a165-70867728950e/pvid/123456") == (
-        "/api/v2/product/{id}/pvid/{id}"
+def request(url, headers, data=None, reply=None, frame="https://shop.test/search?query=amul"):
+    resp = SimpleNamespace(status=200, headers={"content-type": "text/plain"}, body=lambda: reply)
+    return SimpleNamespace(
+        resource_type="fetch",
+        url=url,
+        method="POST" if data else "GET",
+        post_data_buffer=data,
+        frame=SimpleNamespace(url=frame),
+        response=lambda: resp,
+        all_headers=lambda: headers,
     )
-    assert template("/api/v1/cart/") == "/api/v1/cart/"
-
-
-def test_source_names_where_a_header_comes_from():
-    cookies, storage = {"session": "abc123xyz"}, {"local.user": json.dumps({"token": TOKEN})}
-    assert source("abc123xyz", cookies, storage) == "cookie:session"
-    assert source(f"Bearer {TOKEN}", cookies, {"local.token": TOKEN}) == "storage:local.token, with Bearer around it"
-    assert source(TOKEN, cookies, storage) == "inside storage:local.user"
-    assert source("unrelated", cookies, storage) is None
-
-
-class Request(SimpleNamespace):
-    def response(self):
-        return self.resp
-
-    def all_headers(self):
-        return self.headers
 
 
 def test_map_holds_no_secrets(tmp_path):
-    reply = SimpleNamespace(status=200, headers={"content-type": "application/json"}, text=lambda: json.dumps(CART))
-    req = Request(
-        resource_type="fetch",
-        url="https://api.shop.test/api/v1/cart/0f8fad5b-d9cb-469f-a165-70867728950e?storeId=s1&q=bread",
-        method="POST",
-        post_data=json.dumps(CART),
-        frame=SimpleNamespace(url="https://shop.test/search?query=bread"),
-        resp=reply,
-        headers={
-            "authorization": f"Bearer {TOKEN}",
-            "x-device-id": "d9cb469fa16570867728950e",
-            "platform": "WEB",
-            "x-request-id": "Zm9vYmFyYmF6cXV4cXV1eA",
-            "content-type": "application/json",
-            "user-agent": "Chrome",
-        },
+    headers = {
+        "authorization": f"Bearer {TOKEN}",
+        "x-device-id": "d9cb469fa16570867728950e",
+        "x-loc": "12.971599,77.594566",
+        "x-city": "RAHUL",
+        "x-request-id": "1",
+        "content-type": "application/json; charset=utf-8",
+        "user-agent": "Chrome",
+    }
+    rec = Recorder(tmp_path / "apimap.json")
+    for n in range(2):
+        sent = json.dumps(CART).encode()
+        rec._seen(
+            request(
+                "https://rahul:s3cret@api.shop.test/api/v1/cart/0f8fad5b?q=amul",
+                headers | {"x-request-id": str(n)},
+                sent,
+                reply=sent,
+            )
+        )
+    rec._seen(
+        request("https://api.shop.test/api/v1/otp", {"content-type": "text/plain"}, b"eyJwaG9uZSI6Ijk4NzY1NDMyMTAifQ==")
     )
+    rec._seen(request("https://api.shop.test/api/v1/deep", {}, b"[" * 100_000 + b"]" * 100_000))
+    rec._seen(SimpleNamespace(resource_type="image"))
     ctx = SimpleNamespace(cookies=lambda: [{"name": "device", "value": "d9cb469fa16570867728950e"}])
-    page = SimpleNamespace(evaluate=lambda _: {"local.token": TOKEN})
-    path = tmp_path / "apimap.json"
-    rec = Recorder(path, skip=lambda url: False)
-    rec._seen(req)
-    rec._seen(SimpleNamespace(resource_type="image", url="https://shop.test/a.png"))
+    page = SimpleNamespace(evaluate=lambda _: {"local:token": TOKEN, "local:lat": "12.971599"})
     rec.write(page, ctx)
 
-    text = path.read_text()
-    for secret in (TOKEN, "d9cb469fa165", "9876543210", "560001", "MG Road", "12.97", "bread", "s1"):
+    text = (tmp_path / "apimap.json").read_text()
+    for secret in [*SECRETS, "d9cb469fa165", "eyJwaG9uZ"]:
         assert secret not in text
-    entry = json.loads(text)["endpoints"]["POST api.shop.test/api/v1/cart/{id}"]
-    assert entry["query"] == ["q", "storeId"]
-    assert entry["pages"] == ["/search"]
-    assert entry["headers"] == {
-        "authorization": "storage:local.token, with Bearer around it",
+    endpoints = json.loads(text)["endpoints"]
+    cart = endpoints["POST api.shop.test/api/v1/cart/{x} → 200"]
+    assert cart["query"] == ["q"]
+    assert cart["pages"] == ["/search"]
+    assert cart["reply"] == cart["body"] == shape(CART)
+    assert cart["headers"] == {
+        "authorization": "contains local:token",
         "x-device-id": "cookie:device",
-        "platform": "WEB",
-        "x-request-id": "other (22 chars)",
-        "content-type": "application/json",
+        "x-loc": "contains local:lat",
+        "x-city": "same each call",
+        "x-request-id": "varies",
     }
-    assert entry["body"]["paymentMode"] == "COD"
+    assert cart["type"] == "application/json"
+    assert endpoints["POST api.shop.test/api/v1/otp → 200"]["body"] == "text/plain, 32 bytes"
+    assert "POST api.shop.test/api/v1/deep → 200" in endpoints
+
+
+def test_write_never_raises(tmp_path):
+    rec = Recorder(tmp_path / "apimap.json")
+    rec.calls.append({})
+    rec.write(SimpleNamespace(evaluate=lambda _: 1 / 0), None)

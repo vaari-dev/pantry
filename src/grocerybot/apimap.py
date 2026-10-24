@@ -1,13 +1,12 @@
-"""A map of the shop's own API calls, seen from the browser, so search and ordering can call it directly.
+"""A map of the shop's API calls, as its page makes them.
 
-Records the page's fetch/XHR calls as shapes only: paths with ids blanked, field names with value types,
-and where each custom header's value comes from (a cookie, localStorage, ...), never the value itself.
-So the map holds no tokens, phone numbers, addresses or locations, and can be printed in a workflow log.
+It is printed in workflow logs, so it keeps only plain-word names, value types, and where each
+header's value comes from, never a value.
 """
 
 import json
 import re
-import threading
+from collections import defaultdict
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
@@ -17,139 +16,125 @@ from . import store
 
 log = structlog.get_logger(__name__)
 
-TYPES = frozenset({"xhr", "fetch"})
-# Sent by every browser request; the rest are added by the shop's own code.
+# api, productVariant, send-otp, _ga, v2. Not ids, slugs, or capitalised names and places;
+# a lowercase word such as a one-word search still shows.
+WORD = re.compile(r"_*[a-z][A-Za-z]*(?:[-_][A-Za-z]+){0,2}|v\d")
 BROWSER_HEADERS = frozenset(
-    """accept accept-encoding accept-language connection content-length cookie host origin pragma
-    priority referer user-agent cache-control""".split()
+    "accept accept-encoding accept-language cache-control connection content-length content-type cookie host "
+    "origin pragma priority referer user-agent".split()
 )
-ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{12,}|\d{4,}|[A-Za-z0-9_-]{24,}")
-CONSTANT = re.compile(r"[A-Z][A-Z0-9_]{0,30}")  # enum-like strings, e.g. "COD": kept
-SHORT = re.compile(r"[A-Za-z0-9._-]{1,12}")  # header values like "WEB" or "2.3.1": kept
-MAX_DEPTH = 8
-_lock = threading.Lock()  # searches and orders can finish together
 
 
-def template(path: str) -> str:
-    return "/".join("{id}" if ID.fullmatch(seg) else seg for seg in path.split("/"))
+def name(text: str) -> str:
+    """Anything but a plain word (see WORD) becomes {x}."""
+    parts = re.split(r"([/.:;,]+)", re.sub(r"[^/]*@[^/]*", "{x}", text))  # odd parts are the separators
+    return "".join(p if n % 2 or _word(p) else "{x}" for n, p in enumerate(parts))
 
 
-def shape(value, depth: int = 0):
-    """The value's structure: field names and types, enum-like strings, small whole numbers."""
-    if depth > MAX_DEPTH:
-        return "…"
+def _word(part: str) -> bool:
+    return part in ("", "{x}") or (len(part) <= 40 and bool(WORD.fullmatch(part)))
+
+
+def shape(value):
     if isinstance(value, dict):
-        return {("{id}" if ID.fullmatch(k) else k): shape(v, depth + 1) for k, v in value.items()}
+        return {name(k): shape(v) for k, v in value.items()}
     if isinstance(value, list):
-        return [shape(value[0], depth + 1)] if value else []
-    if isinstance(value, bool) or value is None:
-        return value
-    if isinstance(value, int):
-        return value if abs(value) < 100_000 else "int"  # quantities, not phones or pincodes
-    if isinstance(value, float):
-        return "float"  # prices, but also latitude and longitude
-    if isinstance(value, str):
-        return value if CONSTANT.fullmatch(value) else "str"
-    return type(value).__name__
+        return [shape(value[0])] if value else []
+    return value if value is None or isinstance(value, bool) else type(value).__name__
 
 
-def _body(text: str | None):
-    if not text:
+def body(data: bytes | None, content_type: str) -> object:
+    if not data:
         return None
     try:
-        return shape(json.loads(text))
-    except ValueError:
-        if "=" in text and " " not in text:
-            return {k: "str" for k, _ in parse_qsl(text)}
-        return f"text ({len(text)} chars)"
+        return shape(json.loads(data))
+    except (ValueError, RecursionError):
+        if "form-urlencoded" in content_type:
+            return {name(k): "str" for k, _ in parse_qsl(data.decode(errors="replace"))}
+        return f"{content_type.split(';')[0] or 'unknown'}, {len(data)} bytes"
 
 
-def source(value: str, cookies: dict[str, str], storage: dict[str, str]) -> str | None:
-    """Where a header's value comes from, without the value."""
-    for kind, items in (("cookie", cookies), ("storage", storage)):
-        for name, stored in items.items():
-            if not stored or len(stored) < 4:
-                continue
-            if value == stored:
-                return f"{kind}:{name}"
-            if stored in value:
-                return f"{kind}:{name}, with {value.replace(stored, '').strip() or 'nothing'} around it"[:80]
-            if value in stored and len(value) >= 8:
-                return f"inside {kind}:{name}"
+def source(value: str, stored: dict[str, str]) -> str | None:
+    for key, item in stored.items():
+        if len(item) >= 8 and item in value:
+            return key if item == value else f"contains {key}"
+        if len(value) >= 8 and value in item:
+            return f"inside {key}"
     return None
 
 
 class Recorder:
-    """Attach to a browser context; write() merges what it saw into the map at path."""
-
-    def __init__(self, path: Path, skip):
-        self.path, self.skip = path, skip
+    def __init__(self, path: Path):
+        self.path = path
         self.calls: list[dict] = []
 
     def attach(self, ctx) -> None:
         ctx.on("requestfinished", self._seen)
 
     def _seen(self, req) -> None:
-        if req.resource_type not in TYPES or self.skip(req.url):
+        if req.resource_type not in ("xhr", "fetch"):
             return
         try:
-            resp = req.response()
-            url = urlsplit(req.url)
+            resp, url, headers = req.response(), urlsplit(req.url), req.all_headers()
+            status = resp.status if resp else "no reply"
+            content_type = headers.get("content-type", "")
+            reply = None
+            if resp:
+                try:
+                    reply = body(resp.body(), resp.headers.get("content-type", ""))
+                except Exception:  # bodies of some responses are not kept
+                    reply = "unreadable"
             try:
-                reply = resp.text() if resp and "json" in (resp.headers.get("content-type") or "") else None
-            except Exception:  # bodies of some responses are not kept
-                reply = None
+                page = name("/" + urlsplit(req.frame.url).path.split("/")[1])
+            except Exception:  # service workers have no frame
+                page = "service-worker"
             self.calls.append(
                 {
-                    "endpoint": f"{req.method} {url.netloc}{template(url.path)}",
-                    "query": sorted({k for k, _ in parse_qsl(url.query, keep_blank_values=True)}),
-                    "headers": req.all_headers(),
-                    "body": _body(req.post_data),
-                    "status": resp.status if resp else None,
-                    "reply": _body(reply),
-                    "page": template(urlsplit(req.frame.url).path) if req.frame else None,
+                    "endpoint": f"{req.method} {name(url.hostname or '')}{name(url.path)} → {status}",
+                    "query": {name(k) for k, _ in parse_qsl(url.query, keep_blank_values=True)},
+                    "headers": {
+                        k: v for k, v in headers.items() if k not in BROWSER_HEADERS and not k.startswith(("sec-", ":"))
+                    },
+                    "type": content_type.split(";")[0] or None,
+                    "body": body(req.post_data_buffer, content_type),
+                    "reply": reply,
+                    "page": page,
                 }
             )
-        except Exception:  # never break the shop run over the map
+        except Exception:
             log.warning("api call not recorded", exc_info=True)
 
     def write(self, page, ctx) -> None:
+        """Never raises: the map must not get in the way of an order."""
         if not self.calls:
             return
         try:
-            cookies = {c["name"]: c["value"] for c in ctx.cookies()}
-            storage = page.evaluate(
-                """() => Object.fromEntries([localStorage, sessionStorage].flatMap(s =>
-                    Object.keys(s).map(k => [(s === localStorage ? 'local.' : 'session.') + k, s.getItem(k)])))"""
+            stored = {f"cookie:{name(c['name'])}": c["value"] for c in ctx.cookies()}
+            stored |= page.evaluate(
+                """() => Object.fromEntries([['local', localStorage], ['session', sessionStorage]].flatMap(
+                    ([kind, s]) => Object.keys(s).map(k => [kind + ':' + k, s.getItem(k)])))"""
             )
+            stored = {name(k): v for k, v in stored.items()}
+            self._merge(stored)
         except Exception:
-            cookies, storage = {}, {}
-            log.warning("cookies and storage not read", exc_info=True)
-        with _lock:
-            self._merge(cookies, storage)
+            log.warning("api map not written", exc_info=True)
 
-    def _merge(self, cookies: dict[str, str], storage: dict[str, str]) -> None:
+    def _merge(self, stored: dict[str, str]) -> None:
+        values = defaultdict(set)
+        for call in self.calls:
+            for header, value in call["headers"].items():
+                values[call["endpoint"], header].add(value)
         known = store.read(self.path, {})
         endpoints = known.setdefault("endpoints", {})
         for call in self.calls:
-            entry = endpoints.setdefault(call["endpoint"], {"seen": 0, "pages": [], "headers": {}})
-            entry["seen"] += 1
-            if call["page"] and call["page"] not in entry["pages"]:
-                entry["pages"].append(call["page"])
-            entry["query"] = sorted(set(entry.get("query", [])) | set(call["query"]))
-            for key in ("body", "status", "reply"):
-                if call[key] is not None:
-                    entry[key] = call[key]
-            for name, value in call["headers"].items():
-                if name in BROWSER_HEADERS or name.startswith(("sec-", ":")):
-                    continue
-                if name == "content-type":
-                    entry["headers"][name] = value
-                    continue
-                found = source(value, cookies, storage)
-                short = SHORT.fullmatch(value) and not ID.fullmatch(value)
-                entry["headers"][name] = found or (value if short else f"other ({len(value)} chars)")
-        known["cookies"] = sorted(set(known.get("cookies", [])) | set(cookies))
-        known["storage"] = sorted(set(known.get("storage", [])) | set(storage))
+            entry = endpoints.setdefault(call["endpoint"], {})
+            entry["pages"] = sorted({*entry.get("pages", []), call["page"]})
+            entry["query"] = sorted({*entry.get("query", []), *call["query"]})
+            entry.update({k: call[k] for k in ("type", "body", "reply") if call[k] is not None})
+            headers = entry.setdefault("headers", {})
+            for header, value in call["headers"].items():
+                same = len(values[call["endpoint"], header]) == 1
+                headers[name(header)] = source(value, stored) or ("same each call" if same else "varies")
+        known["stored"] = sorted({*known.get("stored", []), *stored})
         store.write(self.path, known)
         log.info("api map updated", calls=len(self.calls), endpoints=len(endpoints))

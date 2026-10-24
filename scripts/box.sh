@@ -5,7 +5,7 @@
 #   deploy IMAGE  pull IMAGE and (re)start
 #   check         self-check inside the running bot
 #   logs          the bot's recent log lines and health
-#   apimap        the shop's API calls the bot has seen, as shapes only
+#   apimap        the shop's API calls seen so far, without values
 #   remove        stop and delete everything, volume included
 set -euo pipefail
 cd "$(dirname "$0")"

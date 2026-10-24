@@ -42,8 +42,7 @@ never retried.
    `SSH_USER`, `SSH_KNOWN_HOSTS`, optional `DEPLOY_DIR`;
    secrets `TELEGRAM_BOT_TOKEN`, `TS_AUTHKEY`, `SSH_PRIVATE_KEY`.
 3. Push to `main`. *Actions → Operate* runs `check`, `logs`, `apimap` or `remove` (deletes the bot and its data).
-   `apimap` prints the shop's API calls seen in searches and orders: paths, field names and types, where
-   each header comes from; never values, tokens or addresses.
+   `apimap` prints the shop's API calls seen so far, without values.
 
 Logs are JSON lines in Loki: `{service_name="grocery-bot"}`. They never hold message text.
 

@@ -1,6 +1,6 @@
 """python -m grocerybot            run the bot
 python -m grocerybot check      self-check; fails only if the home exit is down
-python -m grocerybot apimap     the shop's API calls seen so far (see apimap.py)
+python -m grocerybot apimap     the shop's API calls seen so far, without values
 """
 
 import json

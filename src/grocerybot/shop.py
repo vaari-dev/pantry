@@ -137,10 +137,6 @@ def _prices(lines: list[str], struck: list[str]) -> tuple[str, str]:
     return price, mrp
 
 
-def _skipped(url: str) -> bool:
-    return any(s in url for s in SKIP_URLS)
-
-
 def _rupees(amount: str) -> float:
     try:
         return float(amount.lstrip("₹").replace(",", ""))
@@ -149,8 +145,8 @@ def _rupees(amount: str) -> float:
 
 
 class Browser:
-    """One Chrome session. Loads and saves state_file (None: neither); fresh: starts logged out.
-    record: adds the shop's API calls to that map (see apimap)."""
+    """One Chrome session. Loads and saves state_file (None: neither); fresh: starts logged out;
+    record: the API map to add to."""
 
     def __init__(
         self,
@@ -165,7 +161,7 @@ class Browser:
         self.base = base_url.rstrip("/")
         self.state_file, self.proxy, self.debug_dir, self.fresh = state_file, proxy, debug_dir, fresh
         self.skip_types = SKIP_TYPES if images else SKIP_TYPES | {"image"}
-        self.recorder = Recorder(record, _skipped) if record else None
+        self.recorder = Recorder(record) if record else None
 
     def __enter__(self) -> "Browser":
         stored = self.state_file is not None and not self.fresh
@@ -189,18 +185,18 @@ class Browser:
         try:
             if exc_type:
                 self.screenshot("error")
-            if self.recorder:
-                self.recorder.write(self.page, self._ctx)
             if self.state_file is not None:
                 self._ctx.storage_state(path=str(self.state_file))
                 self.state_file.chmod(0o600)
+            if self.recorder:
+                self.recorder.write(self.page, self._ctx)
         finally:
             self._browser.close()
             self._pw.stop()
 
     def _filter(self, route: Route):
         req = route.request
-        if req.resource_type in self.skip_types or _skipped(req.url):
+        if req.resource_type in self.skip_types or any(s in req.url for s in SKIP_URLS):
             return route.abort()
         return route.continue_()
 

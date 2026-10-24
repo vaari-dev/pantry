@@ -40,7 +40,6 @@ class Outcome:
 
 
 def browser(cfg: Config, hh: Household, images: bool = False) -> Browser:
-    """Searches and orders add to the API map."""
     return Browser(cfg.shop_url, hh.state_file, cfg.proxy, hh.debug_dir, images=images, record=cfg.api_map)
 
 
