@@ -119,7 +119,9 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
 
         attempt, started = ledger.begin(placed_items, cart.total), datetime.now()
         ledger.set_basket([])  # never ordered twice, even if the outcome is unclear
+        log.info("attempt recorded", total=cart.total, cod=cart.cod)
         if stopped := (b.place_cod(cart.total) if cart.cod else b.place()):
+            log.info("payment stopped", reason=stopped)
             b.screenshot("payment")
         out.placed = b.confirm(cart.total, started)
         out.unconfirmed = not out.placed

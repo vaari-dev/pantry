@@ -48,7 +48,13 @@ PAY = re.compile(r"^\s*(?:click to )?pay ₹\s?([\d,.]+)(?: on delivery)?\s*$", 
 COD = re.compile(r"^\s*pay by cash\b.*on delivery\s*$", re.I)
 PAY_COD = re.compile(r"^\s*pay ₹\s?([\d,.]+) on delivery\s*$", re.I)
 LOGGED_OUT = "[data-testid=login-btn]"
+LOGIN_EXPIRED = "the shop login has expired; the account's owner can /setup again"
 CART_COUNT = "[data-testid=cart-items-number]"
+CART = "[data-testid=cart-screen]"
+REMOVE = re.compile(r"^\s*(remove|delete)(\s+item)?\s*$", re.I)
+STOCK = re.compile(r"out of stock|sold out|unavailable|back in stock", re.I)  # rows without a stepper
+# The cart shows the address and wallet balance: only amounts and known words are logged.
+LOGGABLE = re.compile(rf"^-?₹[\d,.]+$|^(item total|to pay|remove|delete)$|{STOCK.pattern}", re.I)
 ADDRESS = "[data-testid=user-address]"
 PHONE_FIELD = "input[type=tel], input[inputmode=numeric], input[name*=phone i]"
 OTP_FIELD = "input[autocomplete=one-time-code], input[maxlength='1'], input[maxlength='4'], input[maxlength='6']"
@@ -121,6 +127,17 @@ def _amount(text: str, label: str) -> float | None:
 
 def _owed(cart: dict) -> bool:
     return (_amount(cart["text"], "To Pay") or 0) > 0
+
+
+def _loggable(text: str) -> list[str]:
+    return [line for line in map(str.strip, text.split("\n")) if LOGGABLE.search(line)][:40]
+
+
+def _text(locator: Locator) -> str:
+    try:
+        return locator.inner_text(timeout=2000) if locator.count() else ""
+    except PlaywrightTimeout:
+        return ""
 
 
 def _squash(text: str) -> str:
@@ -229,8 +246,9 @@ class Browser:
         start, url = time.monotonic(), url if url.startswith("http") else self.base + url
         try:
             resp = self.page.goto(url, wait_until="domcontentloaded")
-        except PlaywrightTimeout as e:
-            log.info("page timed out", to=urlsplit(url).path)
+        except PlaywrightError as e:  # also a dropped exit node: ERR_SOCKS_CONNECTION_FAILED
+            reason = m.group() if (m := re.search(r"net::\w+|Timeout", str(e))) else type(e).__name__
+            log.info("page failed", to=urlsplit(url).path, reason=reason)  # str(e) holds the query
             raise ShopError("the shop did not load; is the home connection (exit node) up?") from e
         status = resp.status if resp else None
         log.info("page loaded", at=self._at(), status=status, seconds=round(time.monotonic() - start, 1))
@@ -242,12 +260,12 @@ class Browser:
         if not self.page.url.startswith(self.base):
             self.goto("/")
         addr = self.page.locator(ADDRESS).first
-        shown, logged_out = self._wait(addr, 20), bool(self.page.locator(LOGGED_OUT).filter(visible=True).count())
+        shown, logged_out = self._wait(addr, 20), self._logged_out()
         text = addr.inner_text() if shown else ""
         ok = rules.address_ok(text)
         log.info("session checked", logged_in=not logged_out, address_shown=shown, address_ok=ok)
         if logged_out:  # checked even with an address showing: logged-out pages can show one
-            raise ShopError("the shop login has expired; the account's owner can /setup again")
+            raise ShopError(LOGIN_EXPIRED)
         if not shown:
             raise ShopError("could not read the delivery address")
         if not ok:
@@ -255,6 +273,9 @@ class Browser:
                 f"the shop is not set to deliver to '{rules.address_label}'", "the shop is set to another address"
             )
         return text
+
+    def _logged_out(self) -> bool:
+        return bool(self.page.locator(LOGGED_OUT).filter(visible=True).count())
 
     def request_otp(self, phone: str) -> None:
         self.goto("/")
@@ -399,8 +420,12 @@ class Browser:
         add = self.page.locator(PLUS, has_text="Add to Cart")
         if not add.count():
             return "out of stock"
-        add.first.evaluate("b => b.click()")  # the sticky search bar overlaps it for mouse clicks
-        self.page.wait_for_timeout(1500)
+        for _ in range(2):  # a tap on a page still loading can be lost
+            add.first.evaluate("b => b.click()")  # the sticky search bar overlaps it for mouse clicks
+            if self._wait(add.first, 5, "hidden"):
+                break
+        else:
+            return "the shop did not take it"
         for _ in range(qty - 1):
             self.page.locator(PLUS).first.evaluate("b => b.click()")
             self.page.wait_for_timeout(1000)
@@ -410,10 +435,11 @@ class Browser:
 
     def _open_cart(self) -> dict:
         self.page.locator("[data-testid=cart-btn]").first.click()
-        if not self._wait(self.page.locator("[data-testid=cart-screen]").first, TIMEOUT_MS // 1000):
+        cart = self.page.locator(CART).first
+        if not self._wait(cart, TIMEOUT_MS // 1000):
             raise ShopError("the cart did not open")
-        self.page.wait_for_timeout(1500)
-        return self.page.evaluate("""() => {
+        loaded = self._wait(cart.locator("[data-testid$=cart-qty]").or_(cart.get_by_text("Item Total")).first, 10)
+        read = self.page.evaluate("""() => {
           const cart = document.querySelector('[data-testid=cart-screen]');
           const items = [...cart.querySelectorAll('[data-testid$=cart-qty]')].map(q => {
             let row = q;  // largest ancestor holding only this item's stepper
@@ -426,16 +452,50 @@ class Browser:
             label: (i.closest('label') || i.parentElement.parentElement).innerText.replace(/\\s+/g, ' ')}));
           return {text: cart.innerText, items, boxes};
         }""")
+        text = read["text"]
+        log.info(
+            "cart read",
+            loaded=loaded,
+            quantities=[i["qty"] for i in read["items"]],
+            item_total=_amount(text, "Item Total"),
+            to_pay=_amount(text, "To Pay"),
+            stock=STOCK.findall(text),
+        )
+        return read
 
     def empty_cart(self) -> None:
-        if not self.page.locator(CART_COUNT).count():
+        """Raises if anything is left: an out of stock row has no minus button, and comes back in stock."""
+        badge = self.page.locator(CART_COUNT).first
+        if not badge.count():
             return
         self._open_cart()
-        minus = self.page.locator("[data-testid=cart-screen] [data-testid$=minus-btn]")
-        while minus.count():
-            minus.first.click()
-            self.page.wait_for_timeout(700)
+        cart = self.page.locator(CART).first
+        tap = cart.locator("[data-testid$=minus-btn]").or_(cart.get_by_role("button", name=REMOVE)).first
+        taps = 0
+        while tap.count() and taps < 100:
+            before = _text(cart)
+            try:
+                tap.click(timeout=10_000)
+            except PlaywrightTimeout:
+                break
+            taps += 1
+            if not self._changed(cart, before):
+                break
+        left = _text(cart)
+        stuck = STOCK.search(left) or not self._wait(badge, 10, "hidden")
+        log.info("cart emptied", taps=taps, stuck=bool(stuck), lines=_loggable(left))
+        if stuck:
+            self.screenshot("cart-stuck")
+            raise ShopError("the shop's cart has items the bot can't remove, maybe out of stock; empty it in the app")
         self.page.keyboard.press("Escape")
+
+    def _changed(self, locator: Locator, before: str, seconds: int = 15) -> bool:
+        for _ in range(seconds * 4):
+            self.page.wait_for_timeout(250)
+            if _text(locator) != before:
+                self.page.wait_for_timeout(500)  # the next tap must not land mid-update
+                return True
+        return False
 
     def _pay_with(self, wallet: bool) -> dict:
         """Sets the wallet box, unticks reward coins; returns the cart as it then is."""
@@ -443,7 +503,8 @@ class Browser:
         for i, box in enumerate(cart["boxes"]):
             is_wallet = bool(WALLET.search(box["label"]))
             if (is_wallet or COINS.search(box["label"])) and box["checked"] != (wallet and is_wallet):
-                self.page.locator("[data-testid=cart-screen] input[type=checkbox]").nth(i).click(force=True)
+                log.info("box tapped", wallet=is_wallet, was=box["checked"])
+                self.page.locator(f"{CART} input[type=checkbox]").nth(i).click(force=True)
                 self.page.wait_for_timeout(1500)
                 cart = self._open_cart()
         return cart
@@ -454,7 +515,14 @@ class Browser:
         if _owed(cart) and _owed(self._open_cart()):  # twice: the bill can lag behind the wallet tick
             cart, result.cod = self._pay_with(wallet=False), True
         if not cart["items"]:
-            result.problems.append("the cart is empty: the shop did not take the items")
+            log.info("cart has no items", lines=_loggable(cart["text"]))
+            if self._logged_out():  # mid-run: the shop took the adds into a guest cart
+                raise ShopError(LOGIN_EXPIRED)
+            result.problems.append(
+                "the cart shows only out of stock items"
+                if STOCK.search(cart["text"])
+                else "the cart is empty: the shop did not take the items"
+            )
             return result
         text = cart["text"]
         if not rules.address_ok(text):
@@ -493,7 +561,8 @@ class Browser:
         return result
 
     def place(self) -> None:
-        self.page.locator("[data-testid=cart-screen] button", has_text="Place Order").click()
+        self.page.locator(f"{CART} button", has_text="Place Order").click()
+        log.info("tapped", button="Place Order")
         self.page.wait_for_timeout(3000)
         self._skip_upsell("Place Order")
         self.page.wait_for_timeout(15_000)  # "Confirming your order..."
@@ -502,7 +571,7 @@ class Browser:
         """Taps nothing."""
         if self._pay_button(PAY, total, 5):
             return True
-        labels = self.page.locator("[data-testid=cart-screen] button").all_inner_texts()
+        labels = self.page.locator(f"{CART} button").all_inner_texts()
         log.info("no pay button", labels=[t for t in labels if re.search(r"₹|pay|order", t, re.I)])
         return False
 
@@ -512,6 +581,7 @@ class Browser:
             return f"the cart's Pay ₹{total:g} button went away"
         label = " ".join(button.inner_text().split())
         button.click()
+        log.info("tapped", button=label)
         self.page.wait_for_timeout(3000)
         self._skip_upsell(label)
         option = self.page.get_by_text(COD).filter(visible=True).first
@@ -519,9 +589,11 @@ class Browser:
             return "cash on delivery is not offered for this order"
         if not (pay := self._pay_button(PAY_COD, total, 3)):
             option.click()  # its button shows once it is selected
+            log.info("tapped", button="cash on delivery")
             if not (pay := self._pay_button(PAY_COD, total, 10)):
                 return f"no Pay ₹{total:g} on delivery button"
         pay.click()
+        log.info("tapped", button="pay on delivery")
         self.page.wait_for_timeout(15_000)  # "Confirming your order..."
         return None
 
@@ -530,8 +602,12 @@ class Browser:
         button = self.page.get_by_role("button", name=pattern).filter(visible=True).first
         if not self._wait(button, seconds):
             return None
-        m = pattern.search(" ".join(button.inner_text().split()))
-        return button if m and _money(m.group(1)) == total else None
+        label = " ".join(button.inner_text().split())
+        m = pattern.search(label)
+        if not (m and _money(m.group(1)) == total):
+            log.info("pay button amount differs", button=label, total=total)
+            return None
+        return button
 
     def _wait(self, locator: Locator, seconds: int, state: str = "visible") -> bool:
         try:
@@ -543,6 +619,7 @@ class Browser:
     def _skip_upsell(self, label: str) -> None:
         """Gets past the "Missed something?" pop-up, adding nothing, by its button labelled like the one tapped."""
         if self.page.get_by_text("Missed something?", exact=True).count():
+            log.info("upsell shown", tapping=label)
             self.page.evaluate(
                 """label => {
                 const pop = [...document.querySelectorAll('[role=dialog], div')].find(d =>
@@ -560,7 +637,10 @@ class Browser:
             m = re.search(r"Order [^\n]+?\s+₹([\d,.]+)\s+Placed at (\d+)\w* (\w+ \d{4}), (\d+:\d+ [ap]m)", body)
             if m:
                 placed = datetime.strptime(f"{m.group(2)} {m.group(3)} {m.group(4)}", "%d %b %Y %I:%M %p")
+                log.info("latest order", amount=_money(m.group(1)), placed=placed.isoformat(), total=total)
                 if _money(m.group(1)) == total and placed >= since - timedelta(minutes=1):
                     return True
+            else:
+                log.info("no order on the orders page")
             self.page.wait_for_timeout(5000)
         return False

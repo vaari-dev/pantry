@@ -1,7 +1,7 @@
 import pytest
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
-from grocerybot.shop import ADDRESS, LOGGED_OUT, Browser, Rules, ShopError, _prices
+from grocerybot.shop import ADDRESS, LOGGED_OUT, Browser, Rules, ShopError, _loggable, _prices
 
 
 @pytest.mark.parametrize(
@@ -19,12 +19,29 @@ def test_prices(lines, struck, expected):
     assert _prices(lines, struck) == expected
 
 
-def test_an_empty_cart_is_one_problem():
+@pytest.mark.parametrize(
+    ("text", "login_button", "problem"),
+    [
+        ("Your cart is empty", False, "the cart is empty: the shop did not take the items"),
+        ("Orange Nagpur\nOut of stock\nRemove", False, "the cart shows only out of stock items"),
+        ("", True, "login has expired"),
+    ],
+)
+def test_a_cart_without_items(text, login_button, problem):
     b = Browser.__new__(Browser)
-    b._pay_with = b._open_cart = lambda *_, **__: {"text": "Your cart is empty", "items": [], "boxes": []}
-    cart = b.review_cart({"Kinley Soda": 1}, Rules("Home", "T6/503", 900))
-    assert cart.problems == ["the cart is empty: the shop did not take the items"]
-    assert cart.total is None
+    b._pay_with = b._open_cart = lambda *_, **__: {"text": text, "items": [], "boxes": []}
+    b.page = type("Page", (), {"locator": lambda _, s: Found(int(login_button))})()
+    if login_button:
+        with pytest.raises(ShopError, match=problem):
+            b.review_cart({"Kinley Soda": 1}, Rules("Home", "T6/503", 900))
+    else:
+        assert b.review_cart({"Kinley Soda": 1}, Rules("Home", "T6/503", 900)).problems == [problem]
+
+
+def test_loggable_keeps_the_address_and_balance_out():
+    cart = "Home\nFlat 12, Lake View Apartments\nIndiranagar, Bengaluru 560038\nRiya Sharma\nOrange Nagpur\n"
+    cart += "Out of stock\nRemove\nZepto Cash ₹412 available\nItem Total\n₹123\nTo Pay\n₹0"
+    assert _loggable(cart) == ["Out of stock", "Remove", "Item Total", "₹123", "To Pay", "₹0"]
 
 
 class Found:
