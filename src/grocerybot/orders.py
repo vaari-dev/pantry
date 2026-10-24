@@ -7,7 +7,7 @@ import structlog
 from .accounts import Household
 from .catalog import combine
 from .config import Config
-from .shop import Browser, Rules
+from .shop import Browser, Rules, ShopError
 
 log = structlog.get_logger(__name__)
 
@@ -120,10 +120,14 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
         attempt, started = ledger.begin(placed_items, cart.total), datetime.now()
         ledger.set_basket([])  # never ordered twice, even if the outcome is unclear
         log.info("attempt recorded", total=cart.total, cod=cart.cod)
-        if stopped := (b.place_cod(cart.total) if cart.cod else b.place()):
-            log.info("payment stopped", reason=stopped)
-            b.screenshot("payment")
-        out.placed = b.confirm(cart.total, started)
+        try:
+            if stopped := (b.place_cod(cart.total) if cart.cod else b.place()):
+                log.info("payment stopped", reason=stopped)
+                b.screenshot("payment")
+            out.placed = b.confirm(cart.total, started)
+        except Exception as e:  # past the tap the order may have gone through: unconfirmed, never "not ordered"
+            log.warning("placing interrupted", exc_info=True)
+            stopped = str(e) if isinstance(e, ShopError) else "the shop stopped responding while placing it"
         out.unconfirmed = not out.placed
         if stopped and out.unconfirmed:
             out.problems.append(stopped)
