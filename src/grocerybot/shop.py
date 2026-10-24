@@ -154,6 +154,36 @@ def _squash(text: str) -> str:
     return " ".join(text.split()).lower()
 
 
+QUANTITY = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(kg|gms?|g|mg|ml|ltrs?|litres?|liters?|l|pcs?|pieces?|units?|packs?|n)(?![a-z])", re.I
+)
+UNITS = {"gm": "g", "gms": "g", "ltr": "l", "ltrs": "l", "litre": "l", "litres": "l", "liter": "l", "liters": "l",
+         "pcs": "pc", "piece": "pc", "pieces": "pc", "unit": "pc", "units": "pc", "n": "pc",
+         "packs": "pack"}  # fmt: skip
+SCALE = {"kg": (1000, "g"), "l": (1000, "ml")}
+
+
+def _quantities(text: str) -> set[tuple[float, str]]:
+    """{(350.0, "g")}-like: "0.35 kg", "0.35kg" and "350 gm" read the same, as do "1 kg" and "1000 g"."""
+    found = set()
+    for number, unit in QUANTITY.findall(text):
+        unit = UNITS.get(unit.lower(), unit.lower())
+        factor, unit = SCALE.get(unit, (1, unit))
+        found.add((round(float(number) * factor, 3), unit))
+    return found
+
+
+def _shows_size(size: str, page: str) -> bool:
+    """Whether the page offers the size the item was picked at. A card's "1 pc (0.35 g)" may show on
+    the page as "0.35g", so the weights or volumes are compared, else the counts. A size with no
+    quantity in it can't tell one pack from another, so it doesn't stop the add."""
+    if re.search(rf"(?<!\w){re.escape(_squash(size))}(?!\w)", _squash(page)):
+        return True
+    wanted = _quantities(size)
+    measures = {q for q in wanted if q[1] not in ("pc", "pack")} or wanted
+    return measures <= _quantities(page)
+
+
 def _prices(lines: list[str], struck: list[str]) -> tuple[str, str]:
     """(price, original price) from a card's lines; struck are the texts shown crossed out."""
     amounts = [
@@ -496,7 +526,9 @@ class Browser:
             headings = self.page.locator("h1").all_inner_texts()
             log.info("listing changed", product=product.name, title=title, headings=headings)
             return "listing changed"
-        if _squash(product.size) not in _squash(self.page.locator("body").inner_text()):
+        if not _shows_size(product.size, body := self.page.locator("body").inner_text()):
+            sizes = sorted({m.group() for m in QUANTITY.finditer(body)})[:20]
+            log.info("size not on the page", product=product.name, size=product.size, page_sizes=sizes)
             return "size changed"
         add = self.page.locator(PLUS, has_text="Add to Cart")
         if not add.count():
@@ -527,7 +559,9 @@ class Browser:
             while (row.parentElement && row.parentElement !== cart &&
                    row.parentElement.querySelectorAll('[data-testid$=cart-qty]').length === 1) row = row.parentElement;
             const lines = row.innerText.split('\\n').map(s => s.trim()).filter(Boolean);
-            return {qty: parseInt(q.innerText, 10), lines};
+            const struck = [...row.querySelectorAll('*')].filter(e => getComputedStyle(e).textDecorationLine
+              .includes('line-through')).map(e => e.innerText.replace(/\\s/g, ''));
+            return {qty: parseInt(q.innerText, 10), lines, struck};
           });
           const boxes = [...cart.querySelectorAll('input[type=checkbox]')].map(i => ({checked: i.checked,
             label: (i.closest('label') || i.parentElement.parentElement).innerText.replace(/\\s+/g, ' ')}));
@@ -615,7 +649,8 @@ class Browser:
             else:
                 seen.add(name)
                 result.items.append((name, item["qty"]))
-                if item["qty"] == 1 and (price := _prices(item["lines"], [])[0]):
+                # The price paid, not the struck-through original: /basket shows these.
+                if item["qty"] == 1 and (price := _prices(item["lines"], item["struck"])[0]):
                     result.prices[name] = price
         result.problems += [f"{n} did not make it into the cart" for n in expected.keys() - seen]
         for box in cart["boxes"]:

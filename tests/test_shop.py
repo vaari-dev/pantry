@@ -1,7 +1,7 @@
 import pytest
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
-from grocerybot.shop import ADDRESS, LOGGED_OUT, Browser, Rules, ShopError, _loggable, _prices
+from grocerybot.shop import ADDRESS, LOGGED_OUT, Browser, Rules, ShopError, _loggable, _prices, _shows_size
 
 
 @pytest.mark.parametrize(
@@ -17,6 +17,27 @@ from grocerybot.shop import ADDRESS, LOGGED_OUT, Browser, Rules, ShopError, _log
 )
 def test_prices(lines, struck, expected):
     assert _prices(lines, struck) == expected
+
+
+@pytest.mark.parametrize(
+    ("size", "page", "shown"),
+    [
+        ("750 ml", "Kinley Soda 750 ml Add to Cart", True),
+        ("0.35 g", "Net Qty: 0.35g", True),
+        ("0.35 g", "Net Qty 0.35 gm", True),
+        ("1 pc (0.35 g)", "Net Qty: 0.35 g", True),
+        ("1 kg", "Pack size 1000 g", True),
+        ("1 Litre", "1 l", True),
+        ("4 pcs", "4 pieces", True),
+        ("(24.1k)", "Kajal Deep Black", True),  # not a size: nothing to compare
+        ("500 g", "Net Qty: 1 kg", False),
+        ("1 pc (0.35 g)", "1 pc (1.2 g)", False),
+        ("6 pcs", "12 pieces", False),
+        ("1 l", "1 lemon", False),
+    ],
+)
+def test_shows_size(size, page, shown):
+    assert _shows_size(size, page) is shown
 
 
 @pytest.mark.parametrize(

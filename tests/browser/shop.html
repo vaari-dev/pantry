@@ -2,7 +2,7 @@
 <!-- The shop, as far as shop.py reads it. State lives in localStorage.shop: {items, oos, cfg}.
      cfg: loggedOut, noRemove (out of stock rows without a Remove button), countsOos (the header
      count includes them), lag (ms before a tap lands), cartLoad (ms before the cart fills),
-     dropAdds (Add to Cart taps to ignore). -->
+     dropAdds (Add to Cart taps to ignore), sizes ({product: size} the product page shows instead). -->
 <html><head><meta charset="utf-8"><title>Shop</title></head><body>
 <header>
   <button data-testid="login-btn" id="login" style="display:none">Login</button>
@@ -17,6 +17,7 @@ const PRODUCTS = {
   kinley: {name: "Kinley Soda", size: "750 ml", price: 20},
   chips: {name: "BRB Chips", size: "48 g", price: 30},
   orange: {name: "Orange Nagpur", size: "1 kg", price: 57},
+  kajal: {name: "Colossal Kajal", size: "0.35g", price: 199, mrp: 299},  // the card said "1 pc (0.35 g)"
 };
 const load = () => JSON.parse(localStorage.shop || '{"items":{},"oos":{},"cfg":{}}');
 const sync = s => fetch("/cfs/api/v1/cart", {method: "PUT", body: JSON.stringify({items: s.items, oos: s.oos})})
@@ -47,6 +48,7 @@ function drawCart(s) {
       html += "<div>Out of stock</div>" + (s.cfg.noRemove ? "" : `<button onclick="remove('${k}')">Remove</button>`);
     } else {
       total += p.price * q;
+      if (p.mrp) html += `<div style="text-decoration: line-through">₹${p.mrp * q}</div>`;  // the original, first
       html += `<div>₹${p.price * q}</div><button data-testid="${k}-minus-btn" onclick="minus('${k}')">-</button>` +
         `<span data-testid="${k}-cart-qty">${q}</span>`;
     }
@@ -73,7 +75,8 @@ function renderProduct() {  // in place, as the shop's single-page app does
   document.title = p.name;
   const button = s.oos[product] ? "<div>Out of stock</div>"
     : `<button aria-label="Increase quantity by one">${s.items[product] ? "+" : "Add to Cart"}</button>`;
-  document.getElementById("main").innerHTML = `<h1>${p.name}</h1><div>${p.size}</div>${button}`;
+  const size = s.cfg.sizes?.[product] ?? p.size;
+  document.getElementById("main").innerHTML = `<h1>${p.name}</h1><div>${size}</div>${button}`;
   document.querySelector("main button")?.addEventListener("click", () => {
     const s = load();
     if (s.cfg.dropAdds) return void (s.cfg.dropAdds--, (localStorage.shop = JSON.stringify(s)));

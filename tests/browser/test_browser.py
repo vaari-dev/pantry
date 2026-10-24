@@ -17,6 +17,7 @@ from grocerybot.shop import Browser, Rules, ShopError
 RULES = Rules("Home", "T6/503", 900)
 PRODUCTS = {k: Product(name, size, f"/pn/{k}") for k, name, size in [
     ("kinley", "Kinley Soda", "750 ml"), ("chips", "BRB Chips", "48 g"), ("orange", "Orange Nagpur", "1 kg"),
+    ("kajal", "Colossal Kajal", "1 pc (0.35 g)"),
 ]}  # fmt: skip
 PRICES = {"kinley": 20, "chips": 30, "orange": 57}  # as shop.html
 CANT_REMOVE = "the shop's cart has items the bot can't remove"
@@ -179,6 +180,26 @@ def test_an_out_of_stock_product_is_never_tapped(shop):
     given(oos=["kinley"])
     assert b.add(PRODUCTS["kinley"], 1) == "out of stock"
     assert cart(b) == {}
+
+
+def test_a_size_written_differently_is_added(shop):
+    """24 Oct, 14:17 UTC: a kajal picked minutes earlier was skipped as "size changed" twice."""
+    b, given = shop
+    given()
+    skipped, reviewed = order(b, "kajal")
+    assert skipped == []
+    assert cart(b) == {"kajal": 1}
+    assert reviewed.prices == {"Colossal Kajal": "₹199"}  # what's paid, not the struck-through ₹299
+
+
+def test_a_different_size_is_skipped(shop):
+    b, given = shop
+    given(sizes={"chips": "90 g"})
+    b.empty_cart()
+    with capture_logs() as logs:
+        assert b.add(PRODUCTS["chips"], 1) == "size changed"
+    assert cart(b) == {}
+    assert any(e["event"] == "size not on the page" and e["page_sizes"] == ["90 g"] for e in logs)
 
 
 def test_logged_out_mid_run(shop):
