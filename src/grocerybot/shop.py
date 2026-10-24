@@ -215,10 +215,14 @@ class Browser:
         addr = self.page.locator(ADDRESS).first
         try:
             addr.wait_for(timeout=20_000)
+            shown = True
         except PlaywrightTimeout:
-            if self.page.locator(LOGGED_OUT).count():
-                raise ShopError("the shop login has expired; the account's owner can /setup again") from None
-            raise ShopError("could not read the delivery address") from None
+            shown = False
+        # Logged in only once the login button is gone, whether or not an address shows.
+        if self.page.locator(LOGGED_OUT).count():
+            raise ShopError("the shop login has expired; the account's owner can /setup again")
+        if not shown:
+            raise ShopError("could not read the delivery address")
         text = addr.inner_text()
         if not text.startswith(rules.address_label) or rules.address_match not in text:
             raise ShopError(
@@ -425,6 +429,9 @@ class Browser:
         cart, result, seen = self._pay_with(wallet=True), Cart(), set()
         if _owed(cart) and _owed(self._open_cart()):  # twice: the bill can lag behind the wallet tick
             cart, result.cod = self._pay_with(wallet=False), True
+        if not cart["items"]:  # an empty cart has no address or bill either: one reason, not five
+            result.problems.append("the cart is empty: the shop did not take the items")
+            return result
         text = cart["text"]
         if not text.startswith(rules.address_label) or rules.address_match not in text:
             result.problems.append("the cart is not delivering to your saved address (/settings)")  # logged: no label

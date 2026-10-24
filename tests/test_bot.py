@@ -388,3 +388,12 @@ def test_a_pick_while_the_options_are_still_coming_in(bot, shop):
     pid = next(iter(bot.picking))
     bot._pick(hh, f"{pid}:1:1")
     said(bot, "⏳ Cart ready (₹120)")
+
+
+def test_search_drops_leading_words_when_nothing_matches():
+    class Shop:
+        def search(self, query):
+            return [query] if query == "avocado" else []
+
+    assert botmod._search(Shop(), "harsh avocado") == ("avocado", ["avocado"])
+    assert botmod._search(Shop(), "eggs") == ("eggs", [])
