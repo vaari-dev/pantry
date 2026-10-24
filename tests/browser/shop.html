@@ -1,0 +1,82 @@
+<!doctype html>
+<!-- The shop, as far as shop.py reads it. State lives in localStorage.shop: {items, oos, cfg}.
+     cfg: loggedOut, noRemove (out of stock rows without a Remove button), countsOos (the header
+     count includes them), lag (ms before a tap lands), cartLoad (ms before the cart fills),
+     dropAdds (Add to Cart taps to ignore). -->
+<html><head><meta charset="utf-8"><title>Shop</title></head><body>
+<header>
+  <button data-testid="login-btn" id="login" style="display:none">Login</button>
+  <div data-testid="user-address">Home
+T6/503, Prestige Road, Bengaluru 560001</div>
+  <button data-testid="cart-btn" id="cart-btn">Cart <span id="count"></span></button>
+</header>
+<main id="main"></main>
+<div data-testid="cart-screen" id="cart" style="display:none"></div>
+<script>
+const PRODUCTS = {
+  kinley: {name: "Kinley Soda", size: "750 ml", price: 20},
+  chips: {name: "BRB Chips", size: "48 g", price: 30},
+  orange: {name: "Orange Nagpur", size: "1 kg", price: 57},
+};
+const load = () => JSON.parse(localStorage.shop || '{"items":{},"oos":{},"cfg":{}}');
+const save = s => { localStorage.shop = JSON.stringify(s); render(); };
+const later = f => setTimeout(f, load().cfg.lag ?? 300);
+const cartEl = document.getElementById("cart");
+
+function render() {
+  const s = load();
+  document.getElementById("login").style.display = s.cfg.loggedOut ? "" : "none";
+  let n = 0;
+  if (!s.cfg.loggedOut)
+    for (const [k, q] of Object.entries(s.items)) n += s.oos[k] ? (s.cfg.countsOos ? 1 : 0) : q;
+  const count = document.getElementById("count");
+  count.textContent = n || "";
+  n ? count.setAttribute("data-testid", "cart-items-number") : count.removeAttribute("data-testid");
+  if (cartEl.style.display !== "none") drawCart(s);
+}
+
+function drawCart(s) {
+  if (s.cfg.loggedOut) return void (cartEl.innerHTML = "<div>Your cart is empty</div>");
+  let html = "<div>Home\nT6/503, Prestige Road, Bengaluru 560001</div>", total = 0;
+  for (const [k, q] of Object.entries(s.items)) {
+    const p = PRODUCTS[k];
+    html += `<div><div>${p.name}</div><div>${p.size}</div>`;
+    if (s.oos[k]) {
+      html += "<div>Out of stock</div>" + (s.cfg.noRemove ? "" : `<button onclick="remove('${k}')">Remove</button>`);
+    } else {
+      total += p.price * q;
+      html += `<div>₹${p.price * q}</div><button data-testid="${k}-minus-btn" onclick="minus('${k}')">-</button>` +
+        `<span data-testid="${k}-cart-qty">${q}</span>`;
+    }
+    html += "</div>";
+  }
+  if (!Object.keys(s.items).length) html += "<div>All items are out of stock</div><div>₹65</div>";  // as the shop's, emptied
+  if (total) html += `<label><input type="checkbox" checked> Zepto Cash ₹500</label>` +
+    `<div>Item Total</div><div>₹${total}</div><div>To Pay</div><div>₹0</div><div>Zepto Cash</div><div>₹${total}</div>`;
+  cartEl.innerHTML = html;
+}
+
+window.minus = k => later(() => { const s = load(); if (!--s.items[k]) delete s.items[k]; save(s); });
+window.remove = k => later(() => { const s = load(); delete s.items[k]; save(s); });
+document.getElementById("cart-btn").onclick = () => {
+  cartEl.style.display = "";
+  cartEl.innerHTML = "";
+  setTimeout(() => drawCart(load()), load().cfg.cartLoad ?? 200);
+};
+document.addEventListener("keydown", e => { if (e.key === "Escape") cartEl.style.display = "none"; });
+
+const product = location.pathname.match(/^\/pn\/(\w+)/)?.[1];
+if (product) {
+  const p = PRODUCTS[product], s = load();
+  document.title = p.name;
+  const button = s.oos[product] ? "<div>Out of stock</div>"
+    : `<button aria-label="Increase quantity by one">${s.items[product] ? "+" : "Add to Cart"}</button>`;
+  document.getElementById("main").innerHTML = `<h1>${p.name}</h1><div>${p.size}</div>${button}`;
+  document.querySelector("main button")?.addEventListener("click", () => {
+    const s = load();
+    if (s.cfg.dropAdds) return void (s.cfg.dropAdds--, (localStorage.shop = JSON.stringify(s)));
+    later(() => { const s = load(); s.items[product] = (s.items[product] || 0) + 1; save(s); location.reload(); });
+  });
+}
+render();
+</script></body></html>
