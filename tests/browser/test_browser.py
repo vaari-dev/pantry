@@ -2,11 +2,14 @@
 
 import os
 import threading
+import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from structlog.testing import capture_logs
 
+from grocerybot import shop as shop_module
 from grocerybot.catalog import Product
 from grocerybot.shop import Browser, Rules, ShopError
 
@@ -18,6 +21,14 @@ CANT_REMOVE = "the shop's cart has items the bot can't remove"
 
 
 class Shop(SimpleHTTPRequestHandler):
+    stalls = 0  # requests to /stall to leave unanswered for 3 s, as at 06:31 and 06:36 UTC on 24 Oct
+
+    def do_GET(self):
+        if self.path == "/stall" and Shop.stalls:
+            Shop.stalls -= 1
+            return time.sleep(3)
+        super().do_GET()
+
     def translate_path(self, path):
         return str(Path(__file__).with_name("shop.html"))
 
@@ -150,5 +161,28 @@ def test_logged_out_mid_run(shop):
 
 def test_unreachable_shop(shop):
     b, _ = shop
-    with pytest.raises(ShopError, match="the shop did not load"):
+    with pytest.raises(ShopError, match="did not load"):
         b.goto("http://127.0.0.1:9/")
+
+
+def test_a_stalled_page_loads_on_the_second_try(shop, monkeypatch):
+    b, _ = shop
+    monkeypatch.setattr(shop_module, "TIMEOUT_MS", 4000)  # 2 s a try
+    Shop.stalls = 1
+    with capture_logs() as logs:
+        b.goto("/stall")
+    assert [(e["event"], e["attempt"]) for e in logs if e["event"].startswith("page")] == [
+        ("page failed", 1),
+        ("page loaded", 2),
+    ]
+
+
+def test_any_page_error_reaches_the_user_as_a_reason(server, tmp_path):
+    with pytest.raises(ShopError, match="stopped responding"), Browser(server, None, None, tmp_path) as b:
+        b.page.locator("#missing").click(timeout=100)
+
+
+def test_a_failed_state_save_does_not_change_the_outcome(server, tmp_path):
+    (state := tmp_path / "state.json").write_text('{"cookies": [], "origins": []}')
+    with Browser(server, state, None, tmp_path) as b:
+        b._ctx.close()  # as when Chrome dies during Place Order

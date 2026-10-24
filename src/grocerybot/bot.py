@@ -212,6 +212,7 @@ class Bot:
     def _drain(self) -> None:
         """On SIGTERM: Telegram keeps new updates for the next start; the running job finishes, the
         worker hands back the queued ones, then the bot exits."""
+        clear_contextvars()  # not the last update's
         log.info("stopping", jobs=self.jobs.unfinished_tasks)
         with self.lock:
             for timer in self.holds.values():  # the ledger keeps holds; _resume restarts them

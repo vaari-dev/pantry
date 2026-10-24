@@ -1,7 +1,10 @@
 """The shop's website, through real Chrome: the site refuses headless browsers and data-centre IPs."""
 
+import contextlib
 import re
+import subprocess
 import time
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -196,18 +199,23 @@ class Browser:
         self.page.set_default_timeout(TIMEOUT_MS)
         return self
 
-    def __exit__(self, exc_type, *_):
+    def __exit__(self, exc_type, exc, _):
         try:
             if exc_type:
-                self._log_stop()
-            if self.state_file is not None:
-                self._ctx.storage_state(path=str(self.state_file))
-                self.state_file.chmod(0o600)
-            if self.recorder:
-                self.recorder.write(self.page, self._ctx)
+                self._log_stop(exc)
+            try:  # a failed save must not replace the outcome, e.g. an unconfirmed order
+                if self.state_file is not None:
+                    self._ctx.storage_state(path=str(self.state_file))
+                    self.state_file.chmod(0o600)
+                if self.recorder:
+                    self.recorder.write(self.page, self._ctx)
+            except Exception:
+                log.warning("browser state not saved", exc_info=True)
         finally:
             self._browser.close()
             self._pw.stop()
+        if isinstance(exc, PlaywrightError):  # whatever page step it was, the user gets a reason
+            raise ShopError("the shop's page stopped responding; try again in a minute") from exc
 
     def _filter(self, route: Route):
         req = route.request
@@ -220,15 +228,23 @@ class Browser:
         name = f"{datetime.now():%Y%m%d-%H%M%S}-{tag}.png"
         try:
             self.debug_dir.mkdir(parents=True, exist_ok=True)
-            self.page.screenshot(path=str(self.debug_dir / name))
+            self.page.screenshot(path=str(self.debug_dir / name), timeout=10_000)
             return name
         except Exception:  # never mask the real error
             log.warning("screenshot failed", exc_info=True)
             return None
 
-    def _log_stop(self) -> None:
+    def _log_stop(self, exc: BaseException) -> None:
+        """Not str(exc): Playwright's call log holds URLs."""
+        steps = [f.name for f in traceback.extract_tb(exc.__traceback__) if f.filename == __file__]
         try:  # never mask the real error
-            log.warning("browser stopped", at=self._at(), screenshot=self.screenshot("error"))
+            log.warning(
+                "browser stopped",
+                at=self._at(),
+                error=type(exc).__name__,
+                step=steps[-1] if steps else None,
+                screenshot=self.screenshot("error"),
+            )
         except Exception:
             log.warning("browser stop not logged", exc_info=True)
 
@@ -236,18 +252,44 @@ class Browser:
         return urlsplit(self.page.url).path  # never the query: searches hold the user's words
 
     def goto(self, url: str) -> None:
-        start, url = time.monotonic(), url if url.startswith("http") else self.base + url
-        try:
-            resp = self.page.goto(url, wait_until="domcontentloaded")
-        except PlaywrightError as e:  # also a dropped exit node: ERR_SOCKS_CONNECTION_FAILED
-            reason = m.group() if (m := re.search(r"net::\w+|Timeout", str(e))) else type(e).__name__
-            log.info("page failed", to=urlsplit(url).path, reason=reason)  # str(e) holds the query
-            raise ShopError("the shop did not load; is the home connection (exit node) up?") from e
+        """Two tries; a failed one checks the home connection outside Chrome, to tell the two apart."""
+        url = url if url.startswith("http") else self.base + url
+        for attempt in (1, 2):
+            start = time.monotonic()
+            try:
+                resp = self.page.goto(url, wait_until="domcontentloaded", timeout=TIMEOUT_MS // 2)
+                break
+            except PlaywrightError as e:
+                # Not str(e): it holds the URL, and a search's query is the user's words.
+                reason = m.group() if (m := re.search(r"net::\w+|Timeout", str(e))) else type(e).__name__
+                home = self._home_reaches_shop()
+                log.info("page failed", to=urlsplit(url).path, reason=reason, attempt=attempt, home_ok=home)
+                if attempt == 2:
+                    raise ShopError(
+                        "the home connection (exit node) is not reaching the shop"
+                        if home is False
+                        else "the shop's page did not load; try again in a minute"
+                    ) from e
+                with contextlib.suppress(PlaywrightError):  # the stalled load would abort the retry
+                    self.page.goto("about:blank", timeout=5000)
         status = resp.status if resp else None
-        log.info("page loaded", at=self._at(), status=status, seconds=round(time.monotonic() - start, 1))
+        log.info(
+            "page loaded", at=self._at(), status=status, attempt=attempt, seconds=round(time.monotonic() - start, 1)
+        )
         if status in (403, 429):
             raise ShopError(f"the shop refused the connection (HTTP {status})")
         self.page.wait_for_timeout(2000)
+
+    def _home_reaches_shop(self) -> bool | None:
+        """None without an exit node."""
+        if not self.proxy:
+            return None
+        socks = self.proxy.replace("socks5://", "socks5h://")  # the exit node resolves names too
+        curl = ["curl", "-s", "-o", "/dev/null", "--max-time", "10", "-x", socks, self.base]
+        try:
+            return subprocess.run(curl, check=False).returncode == 0  # noqa: S603  config, not input
+        except OSError:  # no curl
+            return None
 
     def check_session(self, rules: Rules) -> str:
         if not self.page.url.startswith(self.base):

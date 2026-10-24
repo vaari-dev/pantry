@@ -511,3 +511,19 @@ def test_ledger_edits_from_two_threads_both_land(tmp_path):
     for t in threads:
         t.join()
     assert len(ledger._orders()) == 20
+
+
+@pytest.mark.parametrize("error", [ShopError("the shop's page stopped responding"), RuntimeError("boom")])
+def test_a_failure_after_place_order_is_unconfirmed_never_not_ordered(bot, shop, error):
+    hh, browser = shop
+
+    def place():
+        raise error
+
+    browser.place = place
+    bot._on_message(message("2 bread"))
+    said(bot, "⏳ Cart ready")
+    tap(bot, hh)
+    said(bot, "⚠️ I couldn't confirm the order")
+    assert [o["status"] for o in hh.ledger()._orders()] == ["unknown"]
+    assert not [t for _, t, _ in bot.tg.sent if "Couldn't order" in t or "othing was ordered" in t]
