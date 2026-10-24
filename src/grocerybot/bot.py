@@ -21,7 +21,7 @@ from . import orders
 from .accounts import Accounts, Household, address_parts
 from .catalog import Product, plan
 from .config import Config
-from .shop import ShopError
+from .shop import Browser, ShopError
 from .speech import Transcriber
 from .telegram import Telegram, TelegramError, strikethrough
 
@@ -94,6 +94,15 @@ SETTINGS = {  # command: (setting, parse, example)
 
 def _items(items: list[tuple[str, int]]) -> str:
     return ", ".join(f"{k} ×{q}" for k, q in items)
+
+
+def _search(b: Browser, name: str) -> tuple[str, list[Product]]:
+    """Speech garbles words ("hass avocado" → "harsh avocado"); the item itself usually comes last."""
+    words = name.split()
+    for n in range(min(len(words), 3)):
+        if options := b.search(query := " ".join(words[n:])):
+            return query, options
+    return name, []
 
 
 def _order_now(hh: Household) -> list[tuple[str, str]]:
@@ -379,12 +388,15 @@ class Bot:
         found = []
         if p.to_pick:
             with orders.browser(self.cfg, hh, images=True) as b:
-                found = [(name, qty, b.search(name)) for name, qty in p.to_pick]
-        for name, _, options in found:
+                found = [(name, qty, *_search(b, name)) for name, qty in p.to_pick]
+        for name, _, query, options in found:
             if not options:
                 log.info("item not found")
                 self._say(chat_id, f'Couldn\'t find "{name}" in the shop; leaving it out.')
-        asks = {n: (name, qty, options, []) for n, (name, qty, options) in enumerate(found) if options}
+            elif query != name:
+                log.info("item found by part of its name", words=len(name.split()), used=len(query.split()))
+                self._say(chat_id, f'Nothing for "{name}", so here is "{query}".')
+        asks = {n: (name, qty, options, []) for n, (name, qty, _, options) in enumerate(found) if options}
         if not asks:
             return self._order(chat_id, hh, p.ready) if p.ready else self._say(chat_id, "I didn't catch any items.")
 
