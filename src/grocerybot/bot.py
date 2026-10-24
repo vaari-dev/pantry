@@ -97,8 +97,7 @@ def _items(items: list[tuple[str, int]]) -> str:
 
 
 def _search(b: Browser, name: str) -> tuple[str, list[Product]]:
-    """The whole name, then without its first words: speech garbles a word ("hass" → "harsh"), and the
-    thing itself usually comes last ("harsh avocado" → "avocado")."""
+    """Speech garbles words ("hass avocado" → "harsh avocado"); the item itself usually comes last."""
     words = name.split()
     for n in range(min(len(words), 3)):
         if options := b.search(query := " ".join(words[n:])):

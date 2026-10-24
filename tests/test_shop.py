@@ -31,7 +31,7 @@ class Found:
     def __init__(self, n, text=""):
         self.n, self.text, self.first = n, text, self
 
-    def wait_for(self, timeout):
+    def wait_for(self, state, timeout):
         if not self.n:
             raise PlaywrightTimeout("not shown")
 

@@ -1,10 +1,11 @@
 """The shop's website, through real Chrome: the site refuses headless browsers and data-centre IPs."""
 
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import structlog
 from playwright.sync_api import Error as PlaywrightError
@@ -46,6 +47,7 @@ PAY = re.compile(r"^\s*(?:click to )?pay ₹\s?([\d,.]+)(?: on delivery)?\s*$", 
 COD = re.compile(r"^\s*pay by cash\b.*on delivery\s*$", re.I)
 PAY_COD = re.compile(r"^\s*pay ₹\s?([\d,.]+) on delivery\s*$", re.I)
 LOGGED_OUT = "[data-testid=login-btn]"
+CART_COUNT = "[data-testid=cart-items-number]"
 ADDRESS = "[data-testid=user-address]"
 PHONE_FIELD = "input[type=tel], input[inputmode=numeric], input[name*=phone i]"
 OTP_FIELD = "input[autocomplete=one-time-code], input[maxlength='1'], input[maxlength='4'], input[maxlength='6']"
@@ -178,7 +180,7 @@ class Browser:
     def __exit__(self, exc_type, *_):
         try:
             if exc_type:
-                self.screenshot("error")
+                self._log_stop()
             if self.state_file is not None:
                 self._ctx.storage_state(path=str(self.state_file))
                 self.state_file.chmod(0o600)
@@ -192,39 +194,52 @@ class Browser:
             return route.abort()
         return route.continue_()
 
-    def screenshot(self, tag: str) -> None:
+    def screenshot(self, tag: str) -> str:
         """Failures only: screens show the address."""
         self.debug_dir.mkdir(parents=True, exist_ok=True)
+        name = f"{datetime.now():%Y%m%d-%H%M%S}-{tag}.png"
         try:
-            self.page.screenshot(path=str(self.debug_dir / f"{datetime.now():%Y%m%d-%H%M%S}-{tag}.png"))
+            self.page.screenshot(path=str(self.debug_dir / name))
         except Exception:  # never mask the real error
             log.warning("screenshot failed", exc_info=True)
+        return name
+
+    def _log_stop(self) -> None:
+        try:
+            title = self.page.title()
+        except PlaywrightError:  # never mask the real error
+            title = None
+        log.warning("browser stopped", at=self._at(), title=title, screenshot=self.screenshot("error"))
+
+    def _at(self) -> str:
+        return urlsplit(self.page.url).path  # never the query: searches hold the user's words
 
     def goto(self, url: str) -> None:
+        start, url = time.monotonic(), url if url.startswith("http") else self.base + url
         try:
-            resp = self.page.goto(url if url.startswith("http") else self.base + url, wait_until="domcontentloaded")
+            resp = self.page.goto(url, wait_until="domcontentloaded")
         except PlaywrightTimeout as e:
+            log.info("page timed out", to=urlsplit(url).path)
             raise ShopError("the shop did not load; is the home connection (exit node) up?") from e
-        if resp is not None and resp.status in (403, 429):
-            raise ShopError(f"the shop refused the connection (HTTP {resp.status})")
+        status = resp.status if resp else None
+        log.info("page loaded", at=self._at(), status=status, seconds=round(time.monotonic() - start, 1))
+        if status in (403, 429):
+            raise ShopError(f"the shop refused the connection (HTTP {status})")
         self.page.wait_for_timeout(2000)
 
     def check_session(self, rules: Rules) -> str:
         if not self.page.url.startswith(self.base):
             self.goto("/")
         addr = self.page.locator(ADDRESS).first
-        try:
-            addr.wait_for(timeout=20_000)
-            shown = True
-        except PlaywrightTimeout:
-            shown = False
-        # Logged in only once the login button is gone, whether or not an address shows.
-        if self.page.locator(LOGGED_OUT).count():
+        shown, logged_out = self._shown(addr, 20), bool(self.page.locator(LOGGED_OUT).count())
+        text = addr.inner_text() if shown else ""
+        ok = text.startswith(rules.address_label) and rules.address_match in text
+        log.info("session checked", logged_in=not logged_out, address_shown=shown, address_ok=ok)
+        if logged_out:  # checked even with an address showing: logged-out pages can show one
             raise ShopError("the shop login has expired; the account's owner can /setup again")
         if not shown:
             raise ShopError("could not read the delivery address")
-        text = addr.inner_text()
-        if not text.startswith(rules.address_label) or rules.address_match not in text:
+        if not ok:
             raise ShopError(
                 f"the shop is not set to deliver to '{rules.address_label}'", "the shop is set to another address"
             )
@@ -234,10 +249,12 @@ class Browser:
         self.goto("/")
         self.page.locator(LOGGED_OUT).first.click()
         field = self.page.locator(PHONE_FIELD).filter(visible=True).first
-        try:
-            field.wait_for(timeout=20_000)
-        except PlaywrightTimeout:
-            raise ShopError("the shop's login form did not open") from None
+        if not self._shown(field, 20):
+            inputs = self.page.locator("input:visible").evaluate_all(
+                "l => l.map(i => [i.type, i.name, i.inputMode, i.autocomplete, i.maxLength].join(' '))"
+            )
+            log.info("no phone field", inputs=inputs)
+            raise ShopError("the shop's login form did not open")
         field.fill(phone)
         self.page.wait_for_timeout(500)
         button = self.page.get_by_role("button", name=CONTINUE).filter(visible=True)
@@ -245,10 +262,8 @@ class Browser:
             button.first.click()
         else:
             field.press("Enter")
-        try:
-            self.page.locator(OTP_FIELD).filter(visible=True).first.wait_for(timeout=20_000)
-        except PlaywrightTimeout:
-            raise ShopError("the shop did not ask for a code; is the number right?") from None
+        if not self._shown(self.page.locator(OTP_FIELD).filter(visible=True).first, 20):
+            raise ShopError("the shop did not ask for a code; is the number right?")
 
     def enter_otp(self, code: str) -> None:
         """One field or one box per digit: typing works for both."""
@@ -258,11 +273,11 @@ class Browser:
         button = self.page.get_by_role("button", name=VERIFY).filter(visible=True)
         if button.count():
             button.first.click()
-        try:
-            self.page.locator(LOGGED_OUT).first.wait_for(state="detached", timeout=30_000)
-            self.page.locator(ADDRESS).first.wait_for(timeout=20_000)
-        except PlaywrightTimeout:
-            raise ShopError("the shop did not accept that code") from None
+        if not (
+            self._shown(self.page.locator(LOGGED_OUT).first, 30, "detached")
+            and self._shown(self.page.locator(ADDRESS).first, 20)
+        ):
+            raise ShopError("the shop did not accept that code")
         self.page.wait_for_timeout(3000)
 
     def delivery_address(self) -> str:
@@ -289,11 +304,8 @@ class Browser:
         picker = self.page.locator(f":is({MODAL}):visible").first
         for _ in range(3):
             self.page.locator(PICKER_BUTTON).first.click()
-            try:
-                picker.wait_for(timeout=8_000)
+            if self._shown(picker, 8):
                 return True
-            except PlaywrightTimeout:
-                pass
         return False
 
     def pick_address(self, n: int) -> str:
@@ -334,9 +346,7 @@ class Browser:
 
     def search(self, query: str, limit: int = 4) -> list[Product]:
         self.goto(f"/search?query={quote(query)}")
-        try:
-            self.page.wait_for_selector("a[data-testid=product-card]", timeout=15_000)
-        except PlaywrightTimeout:
+        if not self._shown(self.page.locator("a[data-testid=product-card]").first, 15):
             return []
         self.page.wait_for_timeout(1500)
         cards = self.page.evaluate("""() => [...document.querySelectorAll('a[data-testid=product-card]')].map(a => ({
@@ -383,11 +393,14 @@ class Browser:
         for _ in range(qty - 1):
             self.page.locator(PLUS).first.evaluate("b => b.click()")
             self.page.wait_for_timeout(1000)
+        badge = self.page.locator(CART_COUNT)
+        log.info("added", product=product.name, qty=qty, cart_count=badge.first.inner_text() if badge.count() else None)
         return None
 
     def _open_cart(self) -> dict:
         self.page.locator("[data-testid=cart-btn]").first.click()
-        self.page.wait_for_selector("[data-testid=cart-screen]")
+        if not self._shown(self.page.locator("[data-testid=cart-screen]").first, 30):
+            raise ShopError("the cart did not open")
         self.page.wait_for_timeout(1500)
         return self.page.evaluate("""() => {
           const cart = document.querySelector('[data-testid=cart-screen]');
@@ -404,7 +417,7 @@ class Browser:
         }""")
 
     def empty_cart(self) -> None:
-        if not self.page.locator("[data-testid=cart-items-number]").count():
+        if not self.page.locator(CART_COUNT).count():
             return
         self._open_cart()
         minus = self.page.locator("[data-testid=cart-screen] [data-testid$=minus-btn]")
@@ -429,7 +442,7 @@ class Browser:
         cart, result, seen = self._pay_with(wallet=True), Cart(), set()
         if _owed(cart) and _owed(self._open_cart()):  # twice: the bill can lag behind the wallet tick
             cart, result.cod = self._pay_with(wallet=False), True
-        if not cart["items"]:  # an empty cart has no address or bill either: one reason, not five
+        if not cart["items"]:
             result.problems.append("the cart is empty: the shop did not take the items")
             return result
         text = cart["text"]
@@ -509,9 +522,9 @@ class Browser:
         m = pattern.search(" ".join(button.inner_text().split()))
         return button if m and _money(m.group(1)) == total else None
 
-    def _shown(self, locator: Locator, seconds: int) -> bool:
+    def _shown(self, locator: Locator, seconds: int, state: str = "visible") -> bool:
         try:
-            locator.wait_for(timeout=seconds * 1000)
+            locator.wait_for(state=state, timeout=seconds * 1000)
             return True
         except PlaywrightTimeout:
             return False
