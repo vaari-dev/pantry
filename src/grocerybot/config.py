@@ -28,6 +28,10 @@ class Config:
     def debug_dir(self) -> Path:
         return self.data_dir / "debug"
 
+    @property
+    def api_map(self) -> Path:
+        return self.data_dir / "apimap.json"
+
 
 def load() -> Config:
     return Config(

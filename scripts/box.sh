@@ -5,6 +5,7 @@
 #   deploy IMAGE  pull IMAGE and (re)start
 #   check         self-check inside the running bot
 #   logs          the bot's recent log lines and health
+#   apimap        the shop's API calls seen so far, without values
 #   remove        stop and delete everything, volume included
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -42,6 +43,9 @@ case "${1:?command}" in
   logs)
     docker inspect -f 'health: {{.State.Health.Status}}, started {{.State.StartedAt}}' "$(compose ps -q grocery-bot)"
     compose logs --no-log-prefix --tail 200 grocery-bot
+    ;;
+  apimap)
+    in_bot python -m grocerybot apimap
     ;;
   remove)
     compose down --volumes --rmi all --remove-orphans

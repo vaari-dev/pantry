@@ -41,7 +41,8 @@ never retried.
    variables `SHOP_URL`, `TELEGRAM_ADMIN_ID`, `TS_EXIT_NODE` (its Tailscale IP), `SSH_HOST`,
    `SSH_USER`, `SSH_KNOWN_HOSTS`, optional `DEPLOY_DIR`;
    secrets `TELEGRAM_BOT_TOKEN`, `TS_AUTHKEY`, `SSH_PRIVATE_KEY`.
-3. Push to `main`. *Actions → Operate* runs `check`, `logs` or `remove` (deletes the bot and its data).
+3. Push to `main`. *Actions → Operate* runs `check`, `logs`, `apimap` or `remove` (deletes the bot and its data).
+   `apimap` prints the shop's API calls seen so far, without values.
 
 Logs are JSON lines in Loki: `{service_name="grocery-bot"}`. They never hold message text.
 

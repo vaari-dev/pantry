@@ -12,6 +12,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Locator, Page, Route, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
+from .apimap import Recorder
 from .catalog import Product
 
 TIMEOUT_MS = 90_000  # pages are slower through the home exit node
@@ -149,7 +150,8 @@ def _rupees(amount: str) -> float:
 
 
 class Browser:
-    """One Chrome session. Loads and saves state_file (None: neither); fresh: starts logged out."""
+    """One Chrome session. Loads and saves state_file (None: neither); fresh: starts logged out;
+    record: the API map to add to."""
 
     def __init__(
         self,
@@ -159,10 +161,12 @@ class Browser:
         debug_dir: Path,
         images: bool = False,
         fresh: bool = False,
+        record: Path | None = None,
     ):
         self.base = base_url.rstrip("/")
         self.state_file, self.proxy, self.debug_dir, self.fresh = state_file, proxy, debug_dir, fresh
         self.skip_types = SKIP_TYPES if images else SKIP_TYPES | {"image"}
+        self.recorder = Recorder(record) if record else None
 
     def __enter__(self) -> "Browser":
         stored = self.state_file is not None and not self.fresh
@@ -176,6 +180,8 @@ class Browser:
             storage_state=str(self.state_file) if stored else None, viewport={"width": 1024, "height": 700}
         )
         self._ctx.route("**/*", self._filter)
+        if self.recorder:
+            self.recorder.attach(self._ctx)
         self.page: Page = self._ctx.new_page()
         self.page.set_default_timeout(TIMEOUT_MS)
         return self
@@ -187,6 +193,8 @@ class Browser:
             if self.state_file is not None:
                 self._ctx.storage_state(path=str(self.state_file))
                 self.state_file.chmod(0o600)
+            if self.recorder:
+                self.recorder.write(self.page, self._ctx)
         finally:
             self._browser.close()
             self._pw.stop()
