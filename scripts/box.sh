@@ -14,7 +14,7 @@ compose() { docker compose --env-file .image "$@"; }
 in_bot() { compose exec -T grocery-bot "$@"; }
 
 wait_healthy() {
-  for _ in $(seq 36); do
+  for _ in $(seq 72); do  # the bot first waits for the exit node to carry traffic
     [ "$(docker inspect -f '{{.State.Health.Status}}' "$(compose ps -q grocery-bot)" 2>/dev/null)" = healthy ] && return
     sleep 5
   done
@@ -29,11 +29,7 @@ case "${1:?command}" in
     export APP_IMAGE="${2:?image}"
     echo "APP_IMAGE=$APP_IMAGE" > .image  # so later commands (and reboots) use the same image
     compose pull -q
-    for _ in $(seq 60); do  # let a running order finish (up to 10 min)
-      in_bot test -e /tmp/busy 2>/dev/null || break
-      sleep 10
-    done
-    compose up -d --remove-orphans
+    compose up -d --remove-orphans  # the old bot finishes its jobs first: stop_grace_period
     wait_healthy
     docker image prune -f --filter "label=org.opencontainers.image.source=https://github.com/vaari-dev/grocery-bot" >/dev/null
     ;;

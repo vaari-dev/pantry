@@ -18,7 +18,7 @@ services:
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
-    stop_grace_period: 30s
+    stop_grace_period: 10m  # SIGTERM: the bot finishes queued orders, then exits
     logging:
       driver: json-file
       options: {max-size: 10m, max-file: '3'}
