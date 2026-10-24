@@ -9,6 +9,7 @@ import pytest
 from grocerybot import bot as botmod
 from grocerybot.catalog import Product
 from grocerybot.config import Config
+from grocerybot.ledger import Ledger
 from grocerybot.shop import Cart, ShopError
 
 ADMIN, NEW = 1, 42
@@ -466,3 +467,47 @@ def test_a_stale_or_unreadable_saved_state_is_dropped(bot):
     store.write(bot.saved, {"offset": 9, "at": time.time() - 2 * 86400, "picking": {"old": old, "bad": {"x": 1}}})
     new = botmod.Bot(bot.cfg)
     assert (new.offset, new.picking) == (None, {})
+
+
+def test_basket_lists_prices_and_total_with_order_now(bot, shop):
+    hh, _ = shop
+    hh.catalog().learn("bread", Product("Bread", "400 g", "https://shop.example/bread", "₹45"))
+    hh.ledger().set_basket([("bread", 2), ("milk", 1)])
+    bot._on_message(message("/basket"))
+    assert said(bot, "🧺 Your basket") == botmod._order_now(hh)
+    text = next(t for _, t, _ in bot.tg.sent if t.startswith("🧺 Your basket"))
+    assert text == "🧺 Your basket\n• Bread (400 g) ×2  ₹90\n• Milk (1 pc) ×1\n\nTotal ₹90 + 1 without a price"
+    assert hh.ledger().offer()  # the button is the live Order now
+
+
+def test_an_empty_basket_has_no_button(bot, shop):
+    bot._on_message(message("/basket"))
+    assert said(bot, "The basket is empty.") is None
+
+
+def test_basket_shows_what_the_minimum_needs(bot, shop):
+    hh, _ = shop
+    hh.catalog().learn("bread", Product("Bread", "400 g", "https://shop.example/bread", "₹45"))
+    hh.ledger().set_basket([("bread", 1)])
+    bot._on_message(message("/basket"))
+    said(bot, "🧺 Your basket\n• Bread (400 g) ×1  ₹45\n\nTotal ₹45\n₹55 more reaches the ₹100 minimum.")
+
+
+def test_basket_waits_for_an_order_in_progress(bot, shop):
+    hh, _ = shop
+    hh.ledger().set_basket([("bread", 1)])
+    with worker_paused(bot):
+        bot._on_message(message("/basket"))
+        said(bot, "An order is in progress")
+    assert hh.ledger().offer() is None
+
+
+def test_ledger_edits_from_two_threads_both_land(tmp_path):
+    ledger = Ledger(tmp_path / "ledger.json")
+    threads = [threading.Thread(target=ledger.set_offer, args=(1, n)) for n in range(20)]
+    threads += [threading.Thread(target=ledger.begin, args=([("bread", 1)], 60)) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(ledger._orders()) == 20

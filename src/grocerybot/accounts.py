@@ -6,12 +6,10 @@ households.json:
    "invites": {"<code>": {"household": "<id>", "expires": "<iso time>"}}}
 """
 
-import contextlib
 import os
 import re
 import secrets
 import shutil
-import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -22,6 +20,7 @@ from .ledger import Ledger
 
 INVITE_VALID = timedelta(hours=24)
 INVITE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+EMPTY = {"households": {}, "users": {}, "invites": {}}
 DEFAULTS = {"address_label": "", "address_match": "", "daily_cap": 1000.0, "min_order": 100.0, "place_orders": True}
 
 
@@ -65,17 +64,12 @@ class Accounts:
     def __init__(self, data_dir: Path, admin: int):
         self.root, self.admin = data_dir / "households", admin
         self.path = data_dir / "households.json"
-        self._lock = threading.Lock()
 
     def _read(self) -> dict:
-        return {"households": {}, "users": {}, "invites": {}, **store.read(self.path, {})}
+        return {**EMPTY, **store.read(self.path, {})}
 
-    @contextlib.contextmanager
     def _edit(self):
-        with self._lock:
-            data = self._read()
-            yield data
-            store.write(self.path, data)
+        return store.edit(self.path, EMPTY)
 
     def _household(self, data: dict, hid: str | None) -> Household | None:
         if (h := data["households"].get(hid)) is None:

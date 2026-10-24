@@ -20,7 +20,7 @@ from structlog.contextvars import bind_contextvars, bound_contextvars, clear_con
 
 from . import orders, store
 from .accounts import Accounts, Household, address_parts
-from .catalog import Product, plan
+from .catalog import Product, plan, rupees
 from .config import Config
 from .shop import Browser, ShopError
 from .speech import Transcriber
@@ -105,6 +105,23 @@ def _search(b: Browser, name: str) -> tuple[str, list[Product]]:
         if options := b.search(query := " ".join(words[n:])):
             return query, options
     return name, []
+
+
+def _basket(hh: Household) -> str:
+    """Each item with its price as last seen in the shop, and the total; '' when empty."""
+    lines, total, unpriced = [], 0.0, 0
+    for key, qty in hh.ledger().basket():
+        product = (hh.catalog().options(key) or [None])[0]
+        price = rupees(product.price) if product else None
+        lines.append(f"• {product.label() if product else key} ×{qty}" + (f"  ₹{price * qty:g}" if price else ""))
+        total += (price or 0) * qty
+        unpriced += not price
+    if not lines:
+        return ""
+    lines.append(f"\nTotal ₹{total:g}" + (f" + {unpriced} without a price" if unpriced else ""))
+    if not unpriced and total < hh.min_order:
+        lines.append(f"₹{hh.min_order - total:g} more reaches the ₹{hh.min_order:g} minimum.")
+    return "\n".join(["🧺 Your basket", *lines])
 
 
 def _order_now(hh: Household) -> list[tuple[str, str]]:
@@ -373,8 +390,12 @@ class Bot:
             if self._owner(chat_id, uid, hh):
                 self._change(chat_id, hh, command, arg)
         elif command == "/basket":
-            basket = hh.ledger().basket()
-            self._say(chat_id, f"Waiting: {_items(basket)}" if basket else "The basket is empty.")
+            if self.jobs.unfinished_tasks:
+                self._say(chat_id, "An order is in progress; send /basket again once it's done.")
+            elif text := _basket(hh):
+                self._offer_now(chat_id, hh, text)
+            else:
+                self._say(chat_id, "The basket is empty.")
         elif command == "/clear":
             self._queue(self._clear, chat_id, hh)
         elif command == "/usual":

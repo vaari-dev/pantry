@@ -13,7 +13,7 @@ from playwright.sync_api import Locator, Page, Route, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from .apimap import Recorder
-from .catalog import Product
+from .catalog import Product, rupees
 
 TIMEOUT_MS = 90_000  # pages are slower through the home exit node
 CHROME_ARGS = [
@@ -154,16 +154,9 @@ def _prices(lines: list[str], struck: list[str]) -> tuple[str, str]:
     struck = {s.replace(" ", "") for s in struck}
     price = next((a for a in amounts if a not in struck), "")
     mrp = next((a for a in amounts if a in struck), "")
-    if not mrp and len(amounts) > 1 and _rupees(amounts[1]) > _rupees(price):
+    if not mrp and len(amounts) > 1 and (rupees(amounts[1]) or 0) > (rupees(price) or 0):
         mrp = amounts[1]  # no strike styling found: cards list the price, then the original
     return price, mrp
-
-
-def _rupees(amount: str) -> float:
-    try:
-        return float(amount.lstrip("₹").replace(",", ""))
-    except ValueError:
-        return 0
 
 
 class Browser:
