@@ -25,7 +25,9 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: ruff check .
       - run: ruff format --check .
-      - run: pytest -q
+      - name: Chromium and Xvfb, for tests/browser
+        run: python -m playwright install --with-deps chromium && sudo apt-get install -y -q xvfb
+      - run: xvfb-run -a pytest -q
       - name: No personal data or secrets
         run: |
           if git grep -nIE '(\+91[ -]?[0-9]{5}|bot[0-9]{8,}:[A-Za-z0-9_-]{30,}|tskey-[a-z]+-[A-Za-z0-9]{10,})' -- ':!*.md'; then exit 1; fi
