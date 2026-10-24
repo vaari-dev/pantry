@@ -1,5 +1,6 @@
 """shop.Browser in real Chrome against shop.html, under xvfb-run (as CI runs them)."""
 
+import json
 import os
 import threading
 import time
@@ -17,6 +18,7 @@ RULES = Rules("Home", "T6/503", 900)
 PRODUCTS = {k: Product(name, size, f"/pn/{k}") for k, name, size in [
     ("kinley", "Kinley Soda", "750 ml"), ("chips", "BRB Chips", "48 g"), ("orange", "Orange Nagpur", "1 kg"),
 ]}  # fmt: skip
+PRICES = {"kinley": 20, "chips": 30, "orange": 57}  # as shop.html
 CANT_REMOVE = "the shop's cart has items the bot can't remove"
 
 
@@ -28,6 +30,35 @@ class Shop(SimpleHTTPRequestHandler):
             Shop.stalls -= 1
             return time.sleep(3)
         super().do_GET()
+
+    def do_PUT(self):
+        """The cart reply, in the shop's shape, for the cart the page sends."""
+        sent = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        rows = [
+            {
+                "quantity": qty,
+                "storeProduct": {
+                    "productVariant": {"id": key},
+                    "discountedSellingPrice": PRICES[key],
+                    "availableQuantity": 0 if key in sent["oos"] else 9,
+                    "isActive": True,
+                },
+            }
+            for key, qty in sent["items"].items()
+        ]
+        reply = {
+            "storeLevelCartProducts": [{"cartProducts": rows}],
+            "oosProducts": [k for k in sent["items"] if k in sent["oos"]],
+            "itemTotalAmount": sum(PRICES[k] * q for k, q in sent["items"].items() if k not in sent["oos"]),
+            "toPay": 0,
+            "userAddress": {"userAddressId": "never logged"},
+        }
+        body = json.dumps(reply).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def translate_path(self, path):
         return str(Path(__file__).with_name("shop.html"))
@@ -154,7 +185,6 @@ def test_logged_out_mid_run(shop):
     b, given = shop
     given()
     b.add(PRODUCTS["kinley"], 1)
-    b.page.wait_for_load_state()  # the fake reloads after an add
     b.page.evaluate("() => { const s = JSON.parse(localStorage.shop); s.cfg.loggedOut = true; save(s); }")
     with pytest.raises(ShopError, match="login has expired"):
         b.review_cart({"Kinley Soda": 1}, RULES)
@@ -187,3 +217,13 @@ def test_a_failed_state_save_does_not_change_the_outcome(server, tmp_path):
     (state := tmp_path / "state.json").write_text('{"cookies": [], "origins": []}')
     with Browser(server, state, None, tmp_path) as b:
         b._ctx.close()  # as when Chrome dies during Place Order
+
+
+def test_the_cart_reply_is_read_by_product_id(shop):
+    b, given = shop
+    given({"orange": 1}, ["orange"])
+    order(b, "kinley", "chips")
+    api = b._cart_api()
+    items = [["orange", 1, 57, 0, True], ["kinley", 1, 20, 9, True], ["chips", 1, 30, 9, True]]
+    assert (api["items"], api["item_total"], api["oos"]) == (items, 50, 1)  # the leftover the count misses
+    assert "never logged" not in str(api)

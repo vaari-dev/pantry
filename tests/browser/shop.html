@@ -19,7 +19,9 @@ const PRODUCTS = {
   orange: {name: "Orange Nagpur", size: "1 kg", price: 57},
 };
 const load = () => JSON.parse(localStorage.shop || '{"items":{},"oos":{},"cfg":{}}');
-const save = s => { localStorage.shop = JSON.stringify(s); render(); };
+const sync = s => fetch("/cfs/api/v1/cart", {method: "PUT", body: JSON.stringify({items: s.items, oos: s.oos})})
+  .then(r => r.json());  // as the shop's app, which reads the reply before it moves on
+const save = s => { localStorage.shop = JSON.stringify(s); render(); return sync(s); };
 const later = f => setTimeout(f, load().cfg.lag ?? 300);
 const cartEl = document.getElementById("cart");
 
@@ -66,7 +68,7 @@ document.getElementById("cart-btn").onclick = () => {
 document.addEventListener("keydown", e => { if (e.key === "Escape") cartEl.style.display = "none"; });
 
 const product = location.pathname.match(/^\/pn\/(\w+)/)?.[1];
-if (product) {
+function renderProduct() {  // in place, as the shop's single-page app does
   const p = PRODUCTS[product], s = load();
   document.title = p.name;
   const button = s.oos[product] ? "<div>Out of stock</div>"
@@ -75,8 +77,9 @@ if (product) {
   document.querySelector("main button")?.addEventListener("click", () => {
     const s = load();
     if (s.cfg.dropAdds) return void (s.cfg.dropAdds--, (localStorage.shop = JSON.stringify(s)));
-    later(() => { const s = load(); s.items[product] = (s.items[product] || 0) + 1; save(s); location.reload(); });
+    later(() => { const s = load(); s.items[product] = (s.items[product] || 0) + 1; save(s); renderProduct(); });
   });
 }
+if (product) renderProduct();
 render();
 </script></body></html>
