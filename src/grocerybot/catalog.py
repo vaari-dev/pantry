@@ -63,7 +63,7 @@ UNITS = {"gm": "g", "gms": "g", "ltr": "l", "ltrs": "l", "litre": "l", "litres":
          "pcs": "pc", "piece": "pc", "pieces": "pc", "unit": "pc", "units": "pc", "n": "pc",
          "packs": "pack"}  # fmt: skip
 SCALE = {"kg": (1000, "g"), "l": (1000, "ml"), "dozen": (12, "pc")}
-FILLER_IN_SIZE = re.compile(r"[\W\d_]|\b(x|approx|each)\b", re.I)
+FILLER_IN_SIZE = re.compile(r"\([^)]*\)|[^\w\s]|\d|\b(x|approx|each)\b", re.I)
 
 
 def squash(text: str) -> str:
@@ -83,8 +83,8 @@ def quantities(text: str) -> set[tuple[float, str]]:
 
 
 def is_size(line: str) -> bool:
-    """ "1 kg (approx. 4-5 pcs)" is; "3 Pcs Sponge Wipe" is a name."""
-    return bool(quantities(line)) and not FILLER_IN_SIZE.sub("", QUANTITY.sub("", line))
+    """ "1 kg (Medium)" and "500 ml Bottle" are; "3 Pcs Sponge Wipe" and "Onion 1 kg" are names."""
+    return bool(QUANTITY.match(line.strip())) and len(FILLER_IN_SIZE.sub(" ", QUANTITY.sub(" ", line)).split()) <= 1
 
 
 @dataclass(frozen=True)

@@ -645,7 +645,10 @@ class Browser:
             log.info("cart reply not used")
             return False
         for product, want in expected.items():
-            _, got, paise, available, _ = rows.pop(product.variant)
+            if (row := rows.pop(product.variant, None)) is None:
+                result.problems.append(f"{product.name} did not make it into the cart")
+                continue
+            _, got, paise, available, _ = row
             if got < want and available <= got:
                 log.info("quantity capped", product=product.name, asked=want, allowed=got)
                 result.capped[product] = got

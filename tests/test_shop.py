@@ -32,6 +32,10 @@ def test_prices(lines, struck, expected):
         (["Coke", "Pack of 6"], ("Coke", "Pack of 6")),
         (["Bestseller", "Fresh Coriander Bunch"], ("Fresh Coriander Bunch", "")),  # no size shown
         (["Scotch-Brite", "3 Pcs Sponge Wipe", "1 pack"], ("3 Pcs Sponge Wipe", "1 pack")),
+        (["Onion", "1 kg (Medium)"], ("Onion", "1 kg (Medium)")),
+        (["Bisleri Water", "500 ml Bottle"], ("Bisleri Water", "500 ml Bottle")),
+        (["Potato", "1 kg (approx. 8-10 pcs)"], ("Potato", "1 kg (approx. 8-10 pcs)")),
+        (["Amul", "Amul Butter 500 g", "500 g"], ("Amul Butter 500 g", "500 g")),
         (["ADD", "₹20"], None),
     ],
 )  # fmt: skip
