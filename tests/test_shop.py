@@ -1,7 +1,7 @@
 import pytest
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
-from grocerybot.shop import ADDRESS, LOGGED_OUT, Browser, Rules, ShopError, _loggable, _prices, _shows_size
+from grocerybot.shop import ADDRESS, LOGGED_OUT, Browser, Rules, ShopError, _card, _loggable, _prices, _shows_size
 
 
 @pytest.mark.parametrize(
@@ -17,6 +17,25 @@ from grocerybot.shop import ADDRESS, LOGGED_OUT, Browser, Rules, ShopError, _log
 )
 def test_prices(lines, struck, expected):
     assert _prices(lines, struck) == expected
+
+
+@pytest.mark.parametrize(
+    ("lines", "card"),
+    [
+        (["ADD", "₹89", "Eggs", "1 pack"], ("Eggs", "1 pack")),
+        (["Lemon", "1 pc", "₹51", "ADD"], ("Lemon", "1 pc")),
+        # 24 Oct: a brand line above the name; saved as name "Elle 18", size the full name
+        (["₹119", "₹199", "ADD", "Elle 18", "Elle 18 Eyedrama Kajal Bold Black", "1 pc (0.35 g)", "4.3"],
+         ("Elle 18 Eyedrama Kajal Bold Black", "1 pc (0.35 g)")),
+        (["24 Mantra Organic", "24 Mantra Organic Toor Dal", "500 g"], ("24 Mantra Organic Toor Dal", "500 g")),
+        (["Amul Taaza Milk", "2 x 500 ml"], ("Amul Taaza Milk", "2 x 500 ml")),
+        (["Coke", "Pack of 6"], ("Coke", "Pack of 6")),
+        (["Bestseller", "Fresh Coriander Bunch"], ("Fresh Coriander Bunch", "")),  # no size shown
+        (["ADD", "₹20"], None),
+    ],
+)  # fmt: skip
+def test_card(lines, card):
+    assert _card(lines) == card
 
 
 @pytest.mark.parametrize(

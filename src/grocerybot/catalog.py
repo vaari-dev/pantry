@@ -53,6 +53,30 @@ SPELLINGS = {
     "bred": "bread",
 }
 SEPARATORS = re.compile(r"[,;\n&.!?]|\band\b|\baur\b|\bor\b|\bplus\b")
+QUANTITY = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(kg|gms?|g|mg|ml|ltrs?|litres?|liters?|l|pcs?|pieces?|units?|packs?|n)(?![a-z])", re.I
+)
+UNITS = {"gm": "g", "gms": "g", "ltr": "l", "ltrs": "l", "litre": "l", "litres": "l", "liter": "l", "liters": "l",
+         "pcs": "pc", "piece": "pc", "pieces": "pc", "unit": "pc", "units": "pc", "n": "pc",
+         "packs": "pack"}  # fmt: skip
+SCALE = {"kg": (1000, "g"), "l": (1000, "ml")}
+# A pack size line: "500 g", "1 pc (0.35 g)", "2 x 200 ml", "Pack of 6". Names may hold a size too,
+# but never start with one.
+SIZE = re.compile(rf"^(?:\d+\s*x\s*)?(?:{QUANTITY.pattern}|pack of \d+)", re.I)
+
+
+def quantities(text: str) -> set[tuple[float, str]]:
+    """{(350.0, "g")}-like: "0.35 kg", "0.35kg" and "350 gm" read the same, as do "1 kg" and "1000 g"."""
+    found = set()
+    for number, unit in QUANTITY.findall(text):
+        unit = UNITS.get(unit.lower(), unit.lower())
+        factor, unit = SCALE.get(unit, (1, unit))
+        found.add((round(float(number) * factor, 3), unit))
+    return found
+
+
+def is_size(line: str) -> bool:
+    return len(line) <= 40 and bool(SIZE.match(line.strip()))
 
 
 @dataclass(frozen=True)
@@ -65,7 +89,12 @@ class Product:
     mrp: str = ""  # the original price, when the shop shows it struck through
 
     def label(self) -> str:
-        return f"{self.name} ({self.size})"
+        return f"{self.name} ({self.size})" if self.size else self.name
+
+    @property
+    def variant(self) -> str:
+        """The shop's id for this pack: the URL's last part ("/pn/<slug>/pvid/<id>")."""
+        return self.url.rstrip("/").rsplit("/", 1)[-1]
 
 
 def rupees(text: str) -> float | None:
@@ -140,7 +169,7 @@ class Catalog:
     def options(self, key: str) -> list[Product]:
         entry = self._load().get(key, {})
         return [
-            Product(o["name"], o["size"], o["url"], o.get("price", ""))
+            _repaired(Product(o["name"], o["size"], o["url"], o.get("price", "")))
             for o in entry.get("options", [])
             if o.get("url")
         ]
@@ -167,6 +196,15 @@ class Catalog:
             picked = {"name": product.name, "size": product.size, "url": product.url, "price": product.price}
             entry["options"] = [picked, *rest][:MAX_OPTIONS]
         return key
+
+
+def _repaired(p: Product) -> Product:
+    """Until 24 Oct, a card with a brand line above the name was saved as name=brand, size=name
+    ("Elle 18", "Elle 18 Eyedrama Kajal Bold Black"): such a pick is its full name, size unknown."""
+    squash = lambda t: " ".join(t.lower().split())  # noqa: E731
+    if p.size and not is_size(p.size) and squash(p.size).startswith(squash(p.name)):
+        return Product(p.size, "", p.url, p.price, p.image, p.mrp)
+    return p
 
 
 @dataclass

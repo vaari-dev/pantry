@@ -65,6 +65,12 @@ OTP_WAIT = 300  # Chrome waits on the login page meanwhile, holding up every ord
 HOLD = 180
 PICK_HOLD, PICK_WAIT = 60, 600  # an open pick delays a held order in PICK_HOLD steps, for up to PICK_WAIT
 STALE = timedelta(minutes=5)  # a restart this late past a hold asks before ordering
+WHY = {  # Browser.add's reasons, for people
+    "out of stock": "out of stock",
+    "size changed": "the size you picked isn't sold any more",
+    "listing changed": "the shop changed this product",
+    "the shop did not take it": "the shop didn't take it into the cart",
+}
 KEPT = "Still in the /basket: tap Order now to try again, or /clear to empty it."
 KEPT_LIMIT = "Still in the /basket: raise today's limit with /limit, then tap Order now; or /clear to empty it."
 SHARE_PHONE = {
@@ -611,7 +617,10 @@ class Bot:
             cod=out.cod,
             problems=out.problems,
         )
-        missing = (f"Couldn't add {k} (out of stock or changed); it stays in the /basket" for k in out.unavailable)
+        missing = (
+            f"Couldn't add {k} ({WHY.get(out.why.get(k), 'not available')}); it stays in the /basket"
+            for k in out.unavailable
+        )
         details = "\n".join([*out.lines, *missing])
         total = f"₹{out.total:g}" if out.total is not None else ""
         how = ", cash on delivery" if out.cod else ""

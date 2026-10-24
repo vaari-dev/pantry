@@ -19,7 +19,7 @@ PRODUCTS = {k: Product(name, size, f"/pn/{k}") for k, name, size in [
     ("kinley", "Kinley Soda", "750 ml"), ("chips", "BRB Chips", "48 g"), ("orange", "Orange Nagpur", "1 kg"),
     ("kajal", "Colossal Kajal", "1 pc (0.35 g)"),
 ]}  # fmt: skip
-PRICES = {"kinley": 20, "chips": 30, "orange": 57}  # as shop.html
+PRICES = {"kinley": 20, "chips": 30, "orange": 57, "kajal": 199}  # as shop.html
 CANT_REMOVE = "the shop's cart has items the bot can't remove"
 
 
@@ -40,8 +40,8 @@ class Shop(SimpleHTTPRequestHandler):
                 "quantity": qty,
                 "storeProduct": {
                     "productVariant": {"id": key},
-                    "discountedSellingPrice": PRICES[key],
-                    "availableQuantity": 0 if key in sent["oos"] else 9,
+                    "discountedSellingPrice": PRICES[key] * 100,  # paise, as the shop's
+                    "availableQuantity": 0 if key in sent["oos"] else sent["limits"].get(key, 9),
                     "isActive": True,
                 },
             }
@@ -50,7 +50,7 @@ class Shop(SimpleHTTPRequestHandler):
         reply = {
             "storeLevelCartProducts": [{"cartProducts": rows}],
             "oosProducts": [k for k in sent["items"] if k in sent["oos"]],
-            "itemTotalAmount": sum(PRICES[k] * q for k, q in sent["items"].items() if k not in sent["oos"]),
+            "itemTotalAmount": sum(PRICES[k] * q * 100 for k, q in sent["items"].items() if k not in sent["oos"]),
             "toPay": 0,
             "userAddress": {"userAddressId": "never logged"},
         }
@@ -96,16 +96,16 @@ def cart(b) -> dict:
     return b.page.evaluate("JSON.parse(localStorage.shop).items")
 
 
-def order(b, *keys) -> tuple[list, object]:
+def order(b, *keys, qty=1) -> tuple[list, object]:
     """Fills the cart as orders.order does; (skipped, reviewed cart)."""
     b.empty_cart()
-    expected, skipped = {}, []
+    expected, ids, skipped = {}, {}, []
     for k in keys:
-        if why := b.add(PRODUCTS[k], 1):
+        if why := b.add(PRODUCTS[k], qty):
             skipped.append((k, why))
         else:
-            expected[PRODUCTS[k].name] = 1
-    return skipped, b.review_cart(expected, RULES)
+            expected[PRODUCTS[k].name], ids[PRODUCTS[k].name] = qty, PRODUCTS[k].variant
+    return skipped, b.review_cart(expected, RULES, ids)
 
 
 @pytest.mark.parametrize(
@@ -190,6 +190,27 @@ def test_a_size_written_differently_is_added(shop):
     assert skipped == []
     assert cart(b) == {"kajal": 1}
     assert reviewed.prices == {"Colossal Kajal": "₹199"}  # what's paid, not the struck-through ₹299
+    assert b.review_cart({"Colossal Kajal": 1}, RULES).prices == {"Colossal Kajal": "₹199"}  # by the page alone
+
+
+def test_the_shops_limit_per_order_is_ordered_not_failed(shop):
+    """24 Oct, 14:29 UTC: 3 of a kajal the shop sells 2 at a time blocked the whole order."""
+    b, given = shop
+    given(limits={"kajal": 2})
+    skipped, reviewed = order(b, "kajal", "kinley", qty=3)
+    assert (skipped, reviewed.problems) == ([], [])
+    assert reviewed.capped == {"Colossal Kajal": 2}
+    assert reviewed.items == [("Colossal Kajal", 2), ("Kinley Soda", 3)]
+    assert reviewed.prices == {"Colossal Kajal": "₹199", "Kinley Soda": "₹20"}
+
+
+def test_a_lost_tap_is_still_a_problem(shop):
+    b, given = shop
+    given()
+    b.empty_cart()
+    b.add(PRODUCTS["kinley"], 1)
+    reviewed = b.review_cart({"Kinley Soda": 2}, RULES, {"Kinley Soda": "kinley"})
+    assert reviewed.problems == ["Kinley Soda: 1 in the cart, expected 2"]
 
 
 def test_a_different_size_is_skipped(shop):
@@ -246,7 +267,7 @@ def test_the_cart_reply_is_read_by_product_id(shop):
     with capture_logs() as logs:
         order(b, "kinley", "chips")
     api = [e for e in logs if e["event"] == "cart read"][-1]["api"]
-    items = [["orange", 1, 57, 0, True], ["kinley", 1, 20, 9, True], ["chips", 1, 30, 9, True]]
-    assert (api["items"], api["item_total"], api["oos"]) == (items, 50, 1)  # the leftover the count misses
+    items = [["orange", 1, 5700, 0, True], ["kinley", 1, 2000, 9, True], ["chips", 1, 3000, 9, True]]
+    assert (api["items"], api["item_total"], api["oos"]) == (items, 5000, 1)  # the leftover the count misses
     assert "never logged" not in str(api)
     assert api["age"] < 5

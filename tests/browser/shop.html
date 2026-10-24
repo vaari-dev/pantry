@@ -2,7 +2,8 @@
 <!-- The shop, as far as shop.py reads it. State lives in localStorage.shop: {items, oos, cfg}.
      cfg: loggedOut, noRemove (out of stock rows without a Remove button), countsOos (the header
      count includes them), lag (ms before a tap lands), cartLoad (ms before the cart fills),
-     dropAdds (Add to Cart taps to ignore), sizes ({product: size} the product page shows instead). -->
+     dropAdds (Add to Cart taps to ignore), sizes ({product: size} the product page shows instead),
+     limits ({product: n}: the most one order may have; more taps are ignored). -->
 <html><head><meta charset="utf-8"><title>Shop</title></head><body>
 <header>
   <button data-testid="login-btn" id="login" style="display:none">Login</button>
@@ -20,7 +21,7 @@ const PRODUCTS = {
   kajal: {name: "Colossal Kajal", size: "0.35g", price: 199, mrp: 299},  // the card said "1 pc (0.35 g)"
 };
 const load = () => JSON.parse(localStorage.shop || '{"items":{},"oos":{},"cfg":{}}');
-const sync = s => fetch("/cfs/api/v1/cart", {method: "PUT", body: JSON.stringify({items: s.items, oos: s.oos})})
+const sync = s => fetch("/cfs/api/v1/cart", {method: "PUT", body: JSON.stringify({items: s.items, oos: s.oos, limits: s.cfg.limits ?? {}})})
   .then(r => r.json());  // as the shop's app, which reads the reply before it moves on
 const save = s => { localStorage.shop = JSON.stringify(s); render(); return sync(s); };
 const later = f => setTimeout(f, load().cfg.lag ?? 300);
@@ -80,7 +81,12 @@ function renderProduct() {  // in place, as the shop's single-page app does
   document.querySelector("main button")?.addEventListener("click", () => {
     const s = load();
     if (s.cfg.dropAdds) return void (s.cfg.dropAdds--, (localStorage.shop = JSON.stringify(s)));
-    later(() => { const s = load(); s.items[product] = (s.items[product] || 0) + 1; save(s); renderProduct(); });
+    later(() => {
+      const s = load();
+      if ((s.items[product] || 0) < (s.cfg.limits?.[product] ?? 99)) s.items[product] = (s.items[product] || 0) + 1;
+      save(s);
+      renderProduct();
+    });
   });
 }
 if (product) renderProduct();

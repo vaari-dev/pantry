@@ -16,7 +16,7 @@ from playwright.sync_api import Locator, Page, Request, Route, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from .apimap import Recorder
-from .catalog import Product, rupees
+from .catalog import QUANTITY, Product, is_size, quantities, rupees
 
 TIMEOUT_MS = 90_000  # pages are slower through the home exit node
 CHROME_ARGS = [
@@ -122,7 +122,8 @@ class Cart:
     items: list[tuple[str, int]] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
     cod: bool = False
-    prices: dict[str, str] = field(default_factory=dict)  # name -> unit price, from rows of one
+    prices: dict[str, str] = field(default_factory=dict)  # name -> unit price paid, for /basket
+    capped: dict[str, int] = field(default_factory=dict)  # name -> the most the shop lets one order have
 
 
 def _money(text: str) -> float:
@@ -154,34 +155,33 @@ def _squash(text: str) -> str:
     return " ".join(text.split()).lower()
 
 
-QUANTITY = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(kg|gms?|g|mg|ml|ltrs?|litres?|liters?|l|pcs?|pieces?|units?|packs?|n)(?![a-z])", re.I
-)
-UNITS = {"gm": "g", "gms": "g", "ltr": "l", "ltrs": "l", "litre": "l", "litres": "l", "liter": "l", "liters": "l",
-         "pcs": "pc", "piece": "pc", "pieces": "pc", "unit": "pc", "units": "pc", "n": "pc",
-         "packs": "pack"}  # fmt: skip
-SCALE = {"kg": (1000, "g"), "l": (1000, "ml")}
-
-
-def _quantities(text: str) -> set[tuple[float, str]]:
-    """{(350.0, "g")}-like: "0.35 kg", "0.35kg" and "350 gm" read the same, as do "1 kg" and "1000 g"."""
-    found = set()
-    for number, unit in QUANTITY.findall(text):
-        unit = UNITS.get(unit.lower(), unit.lower())
-        factor, unit = SCALE.get(unit, (1, unit))
-        found.add((round(float(number) * factor, 3), unit))
-    return found
-
-
 def _shows_size(size: str, page: str) -> bool:
     """Whether the page offers the size the item was picked at. A card's "1 pc (0.35 g)" may show on
     the page as "0.35g", so the weights or volumes are compared, else the counts. A size with no
     quantity in it can't tell one pack from another, so it doesn't stop the add."""
     if re.search(rf"(?<!\w){re.escape(_squash(size))}(?!\w)", _squash(page)):
         return True
-    wanted = _quantities(size)
+    wanted = quantities(size)
     measures = {q for q in wanted if q[1] not in ("pc", "pack")} or wanted
-    return measures <= _quantities(page)
+    return measures <= quantities(page)
+
+
+def _card(lines: list[str]) -> tuple[str, str] | None:
+    """(name, size) from a search card's lines. Found by the size's shape, not by position: some
+    cards have a brand line above the name ("Elle 18", "Elle 18 Eyedrama Kajal Bold Black", "1 pc (0.35 g)")."""
+    body = [line for line in lines if not re.fullmatch(r"ADD|₹\s?[\d,.]+|[\d,.]+|OFF|₹", line)]
+    at = next((i for i, line in enumerate(body) if i and is_size(line)), None)
+    if at is not None:
+        return body[at - 1], body[at]
+    if body:  # no size shown: the longest line is the name, never a brand
+        log.info("card without a size", lines=len(body))
+        return max(body, key=len), ""
+    return None
+
+
+def _core(name: str) -> str:
+    """Pages and cart rows drop a long name's "| tagline"."""
+    return _squash(name.split("|")[0])
 
 
 def _prices(lines: list[str], struck: list[str]) -> tuple[str, str]:
@@ -507,13 +507,12 @@ class Browser:
                 or any(re.fullmatch(r"(?i)sold out|notify( me)?|out of stock", line) for line in lines)
             ):
                 continue
-            body = [line for line in lines if not re.fullmatch(r"ADD|₹\s?[\d,.]+|[\d,.]+|OFF|₹", line)]
-            if len(body) < 2:
+            if not (card := _card(lines)):
                 continue
             seen.add(c["url"])
             price, mrp = _prices(lines, c["struck"])
             image = "" if "placeholder" in c["image"].lower() else c["image"].replace("f-auto", "f-jpg")
-            found.append(Product(body[0], body[1], c["url"], price, image, mrp))
+            found.append(Product(*card, c["url"], price, image, mrp))
             if len(found) == limit:
                 break
         return found
@@ -521,12 +520,14 @@ class Browser:
     def add(self, product: Product, qty: int) -> str | None:
         """None on success, else why it was skipped."""
         self.goto(product.url)
-        # Titles drop the "| tagline" of long names, so compare the core name.
-        if not _squash(title := self.page.title()).startswith(_squash(product.name.split("|")[0])):
+        body = self.page.locator("body").inner_text()
+        if not (
+            _squash(title := self.page.title()).startswith(_core(product.name)) or _core(product.name) in _squash(body)
+        ):
             headings = self.page.locator("h1").all_inner_texts()
             log.info("listing changed", product=product.name, title=title, headings=headings)
             return "listing changed"
-        if not _shows_size(product.size, body := self.page.locator("body").inner_text()):
+        if not _shows_size(product.size, body):
             sizes = sorted({m.group() for m in QUANTITY.finditer(body)})[:20]
             log.info("size not on the page", product=product.name, size=product.size, page_sizes=sizes)
             return "size changed"
@@ -626,22 +627,41 @@ class Browser:
                 cart = self._open_cart()
         return cart
 
-    def review_cart(self, expected: dict[str, int], rules: Rules) -> Cart:
-        """Pays from the wallet if it covers the whole bill, else cash on delivery. Checks every rule."""
-        cart, result, seen = self._pay_with(wallet=True), Cart(), set()
-        if _owed(cart) and _owed(self._open_cart()):  # twice: the bill can lag behind the wallet tick
-            cart, result.cod = self._pay_with(wallet=False), True
-        if not cart["items"]:
-            log.info("cart has no items", lines=_loggable(cart["text"]))
-            if self._logged_out():  # mid-run: the shop took the adds into a guest cart
-                raise ShopError(LOGIN_EXPIRED)
-            result.problems.append("the cart is empty: the shop did not take the items")
-            return result
-        text = cart["text"]
-        if not rules.address_ok(text):
-            result.problems.append("the cart is not delivering to your saved address (/settings)")  # logged: no label
+    def _api_rows(self, cart: dict, item_total: float | None) -> dict[str, list] | None:
+        """The shop app's cart reply by product id, when it shows the cart the page shows; else None."""
+        api = self._cart_api()
+        if not api or "items" not in api:
+            return None
+        live = [r for r in api["items"] if r[4] and r[3] > 0]
+        if (
+            item_total is None
+            or sorted(r[1] for r in live) != sorted(i["qty"] for i in cart["items"])
+            or (api["item_total"] != round(item_total * 100))
+        ):
+            log.info("cart reply not used", reason="differs from the page")
+            return None
+        return {r[0]: r for r in live}
+
+    def _match_by_id(self, expected: dict[str, int], ids: dict[str, str], rows: dict[str, list], result: Cart) -> None:
+        for name, want in expected.items():
+            if (row := rows.pop(ids[name], None)) is None:
+                result.problems.append(f"{name} did not make it into the cart")
+                continue
+            got, available = row[1], row[3]
+            if got < want and available <= got:  # the shop's limit per order, not a lost tap
+                log.info("quantity capped", product=name, asked=want, allowed=got)
+                result.capped[name] = got
+            elif got != want:
+                result.problems.append(f"{name}: {got} in the cart, expected {want}")
+                continue
+            result.items.append((name, got))
+            result.prices[name] = f"₹{row[2] / 100:g}"
+        result.problems += ["an item the bot did not add is in the cart"] * len(rows)
+
+    def _match_by_name(self, expected: dict[str, int], cart: dict, result: Cart) -> None:
+        seen = set()
         for item in cart["items"]:
-            name = next((n for n in expected for line in item["lines"] if _squash(line) == _squash(n)), None)
+            name = next((n for n in expected for line in item["lines"] if _core(line) == _core(n)), None)
             if name is None:
                 result.problems.append(f"unexpected item in the cart: {' '.join(item['lines'][:2])}")
             elif item["qty"] != expected[name]:
@@ -653,13 +673,35 @@ class Browser:
                 if item["qty"] == 1 and (price := _prices(item["lines"], item["struck"])[0]):
                     result.prices[name] = price
         result.problems += [f"{n} did not make it into the cart" for n in expected.keys() - seen]
+
+    def review_cart(self, expected: dict[str, int], rules: Rules, ids: dict[str, str] | None = None) -> Cart:
+        """Pays from the wallet if it covers the whole bill, else cash on delivery. Checks every rule.
+        ids: name -> the shop's product id, to check the items by the shop app's own cart reply."""
+        cart, result = self._pay_with(wallet=True), Cart()
+        if _owed(cart) and _owed(self._open_cart()):  # twice: the bill can lag behind the wallet tick
+            cart, result.cod = self._pay_with(wallet=False), True
+        if not cart["items"]:
+            log.info("cart has no items", lines=_loggable(cart["text"]))
+            if self._logged_out():  # mid-run: the shop took the adds into a guest cart
+                raise ShopError(LOGIN_EXPIRED)
+            result.problems.append("the cart is empty: the shop did not take the items")
+            return result
+        text = cart["text"]
+        if not rules.address_ok(text):
+            result.problems.append("the cart is not delivering to your saved address (/settings)")  # logged: no label
+        item_total = _amount(text, "Item Total")
+        rows = self._api_rows(cart, item_total) if ids and expected.keys() <= ids.keys() else None
+        if rows is not None:
+            self._match_by_id(expected, ids, rows, result)
+        else:
+            self._match_by_name(expected, cart, result)
         for box in cart["boxes"]:
             if COINS.search(box["label"]) and box["checked"]:
                 result.problems.append("reward coins are selected")
             if WALLET.search(box["label"]) and box["checked"] == result.cod:
                 result.problems.append("the wallet is still selected" if result.cod else "the wallet is not selected")
 
-        item_total, to_pay = _amount(text, "Item Total"), _amount(text, "To Pay")
+        to_pay = _amount(text, "To Pay")
         if item_total is not None:
             result.item_total = item_total
         else:
