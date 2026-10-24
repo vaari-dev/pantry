@@ -12,7 +12,7 @@ from urllib.parse import quote, urlsplit
 
 import structlog
 from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import Locator, Page, Route, sync_playwright
+from playwright.sync_api import Locator, Page, Request, Route, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from .apimap import Recorder
@@ -54,6 +54,7 @@ LOGGED_OUT = "[data-testid=login-btn]"
 LOGIN_EXPIRED = "the shop login has expired; the account's owner can /setup again"
 CART_COUNT = "[data-testid=cart-items-number]"
 CART = "[data-testid=cart-screen]"
+CART_API = "/cfs/api/v1/cart"
 REMOVE = re.compile(r"^\s*(remove|delete)(\s+item)?\s*$", re.I)
 STOCK = re.compile(r"out of stock|sold out|unavailable|back in stock", re.I)
 # The cart shows the address and wallet balance: only known words are logged.
@@ -202,6 +203,10 @@ class Browser:
         if self.recorder:
             self.recorder.attach(self._ctx)
         self.page: Page = self._ctx.new_page()
+        self._carts: list[tuple[float, Request]] = []  # the shop app's own cart calls, newest last
+        self._cart: dict | None = None
+        self._cart_at = 0.0
+        self.page.on("requestfinished", self._seen)  # not "response": a navigation can cut its body off forever
         self.page.set_default_timeout(TIMEOUT_MS)
         return self
 
@@ -222,6 +227,40 @@ class Browser:
             self._pw.stop()
         if isinstance(exc, PlaywrightError):  # whatever page step it was, the user gets a reason
             raise ShopError("the shop's page stopped responding; try again in a minute") from exc
+
+    def _seen(self, req: Request) -> None:
+        """Keeps it, unread: reading the body here, inside Playwright's event, is not safe."""
+        if req.method == "PUT" and urlsplit(req.url).path == CART_API:
+            self._carts.append((time.monotonic(), req))
+
+    def _cart_api(self) -> dict | None:
+        """The latest cart reply, as far as the bot reads it: never its address or wallet parts.
+        Read before every navigation, which discards the bodies of the page's replies."""
+        if self._carts:
+            self._cart_at, req = self._carts[-1]
+            self._carts.clear()
+            try:
+                data = req.response().json()
+                rows = [p for s in data.get("storeLevelCartProducts") or [] for p in s.get("cartProducts") or []]
+                self._cart = {
+                    "items": [
+                        [
+                            p["storeProduct"]["productVariant"]["id"],
+                            p["quantity"],
+                            p["storeProduct"]["discountedSellingPrice"],
+                            p["storeProduct"]["availableQuantity"],
+                            p["storeProduct"]["isActive"],
+                        ]
+                        for p in rows
+                    ],
+                    "oos": len(data.get("oosProducts") or []),
+                    "item_total": data.get("itemTotalAmount"),
+                    "to_pay": data.get("toPay"),
+                }
+            except Exception as e:  # its shape is the shop's to change: evidence, never a failure
+                self._cart = {"unreadable": type(e).__name__}
+        # age: a reply older than the page's last change is not a disagreement
+        return self._cart and {**self._cart, "age": round(time.monotonic() - self._cart_at, 1)}
 
     def _filter(self, route: Route):
         req = route.request
@@ -260,6 +299,7 @@ class Browser:
     def goto(self, url: str) -> None:
         """Two tries; a failed one checks the home connection outside Chrome, to tell the two apart."""
         url = url if url.startswith("http") else self.base + url
+        self._cart_api()
         for attempt in (1, 2):
             start = time.monotonic()
             try:
@@ -501,6 +541,7 @@ class Browser:
             item_total=_amount(text, "Item Total"),
             to_pay=_amount(text, "To Pay"),
             stock=STOCK.findall(text),
+            api=self._cart_api(),
         )
         return read
 
