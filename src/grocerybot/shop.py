@@ -95,6 +95,9 @@ class Rules:
     address_match: str
     budget: float
 
+    def address_ok(self, text: str) -> bool:
+        return text.startswith(self.address_label) and self.address_match in text
+
 
 @dataclass
 class Cart:
@@ -194,22 +197,22 @@ class Browser:
             return route.abort()
         return route.continue_()
 
-    def screenshot(self, tag: str) -> str:
+    def screenshot(self, tag: str) -> str | None:
         """Failures only: screens show the address."""
-        self.debug_dir.mkdir(parents=True, exist_ok=True)
         name = f"{datetime.now():%Y%m%d-%H%M%S}-{tag}.png"
         try:
+            self.debug_dir.mkdir(parents=True, exist_ok=True)
             self.page.screenshot(path=str(self.debug_dir / name))
+            return name
         except Exception:  # never mask the real error
             log.warning("screenshot failed", exc_info=True)
-        return name
+            return None
 
     def _log_stop(self) -> None:
-        try:
-            title = self.page.title()
-        except PlaywrightError:  # never mask the real error
-            title = None
-        log.warning("browser stopped", at=self._at(), title=title, screenshot=self.screenshot("error"))
+        try:  # never mask the real error
+            log.warning("browser stopped", at=self._at(), screenshot=self.screenshot("error"))
+        except Exception:
+            log.warning("browser stop not logged", exc_info=True)
 
     def _at(self) -> str:
         return urlsplit(self.page.url).path  # never the query: searches hold the user's words
@@ -231,9 +234,9 @@ class Browser:
         if not self.page.url.startswith(self.base):
             self.goto("/")
         addr = self.page.locator(ADDRESS).first
-        shown, logged_out = self._shown(addr, 20), bool(self.page.locator(LOGGED_OUT).count())
+        shown, logged_out = self._wait(addr, 20), bool(self.page.locator(LOGGED_OUT).filter(visible=True).count())
         text = addr.inner_text() if shown else ""
-        ok = text.startswith(rules.address_label) and rules.address_match in text
+        ok = rules.address_ok(text)
         log.info("session checked", logged_in=not logged_out, address_shown=shown, address_ok=ok)
         if logged_out:  # checked even with an address showing: logged-out pages can show one
             raise ShopError("the shop login has expired; the account's owner can /setup again")
@@ -249,7 +252,7 @@ class Browser:
         self.goto("/")
         self.page.locator(LOGGED_OUT).first.click()
         field = self.page.locator(PHONE_FIELD).filter(visible=True).first
-        if not self._shown(field, 20):
+        if not self._wait(field, 20):
             inputs = self.page.locator("input:visible").evaluate_all(
                 "l => l.map(i => [i.type, i.name, i.inputMode, i.autocomplete, i.maxLength].join(' '))"
             )
@@ -262,7 +265,7 @@ class Browser:
             button.first.click()
         else:
             field.press("Enter")
-        if not self._shown(self.page.locator(OTP_FIELD).filter(visible=True).first, 20):
+        if not self._wait(self.page.locator(OTP_FIELD).filter(visible=True).first, 20):
             raise ShopError("the shop did not ask for a code; is the number right?")
 
     def enter_otp(self, code: str) -> None:
@@ -274,8 +277,8 @@ class Browser:
         if button.count():
             button.first.click()
         if not (
-            self._shown(self.page.locator(LOGGED_OUT).first, 30, "detached")
-            and self._shown(self.page.locator(ADDRESS).first, 20)
+            self._wait(self.page.locator(LOGGED_OUT).first, 30, "detached")
+            and self._wait(self.page.locator(ADDRESS).first, 20)
         ):
             raise ShopError("the shop did not accept that code")
         self.page.wait_for_timeout(3000)
@@ -304,7 +307,7 @@ class Browser:
         picker = self.page.locator(f":is({MODAL}):visible").first
         for _ in range(3):
             self.page.locator(PICKER_BUTTON).first.click()
-            if self._shown(picker, 8):
+            if self._wait(picker, 8):
                 return True
         return False
 
@@ -346,7 +349,7 @@ class Browser:
 
     def search(self, query: str, limit: int = 4) -> list[Product]:
         self.goto(f"/search?query={quote(query)}")
-        if not self._shown(self.page.locator("a[data-testid=product-card]").first, 15):
+        if not self._wait(self.page.locator("a[data-testid=product-card]").first, 15):
             return []
         self.page.wait_for_timeout(1500)
         cards = self.page.evaluate("""() => [...document.querySelectorAll('a[data-testid=product-card]')].map(a => ({
@@ -399,7 +402,7 @@ class Browser:
 
     def _open_cart(self) -> dict:
         self.page.locator("[data-testid=cart-btn]").first.click()
-        if not self._shown(self.page.locator("[data-testid=cart-screen]").first, 30):
+        if not self._wait(self.page.locator("[data-testid=cart-screen]").first, TIMEOUT_MS // 1000):
             raise ShopError("the cart did not open")
         self.page.wait_for_timeout(1500)
         return self.page.evaluate("""() => {
@@ -446,7 +449,7 @@ class Browser:
             result.problems.append("the cart is empty: the shop did not take the items")
             return result
         text = cart["text"]
-        if not text.startswith(rules.address_label) or rules.address_match not in text:
+        if not rules.address_ok(text):
             result.problems.append("the cart is not delivering to your saved address (/settings)")  # logged: no label
         for item in cart["items"]:
             name = next((n for n in expected for line in item["lines"] if _squash(line) == _squash(n)), None)
@@ -504,7 +507,7 @@ class Browser:
         self.page.wait_for_timeout(3000)
         self._skip_upsell(label)
         option = self.page.get_by_text(COD).filter(visible=True).first
-        if not self._shown(option, 20):
+        if not self._wait(option, 20):
             return "cash on delivery is not offered for this order"
         if not (pay := self._pay_button(PAY_COD, total, 3)):
             option.click()  # its button shows once it is selected
@@ -517,12 +520,12 @@ class Browser:
     def _pay_button(self, pattern: re.Pattern, total: float, seconds: int) -> Locator | None:
         """Only a button for exactly ₹total."""
         button = self.page.get_by_role("button", name=pattern).filter(visible=True).first
-        if not self._shown(button, seconds):
+        if not self._wait(button, seconds):
             return None
         m = pattern.search(" ".join(button.inner_text().split()))
         return button if m and _money(m.group(1)) == total else None
 
-    def _shown(self, locator: Locator, seconds: int, state: str = "visible") -> bool:
+    def _wait(self, locator: Locator, seconds: int, state: str = "visible") -> bool:
         try:
             locator.wait_for(state=state, timeout=seconds * 1000)
             return True

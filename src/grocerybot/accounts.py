@@ -135,6 +135,7 @@ class Accounts:
         return code
 
     def join(self, uid: int, name: str, code: str) -> Household | None:
+        """None if the code is unknown, used or expired."""
         with self._edit() as data:
             invite = data["invites"].pop(code.strip().upper(), {"household": None, "expires": "2000-01-01"})
             hid = invite["household"]

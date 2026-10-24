@@ -38,6 +38,9 @@ class Found:
     def count(self):
         return self.n
 
+    def filter(self, visible):
+        return self
+
     def inner_text(self):
         return self.text
 
