@@ -20,7 +20,7 @@ from structlog.contextvars import bind_contextvars, bound_contextvars, clear_con
 
 from . import orders, store
 from .accounts import Accounts, Household, address_parts
-from .catalog import Product, plan, rupees
+from .catalog import Product, plan
 from .config import Config
 from .shop import Browser, ShopError
 from .speech import Transcriber
@@ -108,20 +108,15 @@ def _search(b: Browser, name: str) -> tuple[str, list[Product]]:
 
 
 def _basket(hh: Household) -> str:
-    """Each item with its price as last seen in the shop, and the total; '' when empty."""
-    lines, total, unpriced = [], 0.0, 0
-    for key, qty in hh.ledger().basket():
-        product = (hh.catalog().options(key) or [None])[0]
-        price = rupees(product.price) if product else None
-        lines.append(f"• {product.label() if product else key} ×{qty}" + (f"  ₹{price * qty:g}" if price else ""))
-        total += (price or 0) * qty
-        unpriced += not price
-    if not lines:
+    """'' when empty."""
+    rows, total, unpriced = orders.priced(hh)
+    if not rows:
         return ""
-    lines.append(f"\nTotal ₹{total:g}" + (f" + {unpriced} without a price" if unpriced else ""))
+    lines = [f"• {label} ×{qty}" + (f"  ₹{amount:g}" if amount else "") for label, qty, amount in rows]
+    total_line = f"Total ₹{total:g}" + (f" + {unpriced} without a price" if unpriced else "")
     if not unpriced and total < hh.min_order:
-        lines.append(f"₹{hh.min_order - total:g} more reaches the ₹{hh.min_order:g} minimum.")
-    return "\n".join(["🧺 Your basket", *lines])
+        total_line += f" (orders start at ₹{hh.min_order:g})"
+    return "\n".join(["🧺 Your basket", *lines, "", total_line])
 
 
 def _order_now(hh: Household) -> list[tuple[str, str]]:
@@ -597,7 +592,7 @@ class Bot:
         try:
             out = orders.order(self.cfg, hh, items, hold=hold)
         except Exception as e:
-            if not hh.ledger().basket():  # emptied just before Place Order, so it may have gone through
+            if hh.ledger().placing():  # stopped after Place Order, so it may have gone through
                 raise
             if isinstance(e, ShopError):
                 log.warning("order stopped by the shop", error=e.logged)
@@ -616,7 +611,8 @@ class Bot:
             cod=out.cod,
             problems=out.problems,
         )
-        details = "\n".join([*out.lines, *(f"Couldn't add {k} (out of stock or changed)" for k in out.unavailable)])
+        missing = (f"Couldn't add {k} (out of stock or changed); it stays in the /basket" for k in out.unavailable)
+        details = "\n".join([*out.lines, *missing])
         total = f"₹{out.total:g}" if out.total is not None else ""
         how = ", cash on delivery" if out.cod else ""
         problems = "".join(f"\n- {p}" for p in out.problems)
@@ -624,10 +620,12 @@ class Bot:
             text = f"✅ Ordered, {total} {'cash on delivery' if out.cod else 'from the wallet'}:"
         elif out.unconfirmed:
             text = f"⚠️ I couldn't confirm the order. Check the shop's app before resending.{problems}"
+        elif out.waiting and out.estimated:
+            text = f"{_basket(hh)}\nSend more to add."
         elif out.waiting:
-            text = f"🧺 In the basket, ₹{out.item_total:g} so far. I'll order at ₹{hh.min_order:g}; send more to add."
+            text = f"🧺 The shop's total is ₹{out.item_total:g}, below the ₹{hh.min_order:g} minimum; send more to add."
         elif out.held:
-            text = f"⏳ Cart ready ({total}{how}). I'll order it in {HOLD // 60} minutes; send more to add, or:"
+            text = f"⏳ I'll order this in {HOLD // 60} minutes; send more to add, or tap Order now.\n\n{_basket(hh)}"
             self._offer_now(chat_id, hh, f"{text}\n{details}".strip())
             return self._hold(chat_id, hh, HOLD)
         elif not out.problems:

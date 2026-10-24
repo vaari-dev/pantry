@@ -88,6 +88,16 @@ def said(bot, start: str, chat=NEW, timeout=5.0):
     raise AssertionError(f"never said {start!r}: {[t for c, t, _ in bot.tg.sent if c == chat]}")
 
 
+def sent(bot, start: str, chat=NEW, having="", timeout=5.0) -> str:
+    """The text of a message to chat starting with start and holding having, waiting for it."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if found := [t for c, t, _ in bot.tg.sent if c == chat and t.startswith(start) and having in t]:
+            return found[-1]
+        time.sleep(0.01)
+    raise AssertionError(f"never said {start!r} with {having!r}: {[t for c, t, _ in bot.tg.sent if c == chat]}")
+
+
 def test_setup_before_access_starts_once_let_in_and_connects(bot):
     bot._on_message(message("/setup"))
     assert bot.tg.sent[-1][0] == ADMIN
@@ -132,8 +142,12 @@ class FakeBrowser:
 
     def __init__(self):
         self.fail: Exception | None = None
+        self.opened = 0
+        self.unit = 60  # what the shop charges for any item
+        self.gone: set[str] = set()  # product names out of stock
 
     def __enter__(self):
+        self.opened += 1
         return self
 
     def __exit__(self, *_): ...
@@ -144,11 +158,13 @@ class FakeBrowser:
 
     def empty_cart(self): ...
 
-    def add(self, product, qty): ...
+    def add(self, product, qty):
+        return "out of stock" if product.name in self.gone else None
 
     def review_cart(self, expected, rules):
-        total = 60 * sum(expected.values())
-        return Cart(total, total, problems=["over today's limit"] if total > rules.budget else [])
+        total = self.unit * sum(expected.values())
+        prices = {name: f"₹{self.unit}" for name, qty in expected.items() if qty == 1}
+        return Cart(total, total, problems=["over today's limit"] if total > rules.budget else [], prices=prices)
 
     def place(self): ...
 
@@ -158,7 +174,7 @@ class FakeBrowser:
     def screenshot(self, tag): ...
 
     def search(self, query):
-        return [Product(f"{query.title()} {n}", "1 pc", f"https://shop.example/{query}/{n}") for n in (1, 2)]
+        return [Product(f"{query.title()} {n}", "1 pc", f"https://shop.example/{query}/{n}", "₹60") for n in (1, 2)]
 
 
 @pytest.fixture
@@ -167,7 +183,7 @@ def shop(bot, monkeypatch):
     hh = bot.accounts.connect(NEW, "Asha", "Home", "T6/503", session)
     bot.accounts.allow(NEW)
     for item in ("bread", "milk"):
-        hh.catalog().learn(item, Product(item.title(), "1 pc", f"https://shop.example/{item}"))
+        hh.catalog().learn(item, Product(item.title(), "1 pc", f"https://shop.example/{item}", "₹60"))
     browser = FakeBrowser()
     monkeypatch.setattr(botmod.orders, "browser", lambda *_, **__: browser)
     return hh, browser
@@ -203,7 +219,7 @@ def worker_paused(bot):
 def test_below_the_minimum_waits_in_the_basket(bot, shop):
     hh, _ = shop
     bot._on_message(message("bread"))
-    said(bot, "🧺 In the basket, ₹60")
+    assert sent(bot, "🧺 Your basket").endswith("Total ₹60 (orders start at ₹100)\nSend more to add.")
     assert hh.ledger().basket() == [("bread", 1)]
     assert not bot.holds
 
@@ -212,7 +228,8 @@ def test_reaching_the_minimum_waits_then_places(bot, shop, monkeypatch):
     monkeypatch.setattr(botmod, "HOLD", 0.2)
     hh, _ = shop
     bot._on_message(message("2 bread"))
-    assert said(bot, "⏳ Cart ready (₹120)") == botmod._order_now(hh)
+    assert said(bot, "⏳ I'll order this") == botmod._order_now(hh)
+    sent(bot, "⏳ I'll order this", having="Total ₹120")
     offer = hh.ledger().offer()
     said(bot, "✅ Ordered")
     assert placed(hh) == [[["bread", 2]]]
@@ -223,7 +240,7 @@ def test_reaching_the_minimum_waits_then_places(bot, shop, monkeypatch):
 def test_order_now_places_at_once_and_only_once(bot, shop):
     hh, _ = shop
     bot._on_message(message("2 bread"))
-    said(bot, "⏳ Cart ready")
+    said(bot, "⏳ I'll order this")
     tap(bot, hh)
     tap(bot, hh)
     said(bot, "✅ Ordered")
@@ -235,7 +252,7 @@ def test_order_now_places_at_once_and_only_once(bot, shop):
 def test_order_now_takes_items_sent_just_before(bot, shop):
     hh, _ = shop
     bot._on_message(message("2 bread"))
-    said(bot, "⏳ Cart ready")
+    said(bot, "⏳ I'll order this")
     with worker_paused(bot):
         bot._on_message(message("milk"))
         tap(bot, hh)
@@ -248,7 +265,7 @@ def test_timer_and_order_now_together_order_once(bot, shop, monkeypatch):
     monkeypatch.setattr(botmod, "HOLD", 0.1)
     hh, _ = shop
     bot._on_message(message("2 bread"))
-    said(bot, "⏳ Cart ready")
+    said(bot, "⏳ I'll order this")
     with worker_paused(bot):
         tap(bot, hh)
         time.sleep(0.3)
@@ -259,7 +276,7 @@ def test_timer_and_order_now_together_order_once(bot, shop, monkeypatch):
 def test_order_now_refuses_other_accounts_and_old_buttons(bot, shop):
     hh, _ = shop
     bot._on_message(message("2 bread"))
-    said(bot, "⏳ Cart ready")
+    said(bot, "⏳ I'll order this")
     tap(bot, hh, household="other")
     tap(bot, hh, uid=99)
     tap(bot, hh, offer=(NEW, 1))
@@ -277,10 +294,10 @@ def test_order_now_refuses_other_accounts_and_old_buttons(bot, shop):
 def test_more_items_restart_the_wait_and_clear_ends_it(bot, shop):
     hh, _ = shop
     bot._on_message(message("2 bread"))
-    said(bot, "⏳ Cart ready (₹120)")
+    sent(bot, "⏳ I'll order this", having="Total ₹120")
     first, offer = bot.holds[hh.id], hh.ledger().offer()
     bot._on_message(message("milk"))
-    said(bot, "⏳ Cart ready (₹180)")
+    sent(bot, "⏳ I'll order this", having="Total ₹180")
     assert first.finished.is_set()
     assert offer in bot.tg.unbuttoned
     bot._on_message(message("/clear"))
@@ -292,9 +309,10 @@ def test_more_items_restart_the_wait_and_clear_ends_it(bot, shop):
 def test_a_failure_keeps_new_items_and_offers_order_now(bot, shop, fail):
     hh, browser = shop
     bot._on_message(message("2 bread"))
-    said(bot, "⏳ Cart ready")
-    browser.fail = fail
     bot._on_message(message("milk"))
+    said(bot, "⏳ I'll order this")
+    browser.fail = fail
+    tap(bot, hh)
     assert said(bot, "❌") == botmod._order_now(hh)
     assert hh.ledger().basket() == [("bread", 2), ("milk", 1)]
     assert not bot.holds
@@ -340,7 +358,7 @@ def test_a_wait_started_by_someone_who_left_goes_to_the_owner(bot, shop, monkeyp
     member = 7
     bot.accounts.join(member, "Ravi", bot.accounts.invite(hh.id))
     bot._on_message(message("2 bread", uid=member))
-    said(bot, "⏳ Cart ready", chat=member)
+    said(bot, "⏳ I'll order this", chat=member)
     bot.accounts.leave(member, hh.id)  # what /leave, removal, another invite and /setup all do
     assert said(bot, "⏸ The waiting order wasn't placed, since Ravi left") == botmod._order_now(hh)
     assert placed(hh) == []
@@ -354,7 +372,7 @@ def test_an_open_pick_holds_the_basket_back(bot, shop, monkeypatch):
     hh, _ = shop
     bot.picking["p"] = botmod.Picking(NEW, hh.id, [], {})
     bot._on_message(message("2 bread"))
-    said(bot, "⏳ Cart ready")
+    said(bot, "⏳ I'll order this")
     time.sleep(0.4)
     assert placed(hh) == []
     bot.picking.clear()
@@ -388,7 +406,7 @@ def test_a_pick_while_the_options_are_still_coming_in(bot, shop):
     assert not [t for _, t, _ in bot.tg.sent if t.startswith("Something went wrong")]
     pid = next(iter(bot.picking))
     bot._pick(hh, f"{pid}:1:1")
-    said(bot, "⏳ Cart ready (₹120)")
+    sent(bot, "⏳ I'll order this", having="Total ₹120")
 
 
 def test_search_drops_leading_words_when_nothing_matches():
@@ -416,7 +434,7 @@ def test_a_pick_survives_a_restart(bot, shop):
 
     new = restarted(bot)
     new._pick(hh, f"{pid}:0:1")
-    said(new, "🧺 In the basket")
+    said(new, "🧺 Your basket")
     assert hh.ledger().basket() == [("jam", 1)]
 
 
@@ -472,11 +490,18 @@ def test_a_stale_or_unreadable_saved_state_is_dropped(bot):
 def test_basket_lists_prices_and_total_with_order_now(bot, shop):
     hh, _ = shop
     hh.catalog().learn("bread", Product("Bread", "400 g", "https://shop.example/bread", "₹45"))
+    hh.catalog().learn("milk", Product("Milk", "1 pc", "https://shop.example/milk/2"))  # no price seen
     hh.ledger().set_basket([("bread", 2), ("milk", 1)])
     bot._on_message(message("/basket"))
     assert said(bot, "🧺 Your basket") == botmod._order_now(hh)
     text = next(t for _, t, _ in bot.tg.sent if t.startswith("🧺 Your basket"))
-    assert text == "🧺 Your basket\n• Bread (400 g) ×2  ₹90\n• Milk (1 pc) ×1\n\nTotal ₹90 + 1 without a price"
+    assert text.splitlines() == [
+        "🧺 Your basket",
+        "• Bread (400 g) ×2  ₹90",
+        "• Milk (1 pc) ×1",
+        "",
+        "Total ₹90 + 1 without a price",
+    ]
     assert hh.ledger().offer()  # the button is the live Order now
 
 
@@ -490,7 +515,7 @@ def test_basket_shows_what_the_minimum_needs(bot, shop):
     hh.catalog().learn("bread", Product("Bread", "400 g", "https://shop.example/bread", "₹45"))
     hh.ledger().set_basket([("bread", 1)])
     bot._on_message(message("/basket"))
-    said(bot, "🧺 Your basket\n• Bread (400 g) ×1  ₹45\n\nTotal ₹45\n₹55 more reaches the ₹100 minimum.")
+    said(bot, "🧺 Your basket\n• Bread (400 g) ×1  ₹45\n\nTotal ₹45 (orders start at ₹100)")
 
 
 def test_basket_waits_for_an_order_in_progress(bot, shop):
@@ -522,8 +547,50 @@ def test_a_failure_after_place_order_is_unconfirmed_never_not_ordered(bot, shop,
 
     browser.place = place
     bot._on_message(message("2 bread"))
-    said(bot, "⏳ Cart ready")
+    said(bot, "⏳ I'll order this")
     tap(bot, hh)
     said(bot, "⚠️ I couldn't confirm the order")
     assert [o["status"] for o in hh.ledger()._orders()] == ["unknown"]
     assert not [t for _, t, _ in bot.tg.sent if "Couldn't order" in t or "othing was ordered" in t]
+
+
+def test_the_shop_is_opened_once_per_order_not_per_message(bot, shop):
+    hh, browser = shop
+    bot._on_message(message("bread"))
+    bot._on_message(message("milk"))
+    sent(bot, "⏳ I'll order this", having="Total ₹120")
+    assert browser.opened == 0
+    tap(bot, hh)
+    said(bot, "✅ Ordered")
+    assert browser.opened == 1
+
+
+def test_the_shops_lower_total_waits_and_corrects_the_prices(bot, shop):
+    hh, browser = shop
+    browser.unit = 45
+    bot._on_message(message("bread, milk"))
+    sent(bot, "⏳ I'll order this", having="Total ₹120")
+    tap(bot, hh)
+    said(bot, "🧺 The shop's total is ₹90, below the ₹100 minimum")
+    assert hh.ledger().basket() == [("bread", 1), ("milk", 1)]
+    bot._on_message(message("/basket"))
+    sent(bot, "🧺 Your basket", having="Total ₹90 (orders start at ₹100)")
+
+
+def test_an_item_unavailable_at_order_time_stays_in_the_basket(bot, shop):
+    hh, browser = shop
+    browser.gone = {"Milk"}
+    bot._on_message(message("2 bread, milk"))
+    said(bot, "⏳ I'll order this")
+    tap(bot, hh)
+    sent(bot, "✅ Ordered", having="Couldn't add milk (out of stock or changed); it stays in the /basket")
+    assert placed(hh) == [[["bread", 2]]]
+    assert hh.ledger().basket() == [("milk", 1)]
+
+
+def test_with_ordering_off_every_message_fills_the_shop_cart(bot, shop):
+    hh, browser = shop
+    bot.accounts.update(hh.id, place_orders=False)
+    bot._on_message(message("2 bread"))
+    said(bot, "🛒 Cart ready (₹120)")
+    assert browser.opened == 1
