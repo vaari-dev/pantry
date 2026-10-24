@@ -4,10 +4,11 @@ One worker thread does all browser work, one job at a time (one Chrome). /setup 
 on its own thread; the polling thread hands it the person's answers through `replies`.
 """
 
-import itertools
 import math
 import queue
 import re
+import secrets
+import signal
 import threading
 import time
 from dataclasses import dataclass, field
@@ -17,7 +18,7 @@ from pathlib import Path
 import structlog
 from structlog.contextvars import bind_contextvars, bound_contextvars, clear_contextvars, get_contextvars
 
-from . import orders
+from . import orders, store
 from .accounts import Accounts, Household, address_parts
 from .catalog import Product, plan
 from .config import Config
@@ -74,9 +75,10 @@ SHARE_PHONE = {
 NO_KEYBOARD = {"remove_keyboard": True}
 YES = "✅ Yes, deliver here"
 CONFIRM = {"keyboard": [[{"text": YES}], [{"text": "📍 Another saved address"}]], "resize_keyboard": True}
-PICK_IDS = itertools.count()
 HEARTBEAT = Path("/tmp/heartbeat")  # noqa: S108  read by the container healthcheck
-BUSY = Path("/tmp/busy")  # noqa: S108  exists while jobs run; deploys wait for it
+RESTARTING = "I'm restarting for an update and will be back in a minute"
+NOT_REACHED = "⏸ I restarted for an update before getting to your last request; please send it again."
+KEEP = 86400  # Telegram keeps updates a day; older offsets may no longer match its update ids
 
 
 def _rupees(text: str) -> float:
@@ -120,7 +122,20 @@ class Picking:
     ready: list[tuple[str, int]]
     asks: dict[int, tuple[str, int, list[Product], list[int]]]  # n -> spoken, qty, options, message ids
     picked: list[tuple[str, int]] = field(default_factory=list)
-    started: float = field(default_factory=time.monotonic)
+    started: float = field(default_factory=time.time)
+
+    def to_json(self) -> dict:
+        asks = {n: [name, qty, [vars(p) for p in options], ids] for n, (name, qty, options, ids) in self.asks.items()}
+        return {**vars(self), "asks": asks}
+
+    @classmethod
+    def from_json(cls, d: dict) -> "Picking":
+        asks = {
+            int(n): (name, qty, [Product(**p) for p in options], ids)
+            for n, (name, qty, options, ids) in d["asks"].items()
+        }
+        ready, picked = ([tuple(i) for i in d[k]] for k in ("ready", "picked"))
+        return cls(**{**d, "asks": asks, "ready": ready, "picked": picked})
 
 
 class Bot:
@@ -130,7 +145,19 @@ class Bot:
         self.accounts = Accounts(cfg.data_dir, cfg.admin_id)
         self.transcribe = Transcriber(cfg.whisper_model)
         self.jobs: queue.Queue = queue.Queue()
+        self.stopping = threading.Event()
+        # Kept on disk, with Telegram's update offset, so a restart neither drops a pick nor redoes an update.
+        self.saved = cfg.data_dir / "bot.json"
+        saved = store.read(self.saved, {})
+        fresh = time.time() - saved.get("at", 0) < KEEP
+        self.offset: int | None = saved.get("offset") if fresh else None
         self.picking: dict[str, Picking] = {}
+        for pid, p in saved.get("picking", {}).items():
+            try:
+                if time.time() - p["started"] < KEEP:
+                    self.picking[pid] = Picking.from_json(p)
+            except (KeyError, TypeError, ValueError):
+                log.warning("saved pick dropped", exc_info=True)
         self.holds: dict[str, threading.Timer] = {}  # household id -> the timer that places its basket
         self.replies: dict[int, queue.Queue] = {}
         self.wants_setup: dict[int, str] = {}  # uid -> first name: asked for /setup before being let in
@@ -144,13 +171,14 @@ class Bot:
         self._resume()
         threading.Thread(target=self._worker, daemon=True).start()
         threading.Thread(target=self._daily, daemon=True).start()
-        offset = None
-        while True:
+        signal.signal(signal.SIGTERM, lambda *_: self.stopping.set())
+        while not self.stopping.is_set():
             HEARTBEAT.touch()
             try:
-                for update in self.tg.updates(offset):
-                    offset = update["update_id"] + 1
+                for update in self.tg.updates(self.offset):
+                    self.offset = update["update_id"] + 1
                     clear_contextvars()
+                    self._save()
                     bind_contextvars(update_id=update["update_id"])
                     try:
                         if "message" in update:
@@ -162,6 +190,28 @@ class Bot:
             except TelegramError as e:
                 log.warning("telegram polling failed", error=str(e))
                 time.sleep(5)
+        self._drain()
+
+    def _drain(self) -> None:
+        """On SIGTERM: Telegram keeps new updates for the next start; the running job finishes, the
+        worker hands back the queued ones, then the bot exits."""
+        log.info("stopping", jobs=self.jobs.unfinished_tasks)
+        with self.lock:
+            for timer in self.holds.values():  # the ledger keeps holds; _resume restarts them
+                timer.cancel()
+        for answers in list(self.replies.values()):
+            answers.put(None)
+        self.jobs.join()
+        log.info("stopped")
+
+    def _save(self) -> None:
+        """Never raises: a full disk must not stop the bot from draining."""
+        with self.lock:  # held through the write, so an older state never lands last
+            picking = {pid: p.to_json() for pid, p in self.picking.items()}
+            try:
+                store.write(self.saved, {"offset": self.offset, "at": time.time(), "picking": picking})
+            except OSError:
+                log.exception("bot state not saved")
 
     def _resume(self) -> None:
         """What a restart left behind: orders cut off mid-placing, and held baskets."""
@@ -199,10 +249,14 @@ class Bot:
             if hh := next((a for a in args if isinstance(a, Household)), None):
                 bind_contextvars(household_id=hh.id)
             started = time.monotonic()
-            BUSY.touch()
             try:
                 if None in args:
                     log.info("job dropped", reason="household gone")
+                    continue
+                if self.stopping.is_set():
+                    log.info("job dropped", reason="restarting")
+                    if job != self._release:  # a hold stays in the ledger and resumes itself
+                        self._say(args[0], NOT_REACHED)
                     continue
                 job(*args)
                 log.info("job done", seconds=round(time.monotonic() - started, 1))
@@ -213,8 +267,7 @@ class Bot:
                 log.exception("job failed")
                 self._say(args[0], "Something went wrong. Nothing was ordered unless you got a ✅.")
             finally:
-                if self.jobs.empty():
-                    BUSY.unlink(missing_ok=True)
+                self.jobs.task_done()
 
     def _daily(self) -> None:
         while True:
@@ -330,7 +383,7 @@ class Bot:
         elif voice := msg.get("voice") or msg.get("audio"):
             self._queue(self._voice, chat_id, hh, voice["file_id"])
         elif text and not command:
-            if not self.jobs.empty():
+            if self.jobs.unfinished_tasks:
                 self._say(chat_id, "Another order is in progress; yours is next.")
             self._queue(self._handle_list, chat_id, hh, text)
 
@@ -364,7 +417,7 @@ class Bot:
             if message_id:
                 self.tg.remove_buttons(chat_id, message_id)
             return
-        busy = not self.jobs.empty() or BUSY.exists()
+        busy = self.jobs.unfinished_tasks > 0
         self.tg.answer(cb["id"], "Ordering right after what's in progress …" if busy else "Ordering …")
         self._queue(self._order, chat_id, hh, [], False)
 
@@ -400,7 +453,7 @@ class Bot:
         if not asks:
             return self._order(chat_id, hh, p.ready) if p.ready else self._say(chat_id, "I didn't catch any items.")
 
-        pid = str(next(PICK_IDS))
+        pid = secrets.token_hex(4)
         with self.lock:
             self.picking = {k: v for k, v in self.picking.items() if v.chat_id != chat_id}  # newest list wins
             self.picking[pid] = Picking(chat_id, hh.id, p.ready, asks)
@@ -409,6 +462,7 @@ class Bot:
         for n, (name, qty, options, ids) in list(asks.items()):  # taps answer (pop) items while these go out
             ids.append(self._say(chat_id, f'Which "{name}" (×{qty})?', [("Skip this item", f"{pid}:{n}:x")]))
             ids += [self._offer(chat_id, product, f"{pid}:{n}:{i}") for i, product in enumerate(options)]
+        self._save()  # with the message ids, which a pick after a restart cleans up
 
     def _offer(self, chat_id: int, product: Product, data: str) -> int | None:
         caption = f"{product.name}\nSize: {product.size}" + (f"  ·  {product.price}" if product.price else "")
@@ -445,6 +499,7 @@ class Bot:
             log.info("item picked" if choice != "x" else "item skipped", remaining=len(picking.asks))
             if done:
                 self.picking.pop(pid)
+        self._save()
         for mid in filter(None, ids):
             self.tg.remove_buttons(picking.chat_id, mid)
         if ids[0]:
@@ -496,7 +551,7 @@ class Bot:
 
     def _picking(self, hh: Household) -> bool:
         with self.lock:
-            return any(p.household == hh.id and time.monotonic() - p.started < PICK_WAIT for p in self.picking.values())
+            return any(p.household == hh.id and time.time() - p.started < PICK_WAIT for p in self.picking.values())
 
     def _release(self, chat_id: int, hh: Household, timer: threading.Timer) -> None:
         if not self._unhold(hh, timer):
@@ -679,12 +734,16 @@ class Bot:
         """Their next message; secret ones (phone number, OTP) are deleted from the chat."""
         while not self.replies[uid].empty():
             self.replies[uid].get_nowait()
+        if self.stopping.is_set():
+            raise SetupStopped(RESTARTING)
         self._say(uid, question, markup=markup)
         try:
             msg = self.replies[uid].get(timeout=wait)
         except queue.Empty:
             log.info("setup answer timed out", seconds=wait)
             raise SetupStopped("I didn't hear back, so I stopped") from None
+        if msg is None:
+            raise SetupStopped(RESTARTING)
         if secret:
             self.tg.delete(uid, msg["message_id"])
         answer = ((msg.get("contact") or {}).get("phone_number") or msg.get("text") or "").strip()
@@ -715,7 +774,7 @@ class Bot:
             return self._stopped(uid, str(e))
         finally:
             self.replies.pop(uid, None)
-        busy = "" if self.jobs.empty() else " right after the order in progress"
+        busy = " right after the order in progress" if self.jobs.unfinished_tasks else ""
         self._say(uid, f"Thanks! Asking the shop for a login code for ••••••{phone[-4:]}{busy}…", markup=NO_KEYBOARD)
         self._queue(self._login, uid, name, phone)
 

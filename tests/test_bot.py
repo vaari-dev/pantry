@@ -59,7 +59,7 @@ def bot(tmp_path, monkeypatch):
         session.write_text("{}")
 
     monkeypatch.setattr(botmod.orders, "login_browser", login_browser)
-    monkeypatch.setattr(botmod, "BUSY", tmp_path / "busy")
+    monkeypatch.setattr(botmod.signal, "signal", lambda *_: None)  # run() must not take pytest's SIGTERM
     cfg = Config("https://shop.example", "token", ADMIN, "small", tmp_path, None, 9)
     b = botmod.Bot(cfg)
     b.tg = FakeTelegram()
@@ -187,7 +187,7 @@ def placed(hh):
 def idle(bot, timeout=5.0):
     deadline = time.monotonic() + timeout
     time.sleep(0.05)
-    while (not bot.jobs.empty() or botmod.BUSY.exists()) and time.monotonic() < deadline:
+    while bot.jobs.unfinished_tasks and time.monotonic() < deadline:
         time.sleep(0.01)
 
 
@@ -365,7 +365,7 @@ def test_busy_clears_after_a_skipped_job(bot, shop):
     with worker_paused(bot):
         bot._queue(bot._clear, NEW, dataclasses.replace(hh, id="gone"))
     idle(bot)
-    assert not botmod.BUSY.exists()
+    assert not bot.jobs.unfinished_tasks
 
 
 def test_a_pick_while_the_options_are_still_coming_in(bot, shop):
@@ -397,3 +397,72 @@ def test_search_drops_leading_words_when_nothing_matches():
 
     assert botmod._search(Shop(), "harsh avocado") == ("avocado", ["avocado"])
     assert botmod._search(Shop(), "eggs") == ("eggs", [])
+
+
+def restarted(bot):
+    new = botmod.Bot(bot.cfg)
+    new.tg = bot.tg
+    botmod.threading.Thread(target=new._worker, daemon=True).start()
+    return new
+
+
+def test_a_pick_survives_a_restart(bot, shop):
+    hh, _ = shop
+    bot.tg.edit_text = lambda *_: None
+    bot._on_message(message("jam"))
+    said(bot, "Jam 2")
+    pid = next(iter(bot.picking))
+
+    new = restarted(bot)
+    new._pick(hh, f"{pid}:0:1")
+    said(new, "🧺 In the basket")
+    assert hh.ledger().basket() == [("jam", 1)]
+
+
+def test_a_stop_lets_the_running_job_finish_and_keeps_the_offset(bot):
+    running, go, finished = threading.Event(), threading.Event(), []
+
+    def job(_):
+        running.set()
+        go.wait()
+        finished.append(True)
+
+    def updates(offset):
+        if offset is None:
+            bot._queue(job, NEW)
+            return [{"update_id": 5}]
+        running.wait()
+        bot.stopping.set()  # SIGTERM mid-job
+        threading.Timer(0.2, go.set).start()
+        return []
+
+    bot.tg.updates, bot.tg.setup = updates, lambda *_: "joey"
+    bot.run()
+    assert finished == [True]  # run() returned only after the job
+    assert restarted(bot).offset == 6  # update 5 is not handled again
+
+
+def test_a_stop_ends_a_setup_waiting_for_an_answer(bot):
+    bot.accounts.allow(NEW)
+    bot._on_message(message("/setup"))
+    said(bot, "Let's connect")
+    bot.stopping.set()
+    bot._drain()
+    said(bot, "❌ I'm restarting for an update")
+
+
+def test_a_stop_hands_back_jobs_not_yet_started(bot, shop):
+    with worker_paused(bot):
+        bot._queue(bot._handle_list, NEW, shop[0], "2 bread")
+        bot.stopping.set()
+    bot._drain()
+    said(bot, "⏸ I restarted for an update")
+    assert shop[0].ledger().basket() == []
+
+
+def test_a_stale_or_unreadable_saved_state_is_dropped(bot):
+    store = botmod.store
+    old = {"chat_id": NEW, "household": "h", "ready": [], "asks": {}, "picked": [], "started": time.time() - 2 * 86400}
+    store.write(bot.saved, {"offset": 9, "at": time.time() - 2 * 86400, "picking": {"old": old, "bad": {"x": 1}}})
+    new = botmod.Bot(bot.cfg)
+    assert (new.offset, new.picking) == (None, {})

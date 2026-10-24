@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   run:
-    timeout-minutes: 10
+    timeout-minutes: 15  # `remove` stops the bot, which may finish an order first
     runs-on: ubuntu-24.04-arm
     environment: oracle-cloud
     env:
