@@ -10,15 +10,19 @@ from pathlib import Path
 import pytest
 from structlog.testing import capture_logs
 
+from grocerybot import orders
 from grocerybot import shop as shop_module
+from grocerybot.accounts import Accounts
 from grocerybot.catalog import Product
+from grocerybot.config import Config
 from grocerybot.shop import Browser, Rules, ShopError
 
 RULES = Rules("Home", "T6/503", 900)
 PRODUCTS = {k: Product(name, size, f"/pn/{k}") for k, name, size in [
     ("kinley", "Kinley Soda", "750 ml"), ("chips", "BRB Chips", "48 g"), ("orange", "Orange Nagpur", "1 kg"),
+    ("kajal", "Colossal Kajal", "1 pc (0.35 g)"),
 ]}  # fmt: skip
-PRICES = {"kinley": 20, "chips": 30, "orange": 57}  # as shop.html
+PRICES = {"kinley": 20, "chips": 30, "orange": 57, "kajal": 199}  # as shop.html
 CANT_REMOVE = "the shop's cart has items the bot can't remove"
 
 
@@ -39,8 +43,8 @@ class Shop(SimpleHTTPRequestHandler):
                 "quantity": qty,
                 "storeProduct": {
                     "productVariant": {"id": key},
-                    "discountedSellingPrice": PRICES[key],
-                    "availableQuantity": 0 if key in sent["oos"] else 9,
+                    "discountedSellingPrice": PRICES[key] * 100,  # paise, as the shop's
+                    "availableQuantity": 0 if key in sent["oos"] else sent["limits"].get(key, 9),
                     "isActive": True,
                 },
             }
@@ -49,7 +53,7 @@ class Shop(SimpleHTTPRequestHandler):
         reply = {
             "storeLevelCartProducts": [{"cartProducts": rows}],
             "oosProducts": [k for k in sent["items"] if k in sent["oos"]],
-            "itemTotalAmount": sum(PRICES[k] * q for k, q in sent["items"].items() if k not in sent["oos"]),
+            "itemTotalAmount": sum(PRICES[k] * q * 100 for k, q in sent["items"].items() if k not in sent["oos"]),
             "toPay": 0,
             "userAddress": {"userAddressId": "never logged"},
         }
@@ -95,15 +99,15 @@ def cart(b) -> dict:
     return b.page.evaluate("JSON.parse(localStorage.shop).items")
 
 
-def order(b, *keys) -> tuple[list, object]:
+def order(b, *keys, qty=1) -> tuple[list, object]:
     """Fills the cart as orders.order does; (skipped, reviewed cart)."""
     b.empty_cart()
     expected, skipped = {}, []
     for k in keys:
-        if why := b.add(PRODUCTS[k], 1):
+        if why := b.add(PRODUCTS[k], qty):
             skipped.append((k, why))
         else:
-            expected[PRODUCTS[k].name] = 1
+            expected[PRODUCTS[k]] = qty
     return skipped, b.review_cart(expected, RULES)
 
 
@@ -150,7 +154,7 @@ def test_order_over_leftovers(shop):
     given({"orange": 1, "chips": 3}, ["orange"])
     skipped, reviewed = order(b, "kinley", "chips")
     assert (skipped, reviewed.problems, reviewed.total) == ([], [], 50)
-    assert reviewed.prices == {"Kinley Soda": "₹20", "BRB Chips": "₹30"}
+    assert reviewed.prices == {PRODUCTS["kinley"]: "₹20", PRODUCTS["chips"]: "₹30"}
 
 
 def test_slow_cart(shop):
@@ -171,7 +175,7 @@ def test_an_add_the_shop_never_takes_is_skipped(shop):
     b, given = shop
     given(dropAdds=9)
     skipped, _ = order(b, "kinley")
-    assert skipped == [("kinley", "the shop did not take it")]
+    assert skipped == [("kinley", "the shop didn't take it into the cart")]
 
 
 def test_an_out_of_stock_product_is_never_tapped(shop):
@@ -181,13 +185,55 @@ def test_an_out_of_stock_product_is_never_tapped(shop):
     assert cart(b) == {}
 
 
+def test_a_size_written_differently_is_added(shop):
+    """24 Oct, 14:17 UTC: a kajal picked minutes earlier was skipped as "size changed" twice."""
+    b, given = shop
+    given()
+    skipped, reviewed = order(b, "kajal")
+    assert skipped == []
+    assert cart(b) == {"kajal": 1}
+    assert reviewed.prices == {PRODUCTS["kajal"]: "₹199"}  # not the struck-through ₹299
+    b._carts.clear()
+    b._cart = None
+    assert b.review_cart({PRODUCTS["kajal"]: 1}, RULES).prices == {PRODUCTS["kajal"]: "₹199"}  # by the page alone
+
+
+def test_the_shops_limit_per_order_is_ordered_not_failed(shop):
+    """24 Oct, 14:29 UTC: 3 of a kajal the shop sells 2 at a time blocked the whole order."""
+    b, given = shop
+    given(limits={"kajal": 2})
+    skipped, reviewed = order(b, "kajal", "kinley", qty=3)
+    assert (skipped, reviewed.problems) == ([], [])
+    assert reviewed.capped == {PRODUCTS["kajal"]: 2}
+    assert reviewed.prices == {PRODUCTS["kajal"]: "₹199", PRODUCTS["kinley"]: "₹20"}
+
+
+def test_a_lost_tap_is_still_a_problem(shop):
+    b, given = shop
+    given()
+    b.empty_cart()
+    b.add(PRODUCTS["kinley"], 1)
+    reviewed = b.review_cart({PRODUCTS["kinley"]: 2}, RULES)
+    assert reviewed.problems == ["Kinley Soda: 1 in the cart, expected 2"]
+
+
+def test_a_different_size_is_skipped(shop):
+    b, given = shop
+    given(sizes={"chips": "90 g"})
+    b.empty_cart()
+    with capture_logs() as logs:
+        assert b.add(PRODUCTS["chips"], 1) == "the size you picked isn't sold any more"
+    assert cart(b) == {}
+    assert any(e["event"] == "size not on the page" and e["page_sizes"] == ["90 g"] for e in logs)
+
+
 def test_logged_out_mid_run(shop):
     b, given = shop
     given()
     b.add(PRODUCTS["kinley"], 1)
     b.page.evaluate("() => { const s = JSON.parse(localStorage.shop); s.cfg.loggedOut = true; save(s); }")
     with pytest.raises(ShopError, match="login has expired"):
-        b.review_cart({"Kinley Soda": 1}, RULES)
+        b.review_cart({PRODUCTS["kinley"]: 1}, RULES)
 
 
 def test_unreachable_shop(shop):
@@ -225,7 +271,29 @@ def test_the_cart_reply_is_read_by_product_id(shop):
     with capture_logs() as logs:
         order(b, "kinley", "chips")
     api = [e for e in logs if e["event"] == "cart read"][-1]["api"]
-    items = [["orange", 1, 57, 0, True], ["kinley", 1, 20, 9, True], ["chips", 1, 30, 9, True]]
-    assert (api["items"], api["item_total"], api["oos"]) == (items, 50, 1)  # the leftover the count misses
+    items = [["orange", 1, 5700, 0, True], ["kinley", 1, 2000, 9, True], ["chips", 1, 3000, 9, True]]
+    assert (api["items"], api["item_total"], api["oos"]) == (items, 5000, 1)  # the leftover the count misses
     assert "never logged" not in str(api)
     assert api["age"] < 5
+
+
+def test_end_to_end_a_card_with_a_brand_line_is_picked_and_ordered(server, tmp_path, monkeypatch):
+    """24 Oct, 14:16-14:29 UTC: search, pick, then fill and check the cart, with no part faked but the shop."""
+    accounts = Accounts(tmp_path, 1)
+    (state := tmp_path / "state.json").write_text('{"cookies": [], "origins": []}')
+    hh = accounts.connect(1, "Asha", "Home", "T6/503", state)
+    accounts.update(hh.id, place_orders=False)
+    hh = accounts.get(hh.id)
+    with Browser(server, hh.state_file, None, tmp_path) as b:
+        b.goto("/")
+        b.page.evaluate("() => localStorage.shop = JSON.stringify({items: {}, oos: {}, cfg: {limits: {kajal: 2}}})")
+        [found] = b.search("kajal")
+    assert (found.label(), found.price, found.mrp) == ("Colossal Kajal (1 pc (0.35 g))", "₹199", "₹299")
+    key = hh.catalog().learn("kajal", found)
+
+    monkeypatch.setattr(orders, "browser", lambda cfg, hh: Browser(server, hh.state_file, None, tmp_path))
+    cfg = Config(server, "", 1, "", tmp_path, None, 9)
+    out = orders.order(cfg, hh, [(key, 3)])
+    assert (out.result, out.problems, out.unavailable) == ("cart ready", [], {})
+    assert out.lines == ["Colossal Kajal (1 pc (0.35 g)) ×2  (the most the shop allows, of 3)"]
+    assert hh.catalog().options(key)[0].price == "₹199"

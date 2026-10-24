@@ -53,6 +53,38 @@ SPELLINGS = {
     "bred": "bread",
 }
 SEPARATORS = re.compile(r"[,;\n&.!?]|\band\b|\baur\b|\bor\b|\bplus\b")
+QUANTITY = re.compile(
+    r"(?<![\w.])(?:(\d+)\s*x\s*)?(\d+(?:\.\d+)?)\s*"
+    r"(kg|gms?|g|mg|ml|ltrs?|litres?|liters?|l|pcs?|pieces?|units?|packs?|dozen|n)(?![a-z])"
+    r"|pack of (\d+)",
+    re.I,
+)
+UNITS = {"gm": "g", "gms": "g", "ltr": "l", "ltrs": "l", "litre": "l", "litres": "l", "liter": "l", "liters": "l",
+         "pcs": "pc", "piece": "pc", "pieces": "pc", "unit": "pc", "units": "pc", "n": "pc",
+         "packs": "pack"}  # fmt: skip
+SCALE = {"kg": (1000, "g"), "l": (1000, "ml"), "dozen": (12, "pc")}
+FILLER_IN_SIZE = re.compile(r"\([^)]*\)|[^\w\s]|\d|\b(x|approx|each)\b", re.I)
+
+
+def squash(text: str) -> str:
+    return " ".join(text.split()).lower()
+
+
+def quantities(text: str) -> set[tuple[float, str]]:
+    """ "2 x 500 ml", "1 l" and "1000ml" are all (1000, "ml")."""
+    found = set()
+    for times, number, unit, pack in QUANTITY.findall(text):
+        if pack:
+            found.add((float(pack), "pack"))
+            continue
+        factor, unit = SCALE.get(unit := UNITS.get(unit.lower(), unit.lower()), (1, unit))
+        found.add((round(int(times or 1) * float(number) * factor, 3), unit))
+    return found
+
+
+def is_size(line: str) -> bool:
+    """ "1 kg (Medium)" and "500 ml Bottle" are; "3 Pcs Sponge Wipe" and "Onion 1 kg" are names."""
+    return bool(QUANTITY.match(line.strip())) and len(FILLER_IN_SIZE.sub(" ", QUANTITY.sub(" ", line)).split()) <= 1
 
 
 @dataclass(frozen=True)
@@ -65,7 +97,12 @@ class Product:
     mrp: str = ""  # the original price, when the shop shows it struck through
 
     def label(self) -> str:
-        return f"{self.name} ({self.size})"
+        return f"{self.name} ({self.size})" if self.size else self.name
+
+    @property
+    def variant(self) -> str:
+        """The shop's productVariant.id: the URL ends /pvid/<id>."""
+        return self.url.rstrip("/").rsplit("/", 1)[-1]
 
 
 def rupees(text: str) -> float | None:
@@ -140,7 +177,7 @@ class Catalog:
     def options(self, key: str) -> list[Product]:
         entry = self._load().get(key, {})
         return [
-            Product(o["name"], o["size"], o["url"], o.get("price", ""))
+            _repaired(Product(o["name"], o["size"], o["url"], o.get("price", "")))
             for o in entry.get("options", [])
             if o.get("url")
         ]
@@ -167,6 +204,13 @@ class Catalog:
             picked = {"name": product.name, "size": product.size, "url": product.url, "price": product.price}
             entry["options"] = [picked, *rest][:MAX_OPTIONS]
         return key
+
+
+def _repaired(p: Product) -> Product:
+    """Before 24 Oct, cards with a brand line were saved as name=brand, size=full name."""
+    if p.size and not is_size(p.size) and squash(p.size).startswith(squash(p.name)):
+        return Product(p.size, "", p.url, p.price, p.image, p.mrp)
+    return p
 
 
 @dataclass

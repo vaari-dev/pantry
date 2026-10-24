@@ -82,3 +82,15 @@ def test_combine_adds_new_list_to_basket_within_limits(catalog):
         ("bread", 1),
         ("milk", 1),
     ]
+
+
+def test_a_pick_saved_with_its_brand_as_name_reads_as_its_full_name(tmp_path):
+    """Until 24 Oct, cards with a brand line were saved as name=brand, size=name."""
+    catalog = Catalog(tmp_path / "catalog.json")
+    url = "/pn/elle-18-eyedrama-kajal-bold-black/pvid/0006f6cd-ed90-49ea-9e8d-bcddaebe00c4"
+    catalog.learn("kajal", Product("Elle 18", "Elle 18 Eyedrama Kajal Bold Black", url, "₹119"))
+    catalog.learn("lemon", Product("Lemon", "1 pc", "/pn/lemon/pvid/0cc2ba2e", "₹51"))
+    [kajal] = catalog.options("kajal")
+    assert (kajal.name, kajal.size, kajal.label()) == ("Elle 18 Eyedrama Kajal Bold Black", "", kajal.name)
+    assert kajal.variant == "0006f6cd-ed90-49ea-9e8d-bcddaebe00c4"
+    assert catalog.options("lemon")[0].label() == "Lemon (1 pc)"

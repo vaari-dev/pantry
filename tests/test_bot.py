@@ -145,6 +145,8 @@ class FakeBrowser:
         self.opened = 0
         self.unit = 60  # what the shop charges for any item
         self.gone: set[str] = set()  # product names out of stock
+        self.why = "out of stock"  # what add says of the gone ones
+        self.limits: dict[str, int] = {}  # product name -> the most one order may have
 
     def __enter__(self):
         self.opened += 1
@@ -159,12 +161,14 @@ class FakeBrowser:
     def empty_cart(self): ...
 
     def add(self, product, qty):
-        return "out of stock" if product.name in self.gone else None
+        return self.why if product.name in self.gone else None
 
     def review_cart(self, expected, rules):
-        total = self.unit * sum(expected.values())
-        prices = {name: f"₹{self.unit}" for name, qty in expected.items() if qty == 1}
-        return Cart(total, total, problems=["over today's limit"] if total > rules.budget else [], prices=prices)
+        capped = {p: self.limits[p.name] for p, q in expected.items() if q > self.limits.get(p.name, q)}
+        total = self.unit * sum({**expected, **capped}.values())
+        prices = dict.fromkeys(expected, f"₹{self.unit}")
+        problems = ["over today's limit"] if total > rules.budget else []
+        return Cart(total, total, problems=problems, prices=prices, capped=capped)
 
     def place(self): ...
 
@@ -583,9 +587,29 @@ def test_an_item_unavailable_at_order_time_stays_in_the_basket(bot, shop):
     bot._on_message(message("2 bread, milk"))
     said(bot, "⏳ I'll order this")
     tap(bot, hh)
-    sent(bot, "✅ Ordered", having="Couldn't add milk (out of stock or changed); it stays in the /basket")
+    sent(bot, "✅ Ordered", having="Couldn't add milk (out of stock); it stays in the /basket")
     assert placed(hh) == [[["bread", 2]]]
     assert hh.ledger().basket() == [("milk", 1)]
+
+
+def test_a_skipped_item_says_why(bot, shop):
+    hh, browser = shop
+    browser.gone, browser.why = {"Milk"}, "the size you picked isn't sold any more"
+    bot._on_message(message("2 bread, milk"))
+    said(bot, "⏳ I'll order this")
+    tap(bot, hh)
+    sent(bot, "✅ Ordered", having="Couldn't add milk (the size you picked isn't sold any more)")
+
+
+def test_the_shops_limit_per_order_is_ordered_and_told(bot, shop):
+    """24 Oct, 14:29 UTC: 3 of an item the shop sells 2 at a time blocked the whole order."""
+    hh, browser = shop
+    browser.limits = {"Bread": 2}
+    bot._on_message(message("3 bread, milk"))
+    said(bot, "⏳ I'll order this")
+    tap(bot, hh)
+    sent(bot, "✅ Ordered", having="Bread (1 pc) ×2  (the most the shop allows, of 3)")
+    assert placed(hh) == [[["bread", 2], ["milk", 1]]]
 
 
 def test_with_ordering_off_every_message_fills_the_shop_cart(bot, shop):

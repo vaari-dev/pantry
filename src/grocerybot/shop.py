@@ -16,7 +16,7 @@ from playwright.sync_api import Locator, Page, Request, Route, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from .apimap import Recorder
-from .catalog import Product, rupees
+from .catalog import QUANTITY, Product, is_size, quantities, rupees, squash
 
 TIMEOUT_MS = 90_000  # pages are slower through the home exit node
 CHROME_ARGS = [
@@ -65,6 +65,37 @@ OTP_FIELD = "input[autocomplete=one-time-code], input[maxlength='1'], input[maxl
 # Playwright runs these in the browser: flags must be re flags, not inline (?i).
 CONTINUE = re.compile(r"^\s*(continue|get otp|send otp|login|next)\s*$", re.I)
 VERIFY = re.compile(r"^\s*(verify|continue|login|submit)", re.I)
+STRUCK = """const struck = el => [...el.querySelectorAll('*')]
+  .filter(e => getComputedStyle(e).textDecorationLine.includes('line-through'))
+  .map(e => e.innerText.replace(/\\s/g, ''));"""
+CARDS_JS = (
+    "() => {"
+    + STRUCK
+    + """
+  return [...document.querySelectorAll('a[data-testid=product-card]')].map(a => ({
+    url: a.getAttribute('href'),
+    image: (a.querySelector('img') || {}).currentSrc || '',
+    struck: struck(a),
+    lines: a.innerText.split('\\n').map(s => s.trim()).filter(Boolean)}));
+}"""
+)
+CART_JS = (
+    "() => {"
+    + STRUCK
+    + """
+  const cart = document.querySelector('[data-testid=cart-screen]');
+  const items = [...cart.querySelectorAll('[data-testid$=cart-qty]')].map(q => {
+    let row = q;  // largest ancestor holding only this item's stepper
+    while (row.parentElement && row.parentElement !== cart &&
+           row.parentElement.querySelectorAll('[data-testid$=cart-qty]').length === 1) row = row.parentElement;
+    const lines = row.innerText.split('\\n').map(s => s.trim()).filter(Boolean);
+    return {qty: parseInt(q.innerText, 10), lines, struck: struck(row)};
+  });
+  const boxes = [...cart.querySelectorAll('input[type=checkbox]')].map(i => ({checked: i.checked,
+    label: (i.closest('label') || i.parentElement.parentElement).innerText.replace(/\\s+/g, ' ')}));
+  return {text: cart.innerText, items, boxes};
+}"""
+)
 PLUS = "button[aria-label='Increase quantity by one']:not([data-hidden=true])"
 MODAL = "[id^=zui-modal], [role=dialog], [aria-modal=true]"  # the address picker; it covers the page
 PICKER_BUTTON = f"button:has({ADDRESS}), {ADDRESS}"  # the header button around the address opens it
@@ -119,10 +150,10 @@ class Rules:
 class Cart:
     total: float | None = None
     item_total: float = 0
-    items: list[tuple[str, int]] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
     cod: bool = False
-    prices: dict[str, str] = field(default_factory=dict)  # name -> unit price, from rows of one
+    prices: dict[Product, str] = field(default_factory=dict)  # unit price paid
+    capped: dict[Product, int] = field(default_factory=dict)  # the most one order may have
 
 
 def _money(text: str) -> float:
@@ -150,8 +181,33 @@ def _text(locator: Locator) -> str:
         return ""
 
 
-def _squash(text: str) -> str:
-    return " ".join(text.split()).lower()
+def _shows_size(size: str, page: str) -> bool:
+    """A card's "1 pc (0.35 g)" can be "0.35g" on the page: weights or volumes decide, else counts."""
+    if re.search(rf"(?<!\w){re.escape(squash(size))}(?!\w)", squash(page)):
+        return True
+    wanted = quantities(size)
+    measures = {q for q in wanted if q[1] not in ("pc", "pack")} or wanted
+    return measures <= quantities(page)
+
+
+def _card(lines: list[str]) -> tuple[str, str] | None:
+    """(name, size): the name is the line above the size, as some cards put a brand above the name."""
+    body = [line for line in lines if not re.fullmatch(r"ADD|₹\s?[\d,.]+|[\d,.]+|OFF|₹", line)]
+    if len(body) < 2:
+        return None
+    if at := next((i for i, line in enumerate(body) if i and is_size(line)), None):
+        return body[at - 1], body[at]
+    log.info("card without a size", lines=len(body))
+    return max(body, key=len), ""
+
+
+def _core(name: str) -> str:
+    """Without the "| tagline" that pages and cart rows drop."""
+    return squash(name.split("|")[0])
+
+
+def _rupees(paise: int) -> str:
+    return f"₹{paise // 100}" if paise % 100 == 0 else f"₹{paise / 100:.2f}"
 
 
 def _prices(lines: list[str], struck: list[str]) -> tuple[str, str]:
@@ -462,12 +518,7 @@ class Browser:
         if not self._wait(self.page.locator("a[data-testid=product-card]").first, 15):
             return []
         self.page.wait_for_timeout(1500)
-        cards = self.page.evaluate("""() => [...document.querySelectorAll('a[data-testid=product-card]')].map(a => ({
-            url: a.getAttribute('href'),
-            image: (a.querySelector('img') || {}).currentSrc || '',
-            struck: [...a.querySelectorAll('*')].filter(e => getComputedStyle(e).textDecorationLine
-                .includes('line-through')).map(e => e.innerText.replace(/\\s/g, '')),
-            lines: a.innerText.split('\\n').map(s => s.trim()).filter(Boolean)}))""")
+        cards = self.page.evaluate(CARDS_JS)
         found, seen = [], set()
         for c in cards:
             lines = c["lines"]
@@ -477,27 +528,27 @@ class Browser:
                 or any(re.fullmatch(r"(?i)sold out|notify( me)?|out of stock", line) for line in lines)
             ):
                 continue
-            body = [line for line in lines if not re.fullmatch(r"ADD|₹\s?[\d,.]+|[\d,.]+|OFF|₹", line)]
-            if len(body) < 2:
+            if not (card := _card(lines)):
                 continue
             seen.add(c["url"])
             price, mrp = _prices(lines, c["struck"])
             image = "" if "placeholder" in c["image"].lower() else c["image"].replace("f-auto", "f-jpg")
-            found.append(Product(body[0], body[1], c["url"], price, image, mrp))
+            found.append(Product(*card, c["url"], price, image, mrp))
             if len(found) == limit:
                 break
         return found
 
     def add(self, product: Product, qty: int) -> str | None:
-        """None on success, else why it was skipped."""
+        """None on success, else why not, for people."""
         self.goto(product.url)
-        # Titles drop the "| tagline" of long names, so compare the core name.
-        if not _squash(title := self.page.title()).startswith(_squash(product.name.split("|")[0])):
-            headings = self.page.locator("h1").all_inner_texts()
+        title, headings = self.page.title(), self.page.locator("h1").all_inner_texts()
+        if not any(squash(t).startswith(_core(product.name)) for t in [title, *headings]):
             log.info("listing changed", product=product.name, title=title, headings=headings)
-            return "listing changed"
-        if _squash(product.size) not in _squash(self.page.locator("body").inner_text()):
-            return "size changed"
+            return "the shop changed this product"
+        if not _shows_size(product.size, body := self.page.locator("body").inner_text()):
+            sizes = sorted({m.group() for m in QUANTITY.finditer(body)})[:20]
+            log.info("size not on the page", product=product.name, size=product.size, page_sizes=sizes)
+            return "the size you picked isn't sold any more"
         add = self.page.locator(PLUS, has_text="Add to Cart")
         if not add.count():
             return "out of stock"
@@ -506,7 +557,7 @@ class Browser:
             if self._wait(add.first, 5, "hidden"):
                 break
         else:
-            return "the shop did not take it"
+            return "the shop didn't take it into the cart"
         for _ in range(qty - 1):
             self.page.locator(PLUS).first.evaluate("b => b.click()")
             self.page.wait_for_timeout(1000)
@@ -520,19 +571,7 @@ class Browser:
         if not self._wait(cart, TIMEOUT_MS // 1000):
             raise ShopError("the cart did not open")
         loaded = self._wait(cart.locator("[data-testid$=cart-qty]").or_(cart.get_by_text("Item Total")).first, 10)
-        read = self.page.evaluate("""() => {
-          const cart = document.querySelector('[data-testid=cart-screen]');
-          const items = [...cart.querySelectorAll('[data-testid$=cart-qty]')].map(q => {
-            let row = q;  // largest ancestor holding only this item's stepper
-            while (row.parentElement && row.parentElement !== cart &&
-                   row.parentElement.querySelectorAll('[data-testid$=cart-qty]').length === 1) row = row.parentElement;
-            const lines = row.innerText.split('\\n').map(s => s.trim()).filter(Boolean);
-            return {qty: parseInt(q.innerText, 10), lines};
-          });
-          const boxes = [...cart.querySelectorAll('input[type=checkbox]')].map(i => ({checked: i.checked,
-            label: (i.closest('label') || i.parentElement.parentElement).innerText.replace(/\\s+/g, ' ')}));
-          return {text: cart.innerText, items, boxes};
-        }""")
+        read = self.page.evaluate(CART_JS)
         text = read["text"]
         log.info(
             "cart read",
@@ -592,9 +631,52 @@ class Browser:
                 cart = self._open_cart()
         return cart
 
-    def review_cart(self, expected: dict[str, int], rules: Rules) -> Cart:
+    def _match_by_id(self, expected: dict[Product, int], cart: dict, item_total: float | None, result: Cart) -> bool:
+        """By the shop app's own cart reply, if it agrees with the page. False: not used."""
+        api = self._cart_api() or {}
+        rows = {r[0]: r for r in api.get("items", []) if r[4] and r[3] > 0}
+        agrees = (
+            item_total is not None
+            and api.get("item_total") == round(item_total * 100) == sum(r[1] * r[2] for r in rows.values())
+            and sorted(r[1] for r in rows.values()) == sorted(i["qty"] for i in cart["items"])
+            and all(p.variant in rows for p in expected)
+        )
+        if not agrees:
+            log.info("cart reply not used")
+            return False
+        for product, want in expected.items():
+            if (row := rows.pop(product.variant, None)) is None:
+                result.problems.append(f"{product.name} did not make it into the cart")
+                continue
+            _, got, paise, available, _ = row
+            if got < want and available <= got:
+                log.info("quantity capped", product=product.name, asked=want, allowed=got)
+                result.capped[product] = got
+            elif got != want:
+                result.problems.append(f"{product.name}: {got} in the cart, expected {want}")
+                continue
+            result.prices[product] = _rupees(paise)
+        result.problems += ["an item the bot did not add is in the cart"] * len(rows)
+        return True
+
+    def _match_by_name(self, expected: dict[Product, int], cart: dict, result: Cart) -> None:
+        seen = set()
+        for item in cart["items"]:
+            names = {_core(line) for line in item["lines"]}
+            product = next((p for p in expected if p not in seen and _core(p.name) in names), None)
+            if product is None:
+                result.problems.append(f"unexpected item in the cart: {' '.join(item['lines'][:2])}")
+            elif item["qty"] != expected[product]:
+                result.problems.append(f"{product.name}: {item['qty']} in the cart, expected {expected[product]}")
+            else:
+                seen.add(product)
+                if item["qty"] == 1 and (price := _prices(item["lines"], item["struck"])[0]):
+                    result.prices[product] = price
+        result.problems += [f"{p.name} did not make it into the cart" for p in expected.keys() - seen]
+
+    def review_cart(self, expected: dict[Product, int], rules: Rules) -> Cart:
         """Pays from the wallet if it covers the whole bill, else cash on delivery. Checks every rule."""
-        cart, result, seen = self._pay_with(wallet=True), Cart(), set()
+        cart, result = self._pay_with(wallet=True), Cart()
         if _owed(cart) and _owed(self._open_cart()):  # twice: the bill can lag behind the wallet tick
             cart, result.cod = self._pay_with(wallet=False), True
         if not cart["items"]:
@@ -606,25 +688,16 @@ class Browser:
         text = cart["text"]
         if not rules.address_ok(text):
             result.problems.append("the cart is not delivering to your saved address (/settings)")  # logged: no label
-        for item in cart["items"]:
-            name = next((n for n in expected for line in item["lines"] if _squash(line) == _squash(n)), None)
-            if name is None:
-                result.problems.append(f"unexpected item in the cart: {' '.join(item['lines'][:2])}")
-            elif item["qty"] != expected[name]:
-                result.problems.append(f"{name}: {item['qty']} in the cart, expected {expected[name]}")
-            else:
-                seen.add(name)
-                result.items.append((name, item["qty"]))
-                if item["qty"] == 1 and (price := _prices(item["lines"], [])[0]):
-                    result.prices[name] = price
-        result.problems += [f"{n} did not make it into the cart" for n in expected.keys() - seen]
+        item_total = _amount(text, "Item Total")
+        if not self._match_by_id(expected, cart, item_total, result):
+            self._match_by_name(expected, cart, result)
         for box in cart["boxes"]:
             if COINS.search(box["label"]) and box["checked"]:
                 result.problems.append("reward coins are selected")
             if WALLET.search(box["label"]) and box["checked"] == result.cod:
                 result.problems.append("the wallet is still selected" if result.cod else "the wallet is not selected")
 
-        item_total, to_pay = _amount(text, "Item Total"), _amount(text, "To Pay")
+        to_pay = _amount(text, "To Pay")
         if item_total is not None:
             result.item_total = item_total
         else:

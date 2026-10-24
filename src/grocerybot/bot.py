@@ -611,7 +611,7 @@ class Bot:
             cod=out.cod,
             problems=out.problems,
         )
-        missing = (f"Couldn't add {k} (out of stock or changed); it stays in the /basket" for k in out.unavailable)
+        missing = (f"Couldn't add {k} ({why}); it stays in the /basket" for k, why in out.unavailable.items())
         details = "\n".join([*out.lines, *missing])
         total = f"₹{out.total:g}" if out.total is not None else ""
         how = ", cash on delivery" if out.cod else ""

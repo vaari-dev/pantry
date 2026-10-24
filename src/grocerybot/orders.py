@@ -17,7 +17,7 @@ class Outcome:
     placed: bool = False
     total: float | None = None
     lines: list[str] = field(default_factory=list)
-    unavailable: list[str] = field(default_factory=list)
+    unavailable: dict[str, str] = field(default_factory=dict)  # item -> why it couldn't be added
     problems: list[str] = field(default_factory=list)
     item_total: float = 0
     waiting: bool = False
@@ -102,25 +102,31 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
     with browser(cfg, hh) as b:
         b.check_session(limits)
         b.empty_cart()
-        expected, placed_items, urls = {}, [], {}
+        expected, added = {}, []
         for key, qty in items:
-            options = catalog.options(key)
-            for n, product in enumerate(options):
+            why = None
+            for n, product in enumerate(catalog.options(key)):
                 if (skipped := b.add(product, qty)) is None:
-                    expected[product.name], urls[product.name] = qty, product.url
-                    placed_items.append((key, qty))
-                    out.lines.append(f"{product.label()} ×{qty}" + ("  (backup choice)" if n else ""))
+                    expected[product] = qty
+                    added.append((key, product, n))
                     break
                 log.info("option skipped", item=key, option=n, reason=skipped)
+                why = why or skipped
             else:
-                out.unavailable.append(key)
+                out.unavailable[key] = why or "no choice saved"
         kept = [(k, q) for k, q in items if k in out.unavailable]  # stay in the basket, whatever happens
         if not expected:
             out.problems.append("none of the items can be added right now")
             return out
 
         cart = b.review_cart(expected, limits)
-        catalog.reprice({urls[name]: price for name, price in cart.prices.items()})
+        catalog.reprice({p.url: price for p, price in cart.prices.items()})
+        placed_items = []
+        for key, product, n in added:
+            qty = cart.capped.get(product, expected[product])
+            placed_items.append((key, qty))
+            note = f"  (the most the shop allows, of {expected[product]})" if product in cart.capped else ""
+            out.lines.append(f"{product.label()} ×{qty}" + ("  (backup choice)" if n else "") + note)
         out.total, out.problems, out.item_total, out.cod = cart.total, cart.problems, cart.item_total, cart.cod
         out.over_limit = cart.total is not None and cart.total > limits.budget
         if cart.problems:
@@ -128,7 +134,7 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
             return out
         if cart.item_total < hh.min_order:
             out.waiting = True
-            ledger.set_basket(placed_items + kept)
+            ledger.set_basket(items)
             return out
         if cart.cod and not b.has_pay_button(cart.total):
             out.problems.append(f"could not find the cart's Pay ₹{cart.total:g} button")
