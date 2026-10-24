@@ -21,12 +21,12 @@ SECRETS = [
     "4821",
 ]
 CART = {
-    "phone": "+919876543210",
+    "phone": "+15550109876",
     "address": {"line": "T6/503, MG Road", "lat": 12.9716, "name": "RAHUL", "vehicle": "KA01AB1234"},
     "items": [{"productVariantId": "0f8fad5b-d9cb-469f-a165-70867728950e", "quantity": 2}],
     "otp": 4821,
     "useWallet": False,
-    "suggestions": {"amul milk": 1, "+919876543210": 1, "f3a1c9e07b2d4c11": 1, "Rahul": 1},
+    "suggestions": {"amul milk": 1, "+15550109876": 1, "f3a1c9e07b2d4c11": 1, "Rahul": 1},
 }
 
 
