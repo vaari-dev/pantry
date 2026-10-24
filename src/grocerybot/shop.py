@@ -52,9 +52,9 @@ LOGIN_EXPIRED = "the shop login has expired; the account's owner can /setup agai
 CART_COUNT = "[data-testid=cart-items-number]"
 CART = "[data-testid=cart-screen]"
 REMOVE = re.compile(r"^\s*(remove|delete)(\s+item)?\s*$", re.I)
-STOCK = re.compile(r"out of stock|sold out|unavailable|back in stock", re.I)  # rows without a stepper
-# The cart shows the address and wallet balance: only amounts and known words are logged.
-LOGGABLE = re.compile(rf"^-?₹[\d,.]+$|^(item total|to pay|remove|delete)$|{STOCK.pattern}", re.I)
+STOCK = re.compile(r"out of stock|sold out|unavailable|back in stock", re.I)
+# The cart shows the address and wallet balance: only known words are logged.
+LOGGABLE = re.compile(rf"^(item total|to pay|remove|delete)$|{STOCK.pattern}", re.I)
 ADDRESS = "[data-testid=user-address]"
 PHONE_FIELD = "input[type=tel], input[inputmode=numeric], input[name*=phone i]"
 OTP_FIELD = "input[autocomplete=one-time-code], input[maxlength='1'], input[maxlength='4'], input[maxlength='6']"
@@ -482,8 +482,9 @@ class Browser:
             if not self._changed(cart, before):
                 break
         left = _text(cart)
-        stuck = STOCK.search(left) or not self._wait(badge, 10, "hidden")
-        log.info("cart emptied", taps=taps, stuck=bool(stuck), lines=_loggable(left))
+        # The count, not the cart's words: an emptied cart can say "All items are out of stock".
+        stuck = not self._wait(badge, 10, "hidden")
+        log.info("cart emptied", taps=taps, stuck=stuck, lines=_loggable(left))
         if stuck:
             self.screenshot("cart-stuck")
             raise ShopError("the shop's cart has items the bot can't remove, maybe out of stock; empty it in the app")
@@ -518,11 +519,7 @@ class Browser:
             log.info("cart has no items", lines=_loggable(cart["text"]))
             if self._logged_out():  # mid-run: the shop took the adds into a guest cart
                 raise ShopError(LOGIN_EXPIRED)
-            result.problems.append(
-                "the cart shows only out of stock items"
-                if STOCK.search(cart["text"])
-                else "the cart is empty: the shop did not take the items"
-            )
+            result.problems.append("the cart is empty: the shop did not take the items")
             return result
         text = cart["text"]
         if not rules.address_ok(text):

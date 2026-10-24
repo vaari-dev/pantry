@@ -23,7 +23,7 @@ def test_prices(lines, struck, expected):
     ("text", "login_button", "problem"),
     [
         ("Your cart is empty", False, "the cart is empty: the shop did not take the items"),
-        ("Orange Nagpur\nOut of stock\nRemove", False, "the cart shows only out of stock items"),
+        ("All items are out of stock", False, "the cart is empty: the shop did not take the items"),
         ("", True, "login has expired"),
     ],
 )
@@ -41,7 +41,7 @@ def test_a_cart_without_items(text, login_button, problem):
 def test_loggable_keeps_the_address_and_balance_out():
     cart = "Home\nFlat 12, Lake View Apartments\nIndiranagar, Bengaluru 560038\nRiya Sharma\nOrange Nagpur\n"
     cart += "Out of stock\nRemove\nZepto Cash ₹412 available\nItem Total\n₹123\nTo Pay\n₹0"
-    assert _loggable(cart) == ["Out of stock", "Remove", "Item Total", "₹123", "To Pay", "₹0"]
+    assert _loggable(cart) == ["Out of stock", "Remove", "Item Total", "To Pay"]
 
 
 class Found:
