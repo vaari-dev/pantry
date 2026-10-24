@@ -83,6 +83,9 @@ class Ledger:
                 if o["id"] == order_id:
                     o["status"] = status
 
+    def placing(self) -> bool:
+        return any(o["status"] == "placing" for o in self._orders())
+
     def interrupted(self) -> list[dict]:
         """Attempts still 'placing' (the bot stopped mid-order). Marks them 'unknown'."""
         with self._edit() as data:

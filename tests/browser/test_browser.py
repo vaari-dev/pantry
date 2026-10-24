@@ -119,6 +119,7 @@ def test_order_over_leftovers(shop):
     given({"orange": 1, "chips": 3}, ["orange"])
     skipped, reviewed = order(b, "kinley", "chips")
     assert (skipped, reviewed.problems, reviewed.total) == ([], [], 50)
+    assert reviewed.prices == {"Kinley Soda": "₹20", "BRB Chips": "₹30"}
 
 
 def test_slow_cart(shop):

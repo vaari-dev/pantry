@@ -108,6 +108,11 @@ class Rules:
     def address_ok(self, text: str) -> bool:
         return text.startswith(self.address_label) and self.address_match in text
 
+    def over(self, total: float) -> str | None:
+        return (
+            f"₹{total:g} is more than what is left of today's limit (₹{self.budget:g})" if total > self.budget else None
+        )
+
 
 @dataclass
 class Cart:
@@ -116,6 +121,7 @@ class Cart:
     items: list[tuple[str, int]] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
     cod: bool = False
+    prices: dict[str, str] = field(default_factory=dict)  # name -> unit price, from rows of one
 
 
 def _money(text: str) -> float:
@@ -568,6 +574,8 @@ class Browser:
             else:
                 seen.add(name)
                 result.items.append((name, item["qty"]))
+                if item["qty"] == 1 and (price := _prices(item["lines"], [])[0]):
+                    result.prices[name] = price
         result.problems += [f"{n} did not make it into the cart" for n in expected.keys() - seen]
         for box in cart["boxes"]:
             if COINS.search(box["label"]) and box["checked"]:
@@ -588,8 +596,8 @@ class Browser:
             result.total = _amount(text, r"[^\n]*\bCash")
         if result.total is None:
             result.problems.append("could not read the amount to pay")
-        elif result.total > rules.budget:
-            result.problems.append(f"₹{result.total:g} is more than what is left of today's limit (₹{rules.budget:g})")
+        elif over := rules.over(result.total):
+            result.problems.append(over)
         return result
 
     def place(self) -> None:

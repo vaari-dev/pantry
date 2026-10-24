@@ -145,6 +145,13 @@ class Catalog:
             if o.get("url")
         ]
 
+    def reprice(self, prices: dict[str, str]) -> None:
+        """url -> price, as the shop's cart showed it."""
+        with store.edit(self.path, {}) as items:
+            for entry in items.values():
+                for o in entry["options"]:
+                    o["price"] = prices.get(o.get("url"), o.get("price", ""))
+
     def vocabulary(self) -> list[str]:
         return [n for key, entry in self._load().items() for n in (key, *entry.get("aliases", []))]
 

@@ -5,7 +5,7 @@ from pathlib import Path
 import structlog
 
 from .accounts import Household
-from .catalog import combine
+from .catalog import combine, rupees
 from .config import Config
 from .shop import Browser, Rules, ShopError
 
@@ -25,6 +25,7 @@ class Outcome:
     unconfirmed: bool = False  # tapped Place Order, but no such order on the Orders page
     over_limit: bool = False
     cod: bool = False
+    estimated: bool = False  # item_total from catalog prices: the shop was not opened
 
     @property
     def result(self) -> str:
@@ -61,8 +62,19 @@ def check(cfg: Config, hh: Household) -> None:
         b.check_session(rules(hh))
 
 
+def priced(hh: Household) -> tuple[list[tuple[str, int, float | None]], float, int]:
+    """The basket at the prices last seen in the shop: (label, qty, amount or None) rows, total, unpriced."""
+    catalog, rows = hh.catalog(), []
+    for key, qty in hh.ledger().basket():
+        product = (catalog.options(key) or [None])[0]
+        price = rupees(product.price) if product else None
+        rows.append((product.label() if product else key, qty, price * qty if price else None))
+    return rows, sum(a or 0 for *_, a in rows), sum(a is None for *_, a in rows)
+
+
 def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool = False) -> Outcome:
-    """hold: check the cart but leave it in the basket. New items join the basket first, so a failure
+    """hold: price the basket from the catalog and leave it there; the shop is opened only to place
+    an order (or, with ordering off, to fill its cart). New items join the basket first, so a failure
     loses nothing.
 
     The attempt is written to the ledger before Place Order is tapped, so a crash can never lead
@@ -76,27 +88,39 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
         out.over_limit = True
         out.problems.append(f"today's limit of ₹{hh.daily_cap:g} is used up")
         return out
+    if hold and hh.place_orders:
+        out.estimated = True
+        _, out.item_total, unpriced = priced(hh)
+        if over := limits.over(out.item_total):
+            out.over_limit = True
+            out.problems.append(over)
+        else:
+            out.waiting = not unpriced and out.item_total < hh.min_order
+            out.held = not out.waiting
+        return out
 
     with browser(cfg, hh) as b:
         b.check_session(limits)
         b.empty_cart()
-        expected, placed_items = {}, []
+        expected, placed_items, urls = {}, [], {}
         for key, qty in items:
             options = catalog.options(key)
             for n, product in enumerate(options):
                 if (skipped := b.add(product, qty)) is None:
-                    expected[product.name] = qty
+                    expected[product.name], urls[product.name] = qty, product.url
                     placed_items.append((key, qty))
                     out.lines.append(f"{product.label()} ×{qty}" + ("  (backup choice)" if n else ""))
                     break
                 log.info("option skipped", item=key, option=n, reason=skipped)
             else:
                 out.unavailable.append(key)
+        kept = [(k, q) for k, q in items if k in out.unavailable]  # stay in the basket, whatever happens
         if not expected:
             out.problems.append("none of the items can be added right now")
             return out
 
         cart = b.review_cart(expected, limits)
+        catalog.reprice({urls[name]: price for name, price in cart.prices.items()})
         out.total, out.problems, out.item_total, out.cod = cart.total, cart.problems, cart.item_total, cart.cod
         out.over_limit = cart.total is not None and cart.total > limits.budget
         if cart.problems:
@@ -104,7 +128,7 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
             return out
         if cart.item_total < hh.min_order:
             out.waiting = True
-            ledger.set_basket(placed_items)
+            ledger.set_basket(placed_items + kept)
             return out
         if cart.cod and not b.has_pay_button(cart.total):
             out.problems.append(f"could not find the cart's Pay ₹{cart.total:g} button")
@@ -112,13 +136,9 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
             return out
         if not hh.place_orders:
             return out
-        if hold:
-            out.held = True
-            ledger.set_basket(placed_items)
-            return out
 
         attempt, started = ledger.begin(placed_items, cart.total), datetime.now()
-        ledger.set_basket([])  # never ordered twice, even if the outcome is unclear
+        ledger.set_basket(kept)  # never ordered twice, even if the outcome is unclear
         log.info("attempt recorded", total=cart.total, cod=cart.cod)
         try:
             if stopped := (b.place_cod(cart.total) if cart.cod else b.place()):
