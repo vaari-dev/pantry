@@ -54,29 +54,37 @@ SPELLINGS = {
 }
 SEPARATORS = re.compile(r"[,;\n&.!?]|\band\b|\baur\b|\bor\b|\bplus\b")
 QUANTITY = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(kg|gms?|g|mg|ml|ltrs?|litres?|liters?|l|pcs?|pieces?|units?|packs?|n)(?![a-z])", re.I
+    r"(?<![\w.])(?:(\d+)\s*x\s*)?(\d+(?:\.\d+)?)\s*"
+    r"(kg|gms?|g|mg|ml|ltrs?|litres?|liters?|l|pcs?|pieces?|units?|packs?|dozen|n)(?![a-z])"
+    r"|pack of (\d+)",
+    re.I,
 )
 UNITS = {"gm": "g", "gms": "g", "ltr": "l", "ltrs": "l", "litre": "l", "litres": "l", "liter": "l", "liters": "l",
          "pcs": "pc", "piece": "pc", "pieces": "pc", "unit": "pc", "units": "pc", "n": "pc",
          "packs": "pack"}  # fmt: skip
-SCALE = {"kg": (1000, "g"), "l": (1000, "ml")}
-# A pack size line: "500 g", "1 pc (0.35 g)", "2 x 200 ml", "Pack of 6". Names may hold a size too,
-# but never start with one.
-SIZE = re.compile(rf"^(?:\d+\s*x\s*)?(?:{QUANTITY.pattern}|pack of \d+)", re.I)
+SCALE = {"kg": (1000, "g"), "l": (1000, "ml"), "dozen": (12, "pc")}
+FILLER_IN_SIZE = re.compile(r"[\W\d_]|\b(x|approx|each)\b", re.I)
+
+
+def squash(text: str) -> str:
+    return " ".join(text.split()).lower()
 
 
 def quantities(text: str) -> set[tuple[float, str]]:
-    """{(350.0, "g")}-like: "0.35 kg", "0.35kg" and "350 gm" read the same, as do "1 kg" and "1000 g"."""
+    """ "2 x 500 ml", "1 l" and "1000ml" are all (1000, "ml")."""
     found = set()
-    for number, unit in QUANTITY.findall(text):
-        unit = UNITS.get(unit.lower(), unit.lower())
-        factor, unit = SCALE.get(unit, (1, unit))
-        found.add((round(float(number) * factor, 3), unit))
+    for times, number, unit, pack in QUANTITY.findall(text):
+        if pack:
+            found.add((float(pack), "pack"))
+            continue
+        factor, unit = SCALE.get(unit := UNITS.get(unit.lower(), unit.lower()), (1, unit))
+        found.add((round(int(times or 1) * float(number) * factor, 3), unit))
     return found
 
 
 def is_size(line: str) -> bool:
-    return len(line) <= 40 and bool(SIZE.match(line.strip()))
+    """ "1 kg (approx. 4-5 pcs)" is; "3 Pcs Sponge Wipe" is a name."""
+    return bool(quantities(line)) and not FILLER_IN_SIZE.sub("", QUANTITY.sub("", line))
 
 
 @dataclass(frozen=True)
@@ -93,7 +101,7 @@ class Product:
 
     @property
     def variant(self) -> str:
-        """The shop's id for this pack: the URL's last part ("/pn/<slug>/pvid/<id>")."""
+        """The shop's productVariant.id: the URL ends /pvid/<id>."""
         return self.url.rstrip("/").rsplit("/", 1)[-1]
 
 
@@ -199,9 +207,7 @@ class Catalog:
 
 
 def _repaired(p: Product) -> Product:
-    """Until 24 Oct, a card with a brand line above the name was saved as name=brand, size=name
-    ("Elle 18", "Elle 18 Eyedrama Kajal Bold Black"): such a pick is its full name, size unknown."""
-    squash = lambda t: " ".join(t.lower().split())  # noqa: E731
+    """Before 24 Oct, cards with a brand line were saved as name=brand, size=full name."""
     if p.size and not is_size(p.size) and squash(p.size).startswith(squash(p.name)):
         return Product(p.size, "", p.url, p.price, p.image, p.mrp)
     return p

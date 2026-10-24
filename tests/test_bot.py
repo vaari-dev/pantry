@@ -163,10 +163,10 @@ class FakeBrowser:
     def add(self, product, qty):
         return self.why if product.name in self.gone else None
 
-    def review_cart(self, expected, rules, ids=None):
-        capped = {n: self.limits[n] for n, q in expected.items() if q > self.limits.get(n, q)}
+    def review_cart(self, expected, rules):
+        capped = {p: self.limits[p.name] for p, q in expected.items() if q > self.limits.get(p.name, q)}
         total = self.unit * sum({**expected, **capped}.values())
-        prices = {name: f"₹{self.unit}" for name in expected}
+        prices = dict.fromkeys(expected, f"₹{self.unit}")
         problems = ["over today's limit"] if total > rules.budget else []
         return Cart(total, total, problems=problems, prices=prices, capped=capped)
 
@@ -594,7 +594,7 @@ def test_an_item_unavailable_at_order_time_stays_in_the_basket(bot, shop):
 
 def test_a_skipped_item_says_why(bot, shop):
     hh, browser = shop
-    browser.gone, browser.why = {"Milk"}, "size changed"
+    browser.gone, browser.why = {"Milk"}, "the size you picked isn't sold any more"
     bot._on_message(message("2 bread, milk"))
     said(bot, "⏳ I'll order this")
     tap(bot, hh)

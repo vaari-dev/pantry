@@ -31,6 +31,7 @@ def test_prices(lines, struck, expected):
         (["Amul Taaza Milk", "2 x 500 ml"], ("Amul Taaza Milk", "2 x 500 ml")),
         (["Coke", "Pack of 6"], ("Coke", "Pack of 6")),
         (["Bestseller", "Fresh Coriander Bunch"], ("Fresh Coriander Bunch", "")),  # no size shown
+        (["Scotch-Brite", "3 Pcs Sponge Wipe", "1 pack"], ("3 Pcs Sponge Wipe", "1 pack")),
         (["ADD", "₹20"], None),
     ],
 )  # fmt: skip
@@ -53,6 +54,9 @@ def test_card(lines, card):
         ("1 pc (0.35 g)", "1 pc (1.2 g)", False),
         ("6 pcs", "12 pieces", False),
         ("1 l", "1 lemon", False),
+        ("2 x 200 ml", "200 ml", False),
+        ("2 x 200 ml", "400 ml", True),
+        ("Pack of 6", "Pack of 3", False),
     ],
 )
 def test_shows_size(size, page, shown):

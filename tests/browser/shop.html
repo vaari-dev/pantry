@@ -18,7 +18,8 @@ const PRODUCTS = {
   kinley: {name: "Kinley Soda", size: "750 ml", price: 20},
   chips: {name: "BRB Chips", size: "48 g", price: 30},
   orange: {name: "Orange Nagpur", size: "1 kg", price: 57},
-  kajal: {name: "Colossal Kajal", size: "0.35g", price: 199, mrp: 299},  // the card said "1 pc (0.35 g)"
+  // As the shop's: a brand line above the name, and the size written differently on the card.
+  kajal: {name: "Colossal Kajal", size: "0.35g", card: "1 pc (0.35 g)", brand: "Maybelline", price: 199, mrp: 299},
 };
 const load = () => JSON.parse(localStorage.shop || '{"items":{},"oos":{},"cfg":{}}');
 const sync = s => fetch("/cfs/api/v1/cart", {method: "PUT", body: JSON.stringify({items: s.items, oos: s.oos, limits: s.cfg.limits ?? {}})})
@@ -90,5 +91,14 @@ function renderProduct() {  // in place, as the shop's single-page app does
   });
 }
 if (product) renderProduct();
+if (location.pathname === "/search") {
+  const query = new URLSearchParams(location.search).get("query").toLowerCase();
+  document.getElementById("main").innerHTML = Object.entries(PRODUCTS)
+    .filter(([k, p]) => p.name.toLowerCase().includes(query))
+    .map(([k, p]) => `<a data-testid="product-card" href="/pn/${k}"><div>${p.brand ?? ""}</div><div>${p.name}</div>` +
+      `<div>${p.card ?? p.size}</div><div>₹${p.price}</div>` +
+      (p.mrp ? `<div style="text-decoration: line-through">₹${p.mrp}</div>` : "") + "<button>ADD</button></a>")
+    .join("");
+}
 render();
 </script></body></html>
