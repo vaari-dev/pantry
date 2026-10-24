@@ -203,8 +203,9 @@ class Browser:
         if self.recorder:
             self.recorder.attach(self._ctx)
         self.page: Page = self._ctx.new_page()
-        self._carts: list[Request] = []  # the shop app's own cart calls, newest last
+        self._carts: list[tuple[float, Request]] = []  # the shop app's own cart calls, newest last
         self._cart: dict | None = None
+        self._cart_at = 0.0
         self.page.on("requestfinished", self._seen)  # not "response": a navigation can cut its body off forever
         self.page.set_default_timeout(TIMEOUT_MS)
         return self
@@ -228,15 +229,15 @@ class Browser:
             raise ShopError("the shop's page stopped responding; try again in a minute") from exc
 
     def _seen(self, req: Request) -> None:
-        """Only keeps it: reading the body here, inside Playwright's event, is not safe."""
+        """Keeps it, unread: reading the body here, inside Playwright's event, is not safe."""
         if req.method == "PUT" and urlsplit(req.url).path == CART_API:
-            self._carts.append(req)
+            self._carts.append((time.monotonic(), req))
 
     def _cart_api(self) -> dict | None:
         """The latest cart reply, as far as the bot reads it: never its address or wallet parts.
         Read before every navigation, which discards the bodies of the page's replies."""
         if self._carts:
-            req = self._carts[-1]  # older ones are superseded
+            self._cart_at, req = self._carts[-1]
             self._carts.clear()
             try:
                 data = req.response().json()
@@ -258,7 +259,8 @@ class Browser:
                 }
             except Exception as e:  # its shape is the shop's to change: evidence, never a failure
                 self._cart = {"unreadable": type(e).__name__}
-        return self._cart
+        # age: a reply older than the page's last change is not a disagreement
+        return self._cart and {**self._cart, "age": round(time.monotonic() - self._cart_at, 1)}
 
     def _filter(self, route: Route):
         req = route.request

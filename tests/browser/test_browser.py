@@ -222,8 +222,10 @@ def test_a_failed_state_save_does_not_change_the_outcome(server, tmp_path):
 def test_the_cart_reply_is_read_by_product_id(shop):
     b, given = shop
     given({"orange": 1}, ["orange"])
-    order(b, "kinley", "chips")
-    api = b._cart_api()
+    with capture_logs() as logs:
+        order(b, "kinley", "chips")
+    api = [e for e in logs if e["event"] == "cart read"][-1]["api"]
     items = [["orange", 1, 57, 0, True], ["kinley", 1, 20, 9, True], ["chips", 1, 30, 9, True]]
     assert (api["items"], api["item_total"], api["oos"]) == (items, 50, 1)  # the leftover the count misses
     assert "never logged" not in str(api)
+    assert api["age"] < 5
