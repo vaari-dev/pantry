@@ -15,25 +15,28 @@ from pathlib import Path
 
 from . import store
 
+EMPTY = {"orders": [], "basket": [], "hold": None, "offer": None}
+
 
 class Ledger:
     def __init__(self, path: Path):
         self.path = path
 
     def _read(self) -> dict:
-        return {"orders": [], "basket": [], "hold": None, "offer": None, **store.read(self.path, {})}
+        return {**EMPTY, **store.read(self.path, {})}
 
     def _orders(self) -> list[dict]:
         return self._read()["orders"]
 
-    def _save(self, orders: list[dict]) -> None:
-        store.write(self.path, {**self._read(), "orders": orders[-1000:]})
+    def _edit(self):
+        return store.edit(self.path, EMPTY)
 
     def basket(self) -> list[tuple[str, int]]:
         return [(key, qty) for key, qty in self._read()["basket"]]
 
     def _set(self, key: str, value) -> None:
-        store.write(self.path, {**self._read(), key: value})
+        with self._edit() as data:
+            data[key] = value
 
     def set_basket(self, items: list[tuple[str, int]]) -> None:
         self._set("basket", [list(i) for i in items])
@@ -62,35 +65,30 @@ class Ledger:
     def begin(self, items: list[tuple[str, int]], total: float) -> str:
         order_id = uuid.uuid4().hex[:8]
         now = datetime.now()
-        orders = self._orders()
-        orders.append(
-            {
-                "id": order_id,
-                "day": now.date().isoformat(),
-                "at": now.isoformat(timespec="seconds"),
-                "status": "placing",
-                "total": total,
-                "items": [list(i) for i in items],
-            }
-        )
-        self._save(orders)
+        order = {
+            "id": order_id,
+            "day": now.date().isoformat(),
+            "at": now.isoformat(timespec="seconds"),
+            "status": "placing",
+            "total": total,
+            "items": [list(i) for i in items],
+        }
+        with self._edit() as data:
+            data["orders"] = [*data["orders"], order][-1000:]
         return order_id
 
     def finish(self, order_id: str, status: str) -> None:
-        orders = self._orders()
-        for o in orders:
-            if o["id"] == order_id:
-                o["status"] = status
-        self._save(orders)
+        with self._edit() as data:
+            for o in data["orders"]:
+                if o["id"] == order_id:
+                    o["status"] = status
 
     def interrupted(self) -> list[dict]:
         """Attempts still 'placing' (the bot stopped mid-order). Marks them 'unknown'."""
-        orders = self._orders()
-        stuck = [o for o in orders if o["status"] == "placing"]
-        for o in stuck:
-            o["status"] = "unknown"
-        if stuck:
-            self._save(orders)
+        with self._edit() as data:
+            stuck = [o for o in data["orders"] if o["status"] == "placing"]
+            for o in stuck:
+                o["status"] = "unknown"
         return stuck
 
     def due(self, today: date | None = None) -> list[tuple[str, int]]:

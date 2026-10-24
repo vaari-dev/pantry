@@ -1,6 +1,6 @@
 """Words people say -> shop products, best first.
 
-catalog.json: {"egg": {"aliases": ["anda"], "max_qty": 3, "options": [{"name", "size", "url"}, ...]}}
+catalog.json: {"egg": {"aliases": ["anda"], "max_qty": 3, "options": [{"name", "size", "url", "price"}, ...]}}
 """
 
 import difflib
@@ -68,6 +68,14 @@ class Product:
         return f"{self.name} ({self.size})"
 
 
+def rupees(text: str) -> float | None:
+    """ "₹1,104" -> 1104.0; None for anything else."""
+    try:
+        return float(text.lstrip("₹").replace(",", "")) if text else None
+    except ValueError:
+        return None
+
+
 def singular(word: str) -> str:
     """eggs -> egg, potatoes -> potato, berries -> berry; leaves chips/oats alone."""
     if word.endswith(("ss", "chips", "oats")):
@@ -131,7 +139,11 @@ class Catalog:
 
     def options(self, key: str) -> list[Product]:
         entry = self._load().get(key, {})
-        return [Product(o["name"], o["size"], o["url"]) for o in entry.get("options", []) if o.get("url")]
+        return [
+            Product(o["name"], o["size"], o["url"], o.get("price", ""))
+            for o in entry.get("options", [])
+            if o.get("url")
+        ]
 
     def vocabulary(self) -> list[str]:
         return [n for key, entry in self._load().items() for n in (key, *entry.get("aliases", []))]
@@ -141,12 +153,12 @@ class Catalog:
 
     def learn(self, spoken: str, product: Product) -> str:
         """Remember a picked product as the first choice for what was said. Returns the catalog key."""
-        items = self._load()
-        key = self._index(items).get(normalize(spoken)) or normalize(spoken)
-        entry = items.setdefault(key, {"aliases": [], "max_qty": DEFAULT_MAX_QTY, "options": []})
-        rest = [o for o in entry["options"] if o.get("url") != product.url]
-        entry["options"] = [{"name": product.name, "size": product.size, "url": product.url}, *rest][:MAX_OPTIONS]
-        store.write(self.path, items)
+        with store.edit(self.path, {}) as items:
+            key = self._index(items).get(normalize(spoken)) or normalize(spoken)
+            entry = items.setdefault(key, {"aliases": [], "max_qty": DEFAULT_MAX_QTY, "options": []})
+            rest = [o for o in entry["options"] if o.get("url") != product.url]
+            picked = {"name": product.name, "size": product.size, "url": product.url, "price": product.price}
+            entry["options"] = [picked, *rest][:MAX_OPTIONS]
         return key
 
 
