@@ -10,7 +10,7 @@ from grocerybot import bot as botmod
 from grocerybot.catalog import Product
 from grocerybot.config import Config
 from grocerybot.ledger import Ledger
-from grocerybot.shops import Cart, ShopError
+from grocerybot.shops import Cart, NotPlaced, ShopError
 
 ADMIN, NEW = 1, 42
 ADDRESS = "Home\nT6/503, MG Road"
@@ -562,6 +562,22 @@ def test_a_failure_after_place_order_is_unconfirmed_never_not_ordered(bot, shop,
     assert not [t for _, t, _ in bot.tg.sent if "Couldn't order" in t or "othing was ordered" in t]
 
 
+def test_a_stop_before_any_tap_that_orders_is_not_ordered_and_keeps_the_basket(bot, shop):
+    """Review, 25 Oct: a Pay Now button not found was recorded as an order that may have gone through."""
+    hh, browser = shop
+
+    def place(cart):
+        raise NotPlaced("the Pay Now button went away")
+
+    browser.place = place
+    bot._on_message(message("2 bread"))
+    said(bot, "⏳ I'll order this")
+    tap(bot, hh)
+    assert sent(bot, "❌ Not ordered").startswith("❌ Not ordered:\n- the Pay Now button went away")
+    assert [o["status"] for o in hh.ledger()._orders()] == ["failed"]
+    assert (hh.ledger().basket(), hh.ledger().spent_today()) == ([("bread", 2)], 0)
+
+
 def test_the_shop_is_opened_once_per_order_not_per_message(bot, shop):
     hh, browser = shop
     bot._on_message(message("bread"))
@@ -661,7 +677,7 @@ def admin_shop(bot, shop):
     (session := bot.cfg.data_dir / "b.json").write_text("{}")
     bot.accounts.connect(ADMIN, "Admin", "blinkit", "Home", "T6/503", session, ordering=False)
     hh = bot.accounts.switch(hh.id, "zepto")
-    (hh.dir / "zepto" / "session.json").write_text("{}")  # leave() logged Zepto out
+    hh.session("zepto").write_text("{}")  # leave() logged Zepto out
     return hh, browser
 
 
@@ -737,3 +753,59 @@ def test_a_second_setup_waits_for_the_first(bot):
     said(bot, "Setup is already running")
     bot._on_message(message(contact={"phone_number": "9876543210"}))
     said(bot, "📩 Step 2")
+
+
+def test_an_order_asked_for_before_a_switch_is_not_placed_at_the_new_shop(bot, admin_shop):
+    """Review, 25 Oct: Order now, tapped while the switch waited for the worker, ordered at the new shop."""
+    hh, _ = admin_shop
+    hh.catalog("blinkit").learn("bread", Product("Harvest Bread", "400 g", "/prn/harvest-bread/prid/7", "₹40"))
+    hh.ledger().set_basket([("bread", 2)])
+    bot._offer_now(ADMIN, hh, "🧺 Waiting")
+    with worker_paused(bot):
+        shop_tap(bot, "blinkit", uid=ADMIN)
+        tap(bot, hh, uid=ADMIN)
+    sent(bot, "🏪 Orders now go to Blinkit, so that wasn't ordered", chat=ADMIN)
+    idle(bot)
+    assert not [
+        t for c, t, _ in bot.tg.sent if c == ADMIN and t.startswith(("Placing the order", "🛒 Blinkit cart ready"))
+    ]
+
+
+def test_a_stale_button_for_the_shop_in_use_changes_nothing(bot, admin_shop):
+    hh, _ = admin_shop
+    bot._hold(ADMIN, hh, 60)
+    shop_tap(bot, "zepto", uid=ADMIN)
+    idle(bot)
+    assert bot.tg.answers[-1] == "Orders already go to Zepto."
+    assert hh.ledger().hold() and hh.id in bot.holds
+
+
+def test_a_shop_not_offered_is_refused_as_such(bot, shop):
+    hh, _ = shop
+    shop_tap(bot, "blinkit")
+    assert bot.tg.answers[-1] == "That shop isn't offered yet."
+    assert bot.accounts.get(hh.id).shop == "zepto" and NEW not in bot.replies
+
+
+def test_setup_waiting_for_its_login_is_still_running(bot):
+    bot.accounts.allow(NEW)
+    bot._on_message(message("/setup"))
+    said(bot, "Let's connect")
+    with worker_paused(bot):
+        bot._on_message(message(contact={"phone_number": "9876543210"}))
+        said(bot, "Thanks! Asking Zepto")
+        bot._start_setup(NEW, "Asha", "zepto")
+        said(bot, "Setup is already running")
+    said(bot, "📩 Step 2")
+    assert len([t for _, t, _ in bot.tg.sent if t.startswith("Let's connect")]) == 1
+
+
+def test_a_shop_error_outside_an_order_names_the_shop(bot, shop):
+    _, browser = shop
+
+    def search(query):
+        raise ShopError("the shop's page did not load")
+
+    browser.search = search
+    bot._on_message(message("jam"))
+    sent(bot, "❌ Couldn't order on Zepto: the shop's page did not load.")

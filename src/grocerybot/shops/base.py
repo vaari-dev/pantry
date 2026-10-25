@@ -12,7 +12,7 @@ import subprocess
 import time
 import traceback
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
@@ -59,7 +59,6 @@ OTP_FIELD = (
 # Playwright runs these in the browser: flags must be re flags, not inline (?i).
 CONTINUE = re.compile(r"^\s*(continue|get otp|send otp|login|next)\s*$", re.I)
 VERIFY = re.compile(r"^\s*(verify|continue|login|submit)", re.I)
-STOCK = re.compile(r"out of stock|sold out|unavailable|back in stock", re.I)
 UNLISTED = re.compile(r"(?i)sold out|notify( me)?|out of stock")
 STRUCK = """const struck = el => [...el.querySelectorAll('*')]
   .filter(e => getComputedStyle(e).textDecorationLine.includes('line-through'))
@@ -73,6 +72,10 @@ class ShopError(Exception):
     def __init__(self, text: str, logged: str | None = None):
         super().__init__(text)
         self.logged = logged or text
+
+
+class NotPlaced(ShopError):
+    """From place, before it tapped anything that could order."""
 
 
 @dataclass(frozen=True)
@@ -190,6 +193,7 @@ class Browser:
     SEARCH = ""  # path, with {query}
     CARD = ""  # a search result
     CARDS_JS = ""  # JS: [{url, id, image, struck, lines}] of the results
+    ORDERS = "/account/orders"
 
     def __init__(
         self,
@@ -340,6 +344,38 @@ class Browser:
                 return True
         return False
 
+    def _tap_away(self, cart: Locator, tap: Locator) -> int:
+        """Taps until tap is gone or stops changing the cart; how many taps."""
+        taps = 0
+        while tap.count() and taps < 100:
+            before = text_of(cart)
+            try:
+                tap.click(timeout=10_000)
+            except PlaywrightTimeout:
+                break
+            taps += 1
+            if not self._changed(cart, before):
+                break
+        return taps
+
+    def _latest_order(self) -> tuple[float, datetime] | None:
+        """(amount, placed at) of the newest order on the orders page."""
+        raise NotImplementedError
+
+    def confirm(self, total: float, since: datetime) -> bool:
+        """Whether the orders page shows an order of total, placed since."""
+        for _ in range(3):
+            self.goto(self.ORDERS)
+            if latest := self._latest_order():
+                amount, placed = latest
+                log.info("latest order", amount=amount, placed=placed.isoformat(), total=total)
+                if amount == total and placed >= since - timedelta(minutes=1):
+                    return True
+            else:
+                log.info("no order on the orders page")
+            self.page.wait_for_timeout(5000)
+        return False
+
     def public_ip(self) -> str:
         self.goto("https://api.ipify.org")
         return self.page.locator("body").inner_text().strip()
@@ -458,6 +494,10 @@ class Browser:
         """A search result's product URL, ending in the shop's id for the product."""
         return found["url"]
 
+    def _image(self, src: str) -> str:
+        """A search result's image as Telegram can show it."""
+        return src
+
     def search(self, query: str, limit: int = 4) -> list[Product]:
         self.goto(self.SEARCH.format(query=quote(query)))
         if not self._wait(self.page.locator(self.CARD).first, 15):
@@ -475,7 +515,7 @@ class Browser:
                 continue
             seen.add(url)
             price, mrp = prices(lines, c["struck"])
-            image = "" if "placeholder" in c["image"].lower() else c["image"].replace("f-auto", "f-jpg")
+            image = "" if "placeholder" in c["image"].lower() else self._image(c["image"])
             found.append(Product(*named, url, price, image, mrp))
             if len(found) == limit:
                 break

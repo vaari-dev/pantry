@@ -7,7 +7,7 @@ import structlog
 from .accounts import Household
 from .catalog import combine, rupees
 from .config import Config
-from .shops import SHOPS, Browser, Rules, ShopError
+from .shops import SHOPS, Browser, NotPlaced, Rules, ShopError
 
 log = structlog.get_logger(__name__)
 
@@ -152,6 +152,13 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
                 log.info("payment stopped", reason=stopped)
                 b.screenshot("payment")
             out.placed = b.confirm(cart.total, started)
+        except NotPlaced as e:  # nothing that could order was tapped
+            log.info("not placed", reason=str(e))
+            ledger.finish(attempt, "failed")
+            ledger.set_basket(items)
+            out.problems.append(str(e))
+            b.screenshot("payment")
+            return out
         except Exception as e:  # past the tap the order may have gone through: unconfirmed, never "not ordered"
             log.warning("placing interrupted", exc_info=True)
             stopped = str(e) if isinstance(e, ShopError) else "the shop stopped responding while placing it"

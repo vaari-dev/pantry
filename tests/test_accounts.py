@@ -100,29 +100,27 @@ def test_address_parts(text, parts):
     assert address_parts(text) == parts
 
 
-def test_a_household_from_before_blinkit_moves_under_zepto(tmp_path):
+def test_zepto_stays_where_a_household_from_before_blinkit_had_it(tmp_path):
+    """So the version before Blinkit, rolled back to, reads its login, picks and settings as they now are."""
     old = {"owner": ASHA, "address_label": "Home", "address_match": "12B", "daily_cap": 800.0, "min_order": 99.0,
-           "place_orders": False}  # fmt: skip
-    users = {str(ASHA): {"name": "Asha", "household": "h1"}}
+           "place_orders": True}  # fmt: skip
+    users = {str(ASHA): {"name": "Asha", "household": "h1"}, str(RAVI): {"name": "Ravi", "household": "h1"}}
     store.write(tmp_path / "households.json", {"households": {"h1": old}, "users": users})
     (folder := tmp_path / "households" / "h1").mkdir(parents=True)
     (folder / "session.json").write_text("{}")
     (folder / "catalog.json").write_text('{"egg": {"options": []}}')
-    (folder / "ledger.json").write_text('{"basket": [["egg", 1]]}')
 
-    hh = Accounts(tmp_path, ADMIN).get("h1")
-    assert (hh.shop, hh.shops, hh.address_label, hh.address_match, hh.min_order, hh.place_orders, hh.daily_cap) == (
-        "zepto",
-        ("zepto",),
-        "Home",
-        "12B",
-        99.0,
-        False,
-        800.0,
-    )
-    assert hh.state_file == folder / "zepto" / "session.json" and hh.state_file.exists()
-    assert (folder / "zepto" / "catalog.json").exists() and hh.ledger().basket() == [("egg", 1)]
-    assert Accounts(tmp_path, ADMIN).get("h1") == hh  # once only
+    accounts = Accounts(tmp_path, ADMIN)
+    hh = accounts.get("h1")
+    assert (hh.shop, hh.shops, hh.address_label, hh.address_match, hh.min_order, hh.daily_cap) == (
+        "zepto", ("zepto",), "Home", "12B", 99.0, 800.0
+    )  # fmt: skip
+    assert hh.state_file == folder / "session.json" and hh.catalog().path == folder / "catalog.json"
+    accounts.update("h1", place_orders=False)
+    accounts.connect(ASHA, "Asha", "blinkit", "Flat", "4A", login(tmp_path), ordering=False)
+    assert {k: store.read(accounts.path, {})["households"]["h1"][k] for k in old} == {**old, "place_orders": False}
+    accounts.leave(ASHA, "h1")
+    assert not (folder / "session.json").exists() and not (folder / "blinkit" / "session.json").exists()
 
 
 def test_each_shop_keeps_its_own_settings(tmp_path, accounts):

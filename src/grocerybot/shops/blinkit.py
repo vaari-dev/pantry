@@ -10,10 +10,24 @@ from datetime import datetime, timedelta
 from urllib.parse import quote
 
 import structlog
+from playwright.sync_api import Locator
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
-from ..catalog import Product
-from .base import LOGIN_EXPIRED, STRUCK, Browser, Cart, Rules, ShopError, match_by_name, money, text_of
+from ..catalog import Product, rupees
+from .base import (
+    LOGIN_EXPIRED,
+    STRUCK,
+    Browser,
+    Cart,
+    NotPlaced,
+    Rules,
+    ShopError,
+    core,
+    match_by_name,
+    money,
+    prices,
+    text_of,
+)
 
 LOGIN_WAIT_MS = 30_000
 AUTH_JS = """() => { try { return !!JSON.parse(localStorage.getItem('auth') || '{}').accessToken; }
@@ -70,6 +84,14 @@ def _bill(bill: list[list[str]], label: str) -> float | None:
     return None
 
 
+def _adds_up(rows: list[dict], item_total: float) -> bool:
+    """Whether the rows read are all the bill charges for: a row shows its unit price or that times its quantity."""
+    amounts = [(rupees(prices(r["lines"], r["struck"])[0]), r["qty"]) for r in rows]
+    if any(a is None for a, _ in amounts):
+        return False
+    return round(item_total, 2) in {round(sum(a for a, _ in amounts), 2), round(sum(a * q for a, q in amounts), 2)}
+
+
 def _placed(text: str, now: datetime) -> datetime | None:
     """ "25 Oct, 3:44 pm": the year is this one, or last year's for a date ahead of today."""
     if not (m := PLACED.search(text)):
@@ -101,10 +123,8 @@ class Blinkit(Browser):
     id: el.id, image: (el.querySelector('img') || {{}}).currentSrc || '', struck: struck(el), lines: ({LINES})(el)}}));
 }}"""
 
-    def __enter__(self):
-        super().__enter__()
+    def _opened(self) -> None:
         self._capped: dict[str, int] = {}  # variant -> the quantity the shop stopped at
-        return self
 
     def _url(self, found: dict, name: str) -> str:
         return f"/prn/{_slug(name)}/prid/{found['id']}"
@@ -150,7 +170,7 @@ class Blinkit(Browser):
         """From the search page, where each result is the product's own card."""
         self.goto(self.SEARCH.format(query=quote(product.name)))
         card = self._card(product)
-        if not self._wait(card, 15):
+        if not self._wait(card, 15) or core(product.name) not in {core(line) for line in text_of(card).splitlines()}:
             log.info("listing changed", product=product.name)
             return "the shop changed this product"
         if not self._size_shown(product, text_of(card)):
@@ -199,16 +219,7 @@ class Blinkit(Browser):
         if not (read := self._open_cart()):
             return
         cart = self.page.locator(CART).filter(visible=True).first
-        taps = 0
-        while (tap := cart.locator(MINUS).first).count() and taps < 100:
-            before = text_of(cart)
-            try:
-                tap.click(timeout=10_000)
-            except PlaywrightTimeout:
-                break
-            taps += 1
-            if not self._changed(cart, before):
-                break
+        taps = self._tap_away(cart, cart.locator(MINUS).first)
         read = self.page.evaluate(CART_JS) or {"rows": []}
         log.info("cart emptied", taps=taps, left=len(read["rows"]))
         if read["rows"]:
@@ -232,6 +243,9 @@ class Blinkit(Browser):
         item_total, result.total = _bill(read["bill"], r"items? total"), _bill(read["bill"], r"grand total|to pay")
         if item_total is None:
             result.problems.append("could not read the item total")
+        elif not _adds_up(read["rows"], item_total):
+            log.info("item total differs from the rows", rows=len(read["rows"]))
+            result.problems.append(f"the cart's item total (₹{item_total:g}) isn't what its items add up to")
         else:
             result.item_total = item_total
         if result.total is None:
@@ -264,35 +278,28 @@ class Blinkit(Browser):
         if cart.total not in shown:
             log.info("payment amount differs", total=cart.total, shown=sorted(shown))
             return f"the payment page doesn't show ₹{cart.total:g}"
+        if not self._pay_now():
+            return "the payment page has no Pay Now button"
         return None
 
-    def place(self, cart: Cart) -> str | None:
+    def _pay_now(self) -> Locator | None:
         pay = self.page.locator("button, [class*=Zpayments__Button]").filter(has_text=PAY_NOW).filter(visible=True)
         if not pay.count():
             pay = self.page.frame_locator(PAYMENT).get_by_text(PAY_NOW).filter(visible=True)
-        if not pay.count():
-            return "no Pay Now button"
-        pay.first.click()
+        return pay.first if pay.count() else None
+
+    def place(self, cart: Cart) -> str | None:
+        if not (pay := self._pay_now()):
+            raise NotPlaced("the Pay Now button went away")
+        pay.click()
         log.info("tapped", button="Pay Now")
         self.page.wait_for_timeout(15_000)
         return None
 
-    def confirm(self, total: float, since: datetime) -> bool:
-        for _ in range(3):
-            self.goto("/account/orders")
-            latest = self.page.locator(ORDER_CARD).filter(has_text=AMOUNT).filter(has_text=PLACED).first
-            if self._wait(latest, 15):
-                text = text_of(latest)
-                amount, placed = AMOUNT.search(text), _placed(text, datetime.now())
-                log.info(
-                    "latest order",
-                    amount=amount and money(amount.group(1)),
-                    placed=placed and placed.isoformat(),
-                    total=total,
-                )
-                if amount and placed and money(amount.group(1)) == total and placed >= since - timedelta(minutes=1):
-                    return True
-            else:
-                log.info("no order on the orders page")
-            self.page.wait_for_timeout(5000)
-        return False
+    def _latest_order(self) -> tuple[float, datetime] | None:
+        latest = self.page.locator(ORDER_CARD).filter(has_text=AMOUNT).filter(has_text=PLACED).first
+        if not self._wait(latest, 15):
+            return None
+        text = text_of(latest)
+        amount, placed = AMOUNT.search(text), _placed(text, datetime.now())
+        return (money(amount.group(1)), placed) if amount and placed else None

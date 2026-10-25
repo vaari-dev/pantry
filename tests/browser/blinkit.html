@@ -2,7 +2,8 @@
 <!-- Blinkit, as far as shops/blinkit.py reads it. State lives in localStorage.shop: {items, orders, cfg};
      localStorage.auth holds the login. cfg: limits ({product: n}: more taps show the "can't add more"
      toast), sizes ({product: size} search shows instead), elsewhere (the cart delivers to another
-     address), noCash (cash is disabled), cashIgnored (a cash tap selects nothing), payShows (the amount the payment page shows instead). -->
+     address), noCash (cash is disabled), cashIgnored (a cash tap selects nothing), payShows (the amount the payment page shows instead),
+     noPayNow (the payment page has no Pay Now), combo (a ₹50 cart row the driver doesn't know), names ({id: name} search shows instead). -->
 <html><head><meta charset="utf-8"><title>Blinkit</title>
 <style>.toast:not(.on), .modal:not(.on), #cart:not(.on), #pay:not(.on) { display: none }</style></head><body>
 <header>
@@ -34,7 +35,8 @@ const PRODUCTS = {
 const load = () => JSON.parse(localStorage.shop || '{"items":{},"orders":[],"cfg":{}}');
 const save = s => { localStorage.shop = JSON.stringify(s); render(); };
 const $ = id => document.getElementById(id);
-const total = s => Object.entries(s.items).reduce((t, [k, q]) => t + PRODUCTS[k].price * q, 0);
+const combo = s => s.cfg.combo && Object.keys(s.items).length ? 50 : 0;
+const total = s => Object.entries(s.items).reduce((t, [k, q]) => t + PRODUCTS[k].price * q, combo(s));
 const bill = s => total(s) + 2;
 const stepper = (k, q) => `<span class="icon-minus" data-k="${k}">-</span><div>${q}</div><span class="icon-plus" data-k="${k}">+</span>`;
 const bump = (k, by) => {
@@ -63,7 +65,7 @@ function search(s) {
   const q = new URLSearchParams(location.search).get("q").toLowerCase();
   $("main").innerHTML = Object.entries(PRODUCTS).filter(([, p]) => p.name.toLowerCase().includes(q.split(" ")[0]))
     .map(([k, p]) => `<div role="button" tabindex="0" id="${k}"><img src="/img/${k}.png">` +
-      (p.ad ? "<div>Ad</div>" : "") + `<div>8 MINS</div><div class="tw-line-clamp-2">${p.name}</div>` +
+      (p.ad ? "<div>Ad</div>" : "") + `<div>8 MINS</div><div class="tw-line-clamp-2">${s.cfg.names?.[k] ?? p.name}</div>` +
       `<div>${s.cfg.sizes?.[p.name] ?? p.size}</div><div>₹${p.price}</div>` +
       (p.mrp ? `<div style="text-decoration: line-through">₹${p.mrp}</div>` : "") +
       (s.items[k] ? stepper(k, s.items[k]) : `<div role="button" data-add="${k}">ADD</div>`) + "</div>")
@@ -78,6 +80,7 @@ function drawCart(s) {
     Object.entries(s.items).map(([k, q]) => `<div class="DefaultProductCard__Container-sc-d"><div>${PRODUCTS[k].name}</div>` +
       `<div>${PRODUCTS[k].size}</div>` + (PRODUCTS[k].mrp ? `<div style="text-decoration: line-through">₹${PRODUCTS[k].mrp * q}</div>` : "") +
       `<div>₹${PRODUCTS[k].price * q}</div>${stepper(k, q)}</div>`).join("") +
+    (combo(s) ? '<div class="ComboCard__Container-sc-k"><div>Snack Combo</div><div>₹50</div></div>' : "") +
     `<div class="BillCard__BillItemContainer-sc-b"><div>Items total</div><div>₹${total(s)}</div></div>` +
     `<div class="BillCard__BillItemContainer-sc-b"><div>Delivery charge</div><div>₹25</div><div>FREE</div></div>` +
     `<div class="BillCard__BillItemContainer-sc-b"><div>Handling charge</div><div>₹2</div></div>` +
@@ -86,6 +89,7 @@ function drawCart(s) {
   $("proceed").onclick = () => {
     $("cart").classList.remove("on");  // the shop's payment page replaces the cart
     $("pay").classList.add("on");
+    $("pay-now").hidden = !!s.cfg.noPayNow;
     const cash = s.cfg.noCash ? '<div title="Cash" disabled><div role="button" aria-disabled="true">Cash</div></div>'
       : s.cfg.cashIgnored ? '<div title="Cash"><div role="button" aria-checked="false">Cash</div></div>'
       : '<div title="Cash"><div role="button" aria-checked="false" onclick="parent.cash = true; this.ariaChecked = true">Cash</div></div>';

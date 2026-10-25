@@ -181,6 +181,7 @@ class Bot:
                 log.warning("saved pick dropped", exc_info=True)
         self.holds: dict[str, threading.Timer] = {}  # household id -> the timer that places its basket
         self.replies: dict[int, queue.Queue] = {}
+        self.logging_in: set[int] = set()  # setup answered, its login queued
         self.wants_setup: dict[int, str] = {}  # uid -> first name: asked for /setup before being let in
         self.lock = threading.Lock()
         self.alerted: dict[tuple[int, str], datetime] = {}
@@ -267,6 +268,7 @@ class Bot:
             name = job.__name__.lstrip("_")
             clear_contextvars()
             bind_contextvars(**{**context, "job": name})
+            queued = {a.id: a.shop for a in args if isinstance(a, Household)}
             # settings or membership may have changed while queued
             args = tuple(self.accounts.get(a.id) if isinstance(a, Household) else a for a in args)
             if hh := next((a for a in args if isinstance(a, Household)), None):
@@ -275,6 +277,11 @@ class Bot:
             try:
                 if None in args:
                     log.info("job dropped", reason="household gone")
+                    continue
+                if job == self._order and hh.shop != queued[hh.id]:  # asked for at the shop it left
+                    log.info("job dropped", reason="shop changed")
+                    self._say(args[0], f"🏪 Orders now go to {_shop(hh).NAME}, so that wasn't ordered; send it "
+                                       "again, or see /basket.")  # fmt: skip
                     continue
                 if self.stopping.is_set():
                     log.info("job dropped", reason="restarting")
@@ -285,7 +292,7 @@ class Bot:
                 log.info("job done", seconds=round(time.monotonic() - started, 1))
             except ShopError as e:
                 log.warning("job stopped by the shop", error=e.logged)
-                self._say(args[0], f"❌ Couldn't order: {e}.")
+                self._say(args[0], f"❌ Couldn't order{f' on {_shop(hh).NAME}' if hh else ''}: {e}.")
             except Exception:
                 log.exception("job failed")
                 self._say(args[0], "Something went wrong. Nothing was ordered unless you got a ✅.")
@@ -678,7 +685,7 @@ class Bot:
 
     def _start_setup(self, uid: int, name: str, shop: str | None = None) -> None:
         """Setup runs in the private chat, whose id is the user's id. shop: None asks, if there is a choice."""
-        if uid in self.replies:
+        if uid in self.replies or uid in self.logging_in:
             return self._say(uid, "Setup is already running: answer its last question, or send /cancel.")
         self.replies[uid] = queue.Queue()
         threading.Thread(target=self._setup, args=(uid, name, shop), daemon=True).start()
@@ -776,10 +783,14 @@ class Bot:
 
     def _shop_button(self, cb: dict, hh: Household | None, shop: str) -> None:
         user = cb.get("from", {})
-        if not hh or user.get("id") != hh.owner or shop not in self._offered(hh.owner):
+        if not hh or user.get("id") != hh.owner:
             return self.tg.answer(cb["id"], "Only the account's owner can change its shop.")
+        if shop not in self._offered(hh.owner):
+            return self.tg.answer(cb["id"], "That shop isn't offered yet.")
         if msg := cb.get("message"):
             self.tg.remove_buttons(msg["chat"]["id"], msg["message_id"])
+        if shop == hh.shop:
+            return self.tg.answer(cb["id"], f"Orders already go to {SHOPS[shop].NAME}.")
         if hh.logged_in(shop):
             self.tg.answer(cb["id"], f"Switching to {SHOPS[shop].NAME} …")
             return self._queue(self._switch, (msg or {}).get("chat", {}).get("id", hh.owner), hh, shop)
@@ -892,11 +903,13 @@ class Bot:
         busy = " right after the order in progress" if self.jobs.unfinished_tasks else ""
         shop_name = SHOPS[shop].NAME
         self._say(uid, f"Thanks! Asking {shop_name} for a login code for ••••••{phone[-4:]}{busy}…", markup=NO_KEYBOARD)
+        self.logging_in.add(uid)
         self._queue(self._login, uid, name, phone, shop)
 
     def _login(self, uid: int, name: str, phone: str, shop: str) -> None:
         session = self.cfg.data_dir / f".login-{uid}.json"
         self.replies[uid] = queue.Queue()
+        self.logging_in.discard(uid)
         try:
             with orders.login_browser(self.cfg, shop, session) as b:
                 b.request_otp(phone)

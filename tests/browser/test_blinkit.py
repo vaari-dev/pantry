@@ -9,7 +9,7 @@ from grocerybot import orders
 from grocerybot.accounts import Accounts
 from grocerybot.catalog import Product
 from grocerybot.config import Config
-from grocerybot.shops import Rules, ShopError, blinkit
+from grocerybot.shops import NotPlaced, Rules, ShopError, blinkit
 from grocerybot.shops.blinkit import Blinkit, _placed
 
 RULES = Rules("Home", "T6/503", 900)
@@ -120,6 +120,7 @@ def test_over_the_limit_is_a_problem(shop):
         ({"noCash": True}, "cash on delivery is not offered for this order"),
         ({"cashIgnored": True}, "could not select cash on delivery"),  # Pay Now would pay the default, maybe UPI
         ({"payShows": 99}, "the payment page doesn't show ₹22"),
+        ({"noPayNow": True}, "the payment page has no Pay Now button"),  # before the attempt is recorded
     ],
 )
 def test_payment_stops_before_paying(shop, cfg, problem):
@@ -128,6 +129,30 @@ def test_payment_stops_before_paying(shop, cfg, problem):
     _, cart = order(b, KINLEY)
     assert b.ready(cart) == problem
     assert b.page.evaluate("JSON.parse(localStorage.shop).orders") == []
+
+
+def test_pay_now_gone_by_the_tap_is_not_placed(shop):
+    b, given = shop
+    given()
+    _, cart = order(b, KINLEY)
+    assert b.ready(cart) is None
+    b.page.evaluate("() => document.getElementById('pay-now').hidden = true")
+    with pytest.raises(NotPlaced):
+        b.place(cart)
+
+
+def test_a_cart_row_not_read_is_a_problem(shop):
+    """Review, 25 Oct: a row the selectors miss was neither matched nor checked, yet paid for."""
+    b, given = shop
+    given(combo=True)
+    _, cart = order(b, KINLEY, qty=2)
+    assert cart.problems == ["the cart's item total (₹90) isn't what its items add up to"]
+
+
+def test_a_renamed_product_is_skipped_for_its_backup(shop):
+    b, given = shop
+    given(names={"101": "Kinley Club Soda"})
+    assert b.add(KINLEY, 1) == "the shop changed this product"
 
 
 def test_logged_out(shop):

@@ -2,16 +2,15 @@
 
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from urllib.parse import urlsplit
 
 import structlog
 from playwright.sync_api import Locator, Request
-from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from ..catalog import Product, squash
 from . import base
-from .base import LOGIN_EXPIRED, STOCK, STRUCK, Browser, Cart, Rules, ShopError, core, match_by_name, money, text_of
+from .base import LOGIN_EXPIRED, STRUCK, Browser, Cart, NotPlaced, Rules, ShopError, core, match_by_name, money, text_of
 
 WALLET = re.compile(r"\bCash\b(?! on [Dd]elivery)")  # the prepaid wallet
 COINS = re.compile(r"\bCoins\b")  # reward coins: never used
@@ -23,6 +22,7 @@ LOGGED_OUT = "[data-testid=login-btn]"
 CART_COUNT = "[data-testid=cart-items-number]"
 CART = "[data-testid=cart-screen]"
 CART_API = "/cfs/api/v1/cart"
+STOCK = re.compile(r"out of stock|sold out|unavailable|back in stock", re.I)
 REMOVE = re.compile(r"^\s*(remove|delete)(\s+item)?\s*$", re.I)
 # The cart shows the address and wallet balance: only known words are logged.
 LOGGABLE = re.compile(rf"^(item total|to pay|remove|delete)$|{STOCK.pattern}", re.I)
@@ -107,6 +107,9 @@ class Zepto(Browser):
     lines: a.innerText.split('\\n').map(s => s.trim()).filter(Boolean)}));
 }"""
     )
+
+    def _image(self, src: str) -> str:
+        return src.replace("f-auto", "f-jpg")
 
     def _opened(self) -> None:
         self._carts: list[tuple[float, Request]] = []  # the shop app's own cart calls, newest last
@@ -234,16 +237,7 @@ class Zepto(Browser):
         self._open_cart()
         cart = self.page.locator(CART).first
         tap = cart.locator("[data-testid$=minus-btn]").or_(cart.get_by_role("button", name=REMOVE)).first
-        taps = 0
-        while tap.count() and taps < 100:
-            before = text_of(cart)
-            try:
-                tap.click(timeout=10_000)
-            except PlaywrightTimeout:
-                break
-            taps += 1
-            if not self._changed(cart, before):
-                break
+        taps = self._tap_away(cart, tap)
         left = text_of(cart)
         # The count, not the cart's words: an emptied cart can say "All items are out of stock".
         stuck = not self._wait(badge, 10, "hidden")
@@ -354,7 +348,7 @@ class Zepto(Browser):
     def _place_cod(self, total: float) -> str | None:
         """None once "Pay ₹total on delivery" is tapped, else where it stopped."""
         if not (button := self._pay_button(PAY, total, 5)):
-            return f"the cart's Pay ₹{total:g} button went away"
+            raise NotPlaced(f"the cart's Pay ₹{total:g} button went away")
         label = " ".join(button.inner_text().split())
         button.click()
         log.info("tapped", button=label)
@@ -399,17 +393,9 @@ class Zepto(Browser):
             )
             self.page.wait_for_timeout(3000)
 
-    def confirm(self, total: float, since: datetime) -> bool:
-        for _ in range(3):
-            self.goto("/account/orders")
-            body = self.page.locator("body").inner_text().split("Log Out", 1)[-1]
-            m = re.search(r"Order [^\n]+?\s+₹([\d,.]+)\s+Placed at (\d+)\w* (\w+ \d{4}), (\d+:\d+ [ap]m)", body)
-            if m:
-                placed = datetime.strptime(f"{m.group(2)} {m.group(3)} {m.group(4)}", "%d %b %Y %I:%M %p")
-                log.info("latest order", amount=money(m.group(1)), placed=placed.isoformat(), total=total)
-                if money(m.group(1)) == total and placed >= since - timedelta(minutes=1):
-                    return True
-            else:
-                log.info("no order on the orders page")
-            self.page.wait_for_timeout(5000)
-        return False
+    def _latest_order(self) -> tuple[float, datetime] | None:
+        body = self.page.locator("body").inner_text().split("Log Out", 1)[-1]
+        m = re.search(r"Order [^\n]+?\s+₹([\d,.]+)\s+Placed at (\d+)\w* (\w+ \d{4}), (\d+:\d+ [ap]m)", body)
+        if not m:
+            return None
+        return money(m.group(1)), datetime.strptime(f"{m.group(2)} {m.group(3)} {m.group(4)}", "%d %b %Y %I:%M %p")

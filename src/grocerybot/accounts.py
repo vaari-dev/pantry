@@ -2,15 +2,18 @@
 
 households.json:
   {"households": {"<id>": {"owner": uid, "daily_cap", "shop": "zepto",
-                           "shops": {"zepto": {"address_label", "address_match", "min_order", "place_orders"}}}},
+                           "address_label", "address_match", "min_order", "place_orders",
+                           "shops": {"blinkit": {"address_label", ...}}}},
    "users": {"<uid>": {"name": "Asha", "household": "<id>" | null}},
    "invites": {"<code>": {"household": "<id>", "expires": "<iso time>"}}}
 
 households/<id>/: ledger.json (basket, orders, the daily limit: all shops), and per shop
-<shop>/session.json, <shop>/catalog.json (the products picked there).
+session.json, catalog.json (the products picked there): beside the ledger for Zepto, in <shop>/ for others.
+
+Zepto's settings and files stay where they were before Blinkit (Oct 2026), so an older version still
+reads them as they are.
 """
 
-import contextlib
 import os
 import re
 import secrets
@@ -28,6 +31,15 @@ INVITE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 EMPTY = {"households": {}, "users": {}, "invites": {}}
 DEFAULTS = {"daily_cap": 1000.0, "shop": "zepto"}
 SHOP_DEFAULTS = {"address_label": "", "address_match": "", "min_order": 100.0, "place_orders": True}
+FIRST = "zepto"
+
+
+def _settings(h: dict, shop: str) -> dict:
+    return h if shop == FIRST else h.setdefault("shops", {}).setdefault(shop, {})
+
+
+def _connected(h: dict) -> tuple[str, ...]:
+    return (FIRST,) * ("address_label" in h) + tuple(h.get("shops", {}))
 
 
 @dataclass(frozen=True)
@@ -44,8 +56,11 @@ class Household:
     min_order: float  # the shop charges a delivery fee below this
     place_orders: bool
 
+    def _dir(self, shop: str) -> Path:
+        return self.dir if shop == FIRST else self.dir / shop
+
     def session(self, shop: str) -> Path:
-        return self.dir / shop / "session.json"
+        return self._dir(shop) / "session.json"
 
     def logged_in(self, shop: str) -> bool:
         return self.session(shop).exists()
@@ -59,7 +74,7 @@ class Household:
         return self.dir / "debug"
 
     def catalog(self, shop: str | None = None) -> Catalog:
-        return Catalog(self.dir / (shop or self.shop) / "catalog.json")
+        return Catalog(self._dir(shop or self.shop) / "catalog.json")
 
     def ledger(self) -> Ledger:
         return Ledger(self.dir / "ledger.json")
@@ -78,22 +93,6 @@ class Accounts:
     def __init__(self, data_dir: Path, admin: int):
         self.root, self.admin = data_dir / "households", admin
         self.path = data_dir / "households.json"
-        self._migrate()
-
-    def _migrate(self) -> None:
-        """Before Blinkit (Oct 2026) a household had one shop: its settings at the top, its files beside the ledger."""
-        if all("shops" in h for h in self._read()["households"].values()):
-            return
-        with self._edit() as data:
-            for hid, h in data["households"].items():
-                if "shops" in h:
-                    continue
-                h["shop"], h["shops"] = "zepto", {"zepto": {k: h.pop(k) for k in SHOP_DEFAULTS if k in h}}
-                for name in ("session.json", "catalog.json"):
-                    if (old := self.root / hid / name).exists():
-                        (self.root / hid / "zepto").mkdir(exist_ok=True)
-                        with contextlib.suppress(FileNotFoundError):  # moved by a process starting alongside
-                            os.replace(old, self.root / hid / "zepto" / name)
 
     def _read(self) -> dict:
         return {**EMPTY, **store.read(self.path, {})}
@@ -106,9 +105,9 @@ class Accounts:
             return None
         members = tuple(int(u) for u, user in data["users"].items() if user["household"] == hid)
         settings = {**DEFAULTS, **h}
-        shop = {**SHOP_DEFAULTS, **h["shops"].get(settings["shop"], {})}
+        shop = {**SHOP_DEFAULTS, **(h if settings["shop"] == FIRST else h.get("shops", {}).get(settings["shop"], {}))}
         return Household(
-            hid, self.root / hid, h["owner"], members, tuple(h["shops"]), settings["daily_cap"], settings["shop"],
+            hid, self.root / hid, h["owner"], members, _connected(h), settings["daily_cap"], settings["shop"],
             *(shop[k] for k in SHOP_DEFAULTS),
         )  # fmt: skip
 
@@ -145,14 +144,16 @@ class Accounts:
             if data["households"].get(hid, {}).get("owner") != uid:
                 _leave(self.root, data, uid)
                 hid = user["household"] = secrets.token_hex(4)
-                data["households"][hid] = {**DEFAULTS, "owner": uid, "shops": {}}
+                data["households"][hid] = {**DEFAULTS, "owner": uid}
             h = data["households"][hid]
+            if shop not in _connected(h):
+                _settings(h, shop).update({**SHOP_DEFAULTS, "place_orders": ordering})
             h["shop"] = shop
-            settings = h["shops"].setdefault(shop, {**SHOP_DEFAULTS, "place_orders": ordering})
-            settings.update(address_label=address_label, address_match=address_match)
-            (self.root / hid / shop).mkdir(parents=True, exist_ok=True)
-            os.replace(session, self.root / hid / shop / "session.json")
-        return self._household(data, hid)
+            _settings(h, shop).update(address_label=address_label, address_match=address_match)
+            hh = self._household(data, hid)
+            hh.state_file.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(session, hh.state_file)
+        return hh
 
     def update(self, hid: str, **settings) -> None:
         """The household's settings, and those of the shop it orders from."""
@@ -161,12 +162,12 @@ class Accounts:
         with self._edit() as data:
             h = data["households"][hid]
             for key, value in settings.items():
-                (h if key in DEFAULTS else h["shops"][h["shop"]])[key] = value
+                (h if key in DEFAULTS else _settings(h, h.get("shop", FIRST)))[key] = value
 
     def switch(self, hid: str, shop: str) -> Household:
         with self._edit() as data:
             h = data["households"][hid]
-            if shop not in h["shops"]:
+            if shop not in _connected(h):
                 raise ValueError(f"{shop} is not connected")
             h["shop"] = shop
         return self._household(data, hid)
@@ -211,5 +212,5 @@ def _leave(root: Path, data: dict, uid: int) -> None:
         shutil.rmtree(root / hid, ignore_errors=True)
     elif data["households"][hid]["owner"] == uid:
         data["households"][hid]["owner"] = others[0]
-        for session in (root / hid).glob("*/session.json"):
+        for session in [*(root / hid).glob("session.json"), *(root / hid).glob("*/session.json")]:
             session.unlink()
