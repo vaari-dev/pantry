@@ -678,6 +678,8 @@ class Bot:
 
     def _start_setup(self, uid: int, name: str, shop: str | None = None) -> None:
         """Setup runs in the private chat, whose id is the user's id. shop: None asks, if there is a choice."""
+        if uid in self.replies:
+            return self._say(uid, "Setup is already running: answer its last question, or send /cancel.")
         self.replies[uid] = queue.Queue()
         threading.Thread(target=self._setup, args=(uid, name, shop), daemon=True).start()
 
@@ -785,8 +787,12 @@ class Bot:
         self._start_setup(hh.owner, user.get("first_name", ""), shop)
 
     def _switch(self, chat_id: int, hh: Household, shop: str) -> None:
-        """On the worker, so no order is half-way. Items never picked at the new shop leave the basket,
-        named, and open picks of the old shop's products end."""
+        """On the worker, so no order is half-way."""
+        self._leave_shop(hh)
+        self._arrive(chat_id, self.accounts.switch(hh.id, shop))
+
+    def _leave_shop(self, hh: Household) -> None:
+        """Before orders go elsewhere: no held order, Order now or open pick of the old shop's products is left."""
         self._unhold(hh)
         self._withdraw(hh)
         with self.lock:
@@ -796,8 +802,10 @@ class Bot:
         for p in ended:
             for mid in filter(None, (i for *_, ids in p.asks.values() for i in ids)):
                 self.tg.remove_buttons(p.chat_id, mid)
-        hh = self.accounts.switch(hh.id, shop)
-        log.info("shop switched", shop=shop, picks_ended=len(ended))
+        log.info("shop left", shop=hh.shop, picks_ended=len(ended))
+
+    def _arrive(self, chat_id: int, hh: Household) -> None:
+        """Items never picked at the new shop leave the basket, named."""
         catalog, basket = hh.catalog(), hh.ledger().basket()
         unpicked = [key for key, _ in basket if not catalog.options(key)]
         hh.ledger().set_basket([(k, q) for k, q in basket if k not in unpicked])
@@ -901,6 +909,9 @@ class Bot:
                 log.info("logged in")
                 self._say(uid, "✅ Logged in!\n\n📍 Step 3 of 3: where should orders go?")
                 label, match = self._choose_address(uid, b)
+            before = self.accounts.household_of(uid)
+            if moving := before is not None and before.owner == uid and before.shop != shop:
+                self._leave_shop(before)
             hh = self.accounts.connect(uid, name, shop, label, match, session, ordering=not SHOPS[shop].TRIAL)
             log.info("household connected", household_id=hh.id)
             paid = (
@@ -915,6 +926,8 @@ class Bot:
                 "(/settings). Want family to order too? Send /invite.",
                 markup=NO_KEYBOARD,
             )
+            if moving:
+                self._arrive(uid, hh)
         except (SetupStopped, ShopError) as e:
             log.info("setup stopped", error=getattr(e, "logged", str(e)))
             self._stopped(uid, str(e))

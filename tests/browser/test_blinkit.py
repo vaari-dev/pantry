@@ -118,6 +118,7 @@ def test_over_the_limit_is_a_problem(shop):
     ("cfg", "problem"),
     [
         ({"noCash": True}, "cash on delivery is not offered for this order"),
+        ({"cashIgnored": True}, "could not select cash on delivery"),  # Pay Now would pay the default, maybe UPI
         ({"payShows": 99}, "the payment page doesn't show ₹22"),
     ],
 )

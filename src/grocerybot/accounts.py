@@ -10,6 +10,7 @@ households/<id>/: ledger.json (basket, orders, the daily limit: all shops), and 
 <shop>/session.json, <shop>/catalog.json (the products picked there).
 """
 
+import contextlib
 import os
 import re
 import secrets
@@ -91,7 +92,8 @@ class Accounts:
                 for name in ("session.json", "catalog.json"):
                     if (old := self.root / hid / name).exists():
                         (self.root / hid / "zepto").mkdir(exist_ok=True)
-                        os.replace(old, self.root / hid / "zepto" / name)
+                        with contextlib.suppress(FileNotFoundError):  # moved by a process starting alongside
+                            os.replace(old, self.root / hid / "zepto" / name)
 
     def _read(self) -> dict:
         return {**EMPTY, **store.read(self.path, {})}

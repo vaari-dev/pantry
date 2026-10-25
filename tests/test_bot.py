@@ -711,3 +711,29 @@ def test_settings_and_alerts_name_the_shop(bot, shop):
     hh.ledger().begin([("bread", 1)], 60, "blinkit")
     bot._resume()
     sent(bot, "⚠️ An order (₹60", having="Check the Blinkit app; it was NOT retried.")
+
+
+def test_connecting_another_shop_leaves_the_old_one_like_a_switch(bot, shop):
+    """Review, 25 Oct: setup moved orders to the new shop with the old shop's hold and picks still live."""
+    hh, _ = shop
+    bot._on_message(message("2 bread"))
+    said(bot, "⏳ I'll order this")
+    bot._start_setup(NEW, "Asha", "blinkit")  # as the owner's Connect Blinkit button does
+    said(bot, "Let's connect your Blinkit account")
+    bot._on_message(message(contact={"phone_number": "9876543210"}))
+    said(bot, "📩 Step 2")
+    bot._on_message(message("123456"))
+    bot._on_message(message(said(bot, "Your saved addresses")["keyboard"][0][0]["text"]))
+    sent(bot, "🏪 Orders now go to Blinkit", having="taken out of the basket: bread")
+    hh = bot.accounts.get(hh.id)
+    assert (hh.shop, hh.ledger().basket(), hh.ledger().hold(), bot.holds) == ("blinkit", [], None, {})
+
+
+def test_a_second_setup_waits_for_the_first(bot):
+    bot.accounts.allow(NEW)
+    bot._on_message(message("/setup"))
+    said(bot, "Let's connect")
+    bot._start_setup(NEW, "Asha", "zepto")
+    said(bot, "Setup is already running")
+    bot._on_message(message(contact={"phone_number": "9876543210"}))
+    said(bot, "📩 Step 2")

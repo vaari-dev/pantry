@@ -28,6 +28,10 @@ CART_BUTTON = "[class*=CartButton__Button], [class*=CartButton__Container]"
 CART = "[class*=CartWrapper__CartContainer], [class*=CartDrawer], [class*=CartSidebar], .cart-modal-rn"
 PROCEED = re.compile(r"^\s*proceed", re.I)
 PAYMENT = "#payment_widget"
+SELECTED = "[aria-checked=true], [aria-selected=true], [aria-pressed=true], input:checked"
+SELECTED_JS = f"el => el.matches({SELECTED!r}) || !!el.querySelector({SELECTED!r})"
+STATES_JS = """el => [el, ...el.querySelectorAll('*')].flatMap(e => [...e.attributes]
+    .filter(a => a.name.startsWith('aria-') && /^(true|false)$/.test(a.value)).map(a => a.name + '=' + a.value))"""
 PAY_NOW = re.compile(r"^\s*pay now\s*$", re.I)
 ORDER_CARD = "div[class*=BffOrderHistory] > div > div"
 CLOSED = re.compile(r"sorry, can't take your order|currently unavailable|store is closed", re.I)
@@ -253,7 +257,10 @@ class Blinkit(Browser):
         cash.locator("[role=button]").or_(cash).first.click()
         log.info("tapped", button="Cash")
         self.page.wait_for_timeout(2000)
-        shown = {money(m) for m in AMOUNT.findall(text_of(self.page.locator("body")) + text_of(widget.locator("body")))}
+        if not cash.evaluate(SELECTED_JS):  # else Pay Now pays by the account's default, maybe UPI or a card
+            log.info("cash not selected", states=cash.evaluate(STATES_JS))
+            return "could not select cash on delivery"
+        shown = {money(m) for m in AMOUNT.findall(text_of(widget.locator("body")))}
         if cart.total not in shown:
             log.info("payment amount differs", total=cart.total, shown=sorted(shown))
             return f"the payment page doesn't show ₹{cart.total:g}"

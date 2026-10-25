@@ -2,7 +2,7 @@
 <!-- Blinkit, as far as shops/blinkit.py reads it. State lives in localStorage.shop: {items, orders, cfg};
      localStorage.auth holds the login. cfg: limits ({product: n}: more taps show the "can't add more"
      toast), sizes ({product: size} search shows instead), elsewhere (the cart delivers to another
-     address), noCash (cash is disabled), payShows (the amount the payment page shows instead). -->
+     address), noCash (cash is disabled), cashIgnored (a cash tap selects nothing), payShows (the amount the payment page shows instead). -->
 <html><head><meta charset="utf-8"><title>Blinkit</title>
 <style>.toast:not(.on), .modal:not(.on), #cart:not(.on), #pay:not(.on) { display: none }</style></head><body>
 <header>
@@ -87,7 +87,8 @@ function drawCart(s) {
     $("cart").classList.remove("on");  // the shop's payment page replaces the cart
     $("pay").classList.add("on");
     const cash = s.cfg.noCash ? '<div title="Cash" disabled><div role="button" aria-disabled="true">Cash</div></div>'
-      : '<div title="Cash"><div role="button" onclick="parent.cash = true">Cash</div></div>';
+      : s.cfg.cashIgnored ? '<div title="Cash"><div role="button" aria-checked="false">Cash</div></div>'
+      : '<div title="Cash"><div role="button" aria-checked="false" onclick="parent.cash = true; this.ariaChecked = true">Cash</div></div>';
     $("payment_widget").srcdoc = `<div title="UPI"><div role="button">UPI</div></div>${cash}<div>To pay ₹${s.cfg.payShows ?? bill(s)}</div>`;
   };
 }
