@@ -54,7 +54,9 @@ LOGGED_OUT = "[data-testid=login-btn]"
 LOGIN_EXPIRED = "the shop login has expired; the account's owner can /setup again"
 CART_COUNT = "[data-testid=cart-items-number]"
 CART = "[data-testid=cart-screen]"
-CART_API = "/cfs/api/v1/cart"
+# The shop app's cart replies: "create" when the cart was empty, then PUT for each change.
+CART_API = {("PUT", "/cfs/api/v1/cart"), ("POST", "/cfs/api/v1/cart/create")}
+ORDER_API = ("POST", "/api/v3/order/")  # Place Order's own call
 REMOVE = re.compile(r"^\s*(remove|delete)(\s+item)?\s*$", re.I)
 STOCK = re.compile(r"out of stock|sold out|unavailable|back in stock", re.I)
 # The cart shows the address and wallet balance: only known words are logged.
@@ -262,6 +264,8 @@ class Browser:
         self._carts: list[tuple[float, Request]] = []  # the shop app's own cart calls, newest last
         self._cart: dict | None = None
         self._cart_at = 0.0
+        self._orders: list[Request] = []
+        self.order_reply: dict | None = None
         self.page.on("requestfinished", self._seen)  # not "response": a navigation can cut its body off forever
         self.page.set_default_timeout(TIMEOUT_MS)
         return self
@@ -286,8 +290,11 @@ class Browser:
 
     def _seen(self, req: Request) -> None:
         """Keeps it, unread: reading the body here, inside Playwright's event, is not safe."""
-        if req.method == "PUT" and urlsplit(req.url).path == CART_API:
+        call = (req.method, urlsplit(req.url).path)
+        if call in CART_API:
             self._carts.append((time.monotonic(), req))
+        elif call == ORDER_API:
+            self._orders.append(req)
 
     def _cart_api(self) -> dict | None:
         """The latest cart reply, as far as the bot reads it: never its address or wallet parts.
@@ -532,6 +539,8 @@ class Browser:
                 continue
             seen.add(c["url"])
             price, mrp = _prices(lines, c["struck"])
+            if not price:
+                log.info("card without a price", lines=lines)
             image = "" if "placeholder" in c["image"].lower() else c["image"].replace("f-auto", "f-jpg")
             found.append(Product(*card, c["url"], price, image, mrp))
             if len(found) == limit:
@@ -558,18 +567,35 @@ class Browser:
                 break
         else:
             return "the shop didn't take it into the cart"
-        for _ in range(qty - 1):
-            self.page.locator(PLUS).first.evaluate("b => b.click()")
-            self.page.wait_for_timeout(1000)
+        for n in range(1, qty):
+            if not self._one_more():
+                log.info("quantity not raised", product=product.name, qty=n, asked=qty)
+                break
         badge = self.page.locator(CART_COUNT)
         log.info("added", product=product.name, qty=qty, cart_count=badge.first.inner_text() if badge.count() else None)
         return None
 
+    def _one_more(self) -> bool:
+        """Taps + until the cart count moves, twice at most. False: the shop's per-order limit, or lost taps;
+        the cart check tells which."""
+        badge = self.page.locator(CART_COUNT).first
+        before = _text(badge)
+        for _ in range(2):
+            self.page.locator(PLUS).first.evaluate("b => b.click()")
+            if self._changed(badge, before, 8):  # long: a slow tap retried would add two
+                return True
+        return False
+
     def _open_cart(self) -> dict:
+        opened = time.monotonic()
         self.page.locator("[data-testid=cart-btn]").first.click()
         cart = self.page.locator(CART).first
         if not self._wait(cart, TIMEOUT_MS // 1000):
             raise ShopError("the cart did not open")
+        for _ in range(20):  # opening it asks the shop for the cart; its reply is the better evidence
+            if self._cart_at >= opened or (self._carts and self._carts[-1][0] >= opened):
+                break
+            self.page.wait_for_timeout(250)
         loaded = self._wait(cart.locator("[data-testid$=cart-qty]").or_(cart.get_by_text("Item Total")).first, 10)
         read = self.page.evaluate(CART_JS)
         text = read["text"]
@@ -667,6 +693,7 @@ class Browser:
             if product is None:
                 result.problems.append(f"unexpected item in the cart: {' '.join(item['lines'][:2])}")
             elif item["qty"] != expected[product]:
+                seen.add(product)
                 result.problems.append(f"{product.name}: {item['qty']} in the cart, expected {expected[product]}")
             else:
                 seen.add(product)
@@ -719,7 +746,7 @@ class Browser:
         log.info("tapped", button="Place Order")
         self.page.wait_for_timeout(3000)
         self._skip_upsell("Place Order")
-        self.page.wait_for_timeout(15_000)  # "Confirming your order..."
+        self._await_order()
 
     def has_pay_button(self, total: float) -> bool:
         """Taps nothing."""
@@ -748,8 +775,31 @@ class Browser:
                 return f"no Pay ₹{total:g} on delivery button"
         pay.click()
         log.info("tapped", button="pay on delivery")
-        self.page.wait_for_timeout(15_000)  # "Confirming your order..."
+        self._await_order()
         return None
+
+    def _await_order(self, seconds: int = 30) -> None:
+        """Keeps the shop's reply to Place Order, as far as the bot reads it, before anything navigates."""
+        for _ in range(seconds * 4):
+            if self._orders:
+                break
+            self.page.wait_for_timeout(250)
+        else:
+            log.info("no order reply")
+            return
+        try:
+            data = self._orders[-1].response().json()
+            self.order_reply = {
+                "created": data.get("isOrderCreated") is True,
+                "status": data.get("status"),
+                "failure": data.get("failureReason"),
+                "item_total": data.get("itemTotalAmount"),
+                "wallet_used": data.get("walletBalanceUsed"),
+            }
+        except Exception as e:  # its shape is the shop's to change: evidence, never a failure
+            self.order_reply = {"unreadable": type(e).__name__}
+        log.info("order reply", **self.order_reply)
+        self.page.wait_for_timeout(10_000)  # "Confirming your order...": the page finishes it, as before
 
     def _pay_button(self, pattern: re.Pattern, total: float, seconds: int) -> Locator | None:
         """Only a button for exactly ₹total."""
@@ -785,6 +835,9 @@ class Browser:
             self.page.wait_for_timeout(3000)
 
     def confirm(self, total: float, since: datetime) -> bool:
+        """By the shop's reply to Place Order; without one, by the Orders page."""
+        if self.order_reply and "created" in self.order_reply:
+            return self.order_reply["created"]
         for _ in range(3):
             self.goto("/account/orders")
             body = self.page.locator("body").inner_text().split("Log Out", 1)[-1]
@@ -795,6 +848,7 @@ class Browser:
                 if _money(m.group(1)) == total and placed >= since - timedelta(minutes=1):
                     return True
             else:
-                log.info("no order on the orders page")
+                lines = [line for line in body.split("\n") if re.search(r"₹|Order|Placed|Delivered|Arriv", line)]
+                log.info("no order on the orders page", at=self._at(), lines=lines[:12])
             self.page.wait_for_timeout(5000)
         return False
