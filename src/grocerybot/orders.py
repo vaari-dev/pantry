@@ -22,7 +22,7 @@ class Outcome:
     item_total: float = 0
     waiting: bool = False
     held: bool = False
-    unconfirmed: bool = False  # tapped Place Order, but no such order on the Orders page
+    unconfirmed: bool = False  # tapped Place Order, but the shop did not confirm it
     over_limit: bool = False
     cod: bool = False
     estimated: bool = False  # item_total from catalog prices: the shop was not opened

@@ -2,8 +2,9 @@
 <!-- The shop, as far as shop.py reads it. State lives in localStorage.shop: {items, oos, cfg}.
      cfg: loggedOut, noRemove (out of stock rows without a Remove button), countsOos (the header
      count includes them), lag (ms before a tap lands), cartLoad (ms before the cart fills),
-     dropAdds (Add to Cart taps to ignore), sizes ({product: size} the product page shows instead),
-     limits ({product: n}: the most one order may have; more taps are ignored). -->
+     dropAdds (Add to Cart taps to ignore), dropPlus (+ taps to ignore), sizes ({product: size} the product page shows instead),
+     limits ({product: n}: the most one order may have; more taps are ignored), noCartReply (no cart calls),
+     orderReply (Place Order's reply in place of a created order's). -->
 <html><head><meta charset="utf-8"><title>Shop</title></head><body>
 <header>
   <button data-testid="login-btn" id="login" style="display:none">Login</button>
@@ -22,9 +23,14 @@ const PRODUCTS = {
   kajal: {name: "Colossal Kajal", size: "0.35g", card: "1 pc (0.35 g)", brand: "Maybelline", price: 199, mrp: 299},
 };
 const load = () => JSON.parse(localStorage.shop || '{"items":{},"oos":{},"cfg":{}}');
-const sync = s => fetch("/cfs/api/v1/cart", {method: "PUT", body: JSON.stringify({items: s.items, oos: s.oos, limits: s.cfg.limits ?? {}})})
-  .then(r => r.json());  // as the shop's app, which reads the reply before it moves on
-const save = s => { localStorage.shop = JSON.stringify(s); render(); return sync(s); };
+// As the shop's app: "create" for a cart that was empty, then PUT; it reads the reply before it moves on.
+const sync = (s, create) => s.cfg.noCartReply ? Promise.resolve() : fetch(create ? "/cfs/api/v1/cart/create" : "/cfs/api/v1/cart",
+  {method: create ? "POST" : "PUT", body: JSON.stringify({items: s.items, oos: s.oos, limits: s.cfg.limits ?? {}})})
+  .then(r => r.json());
+const save = s => {
+  const create = !Object.keys(load().items).length;
+  localStorage.shop = JSON.stringify(s); render(); return sync(s, create);
+};
 const later = f => setTimeout(f, load().cfg.lag ?? 300);
 const cartEl = document.getElementById("cart");
 
@@ -58,15 +64,20 @@ function drawCart(s) {
   }
   if (!Object.keys(s.items).length) html += "<div>All items are out of stock</div><div>₹65</div>";  // as the shop's, emptied
   if (total) html += `<label><input type="checkbox" checked> Zepto Cash ₹500</label>` +
-    `<div>Item Total</div><div>₹${total}</div><div>To Pay</div><div>₹0</div><div>Zepto Cash</div><div>₹${total}</div>`;
+    `<div>Item Total</div><div>₹${total}</div><div>To Pay</div><div>₹0</div><div>Zepto Cash</div><div>₹${total}</div>` +
+    `<button onclick="placeOrder(${total})">Place Order</button>`;
   cartEl.innerHTML = html;
 }
 
+window.placeOrder = total => later(() => fetch("/api/v3/order/", {method: "POST",
+  body: JSON.stringify({total, reply: load().cfg.orderReply})}).then(r => r.json())
+  .then(() => history.pushState({}, "", "/order/status/1")));  // a client-side move, as the shop's
 window.minus = k => later(() => { const s = load(); if (!--s.items[k]) delete s.items[k]; save(s); });
 window.remove = k => later(() => { const s = load(); delete s.items[k]; save(s); });
 document.getElementById("cart-btn").onclick = () => {
   cartEl.style.display = "";
   cartEl.innerHTML = "";
+  sync(load());  // as the shop's: opening the cart asks for it
   setTimeout(() => drawCart(load()), load().cfg.cartLoad ?? 200);
 };
 document.addEventListener("keydown", e => { if (e.key === "Escape") cartEl.style.display = "none"; });
@@ -82,6 +93,7 @@ function renderProduct() {  // in place, as the shop's single-page app does
   document.querySelector("main button")?.addEventListener("click", () => {
     const s = load();
     if (s.cfg.dropAdds) return void (s.cfg.dropAdds--, (localStorage.shop = JSON.stringify(s)));
+    if (s.items[product] && s.cfg.dropPlus) return void (s.cfg.dropPlus--, (localStorage.shop = JSON.stringify(s)));
     later(() => {
       const s = load();
       if ((s.items[product] || 0) < (s.cfg.limits?.[product] ?? 99)) s.items[product] = (s.items[product] || 0) + 1;

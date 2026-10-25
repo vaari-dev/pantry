@@ -5,6 +5,7 @@ import re
 import subprocess
 import time
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -54,7 +55,8 @@ LOGGED_OUT = "[data-testid=login-btn]"
 LOGIN_EXPIRED = "the shop login has expired; the account's owner can /setup again"
 CART_COUNT = "[data-testid=cart-items-number]"
 CART = "[data-testid=cart-screen]"
-CART_API = "/cfs/api/v1/cart"
+CART_API = {("PUT", "/cfs/api/v1/cart"), ("POST", "/cfs/api/v1/cart/create")}
+ORDER_API = ("POST", "/api/v3/order/")
 REMOVE = re.compile(r"^\s*(remove|delete)(\s+item)?\s*$", re.I)
 STOCK = re.compile(r"out of stock|sold out|unavailable|back in stock", re.I)
 # The cart shows the address and wallet balance: only known words are logged.
@@ -225,6 +227,46 @@ def _prices(lines: list[str], struck: list[str]) -> tuple[str, str]:
     return price, mrp
 
 
+def _cart_view(data: dict) -> dict:
+    """Never the reply's address or wallet parts."""
+    items = []
+    for store in data.get("storeLevelCartProducts") or []:
+        for p in store.get("cartProducts") or []:
+            sp = p["storeProduct"]
+            items.append(
+                [
+                    sp["productVariant"]["id"],
+                    p["quantity"],
+                    sp["discountedSellingPrice"],
+                    sp["availableQuantity"],
+                    sp["isActive"],
+                ]
+            )
+    return {
+        "items": items,
+        "oos": len(data.get("oosProducts") or []),
+        "item_total": data.get("itemTotalAmount"),
+        "to_pay": data.get("toPay"),
+    }
+
+
+def _order_view(data: dict) -> dict:
+    return {
+        "created": data.get("isOrderCreated") is True,
+        "status": data.get("status"),
+        "failure": data.get("failureReason"),
+        "item_total": data.get("itemTotalAmount"),
+        "wallet_used": data.get("walletBalanceUsed"),
+    }
+
+
+def _read(req: Request, view: Callable[[dict], dict]) -> dict:
+    try:
+        return view(req.response().json())
+    except Exception as e:  # its shape is the shop's to change: evidence, never a failure
+        return {"unreadable": type(e).__name__}
+
+
 class Browser:
     """One Chrome session. Loads and saves state_file (None: neither); fresh: starts logged out;
     record: the API map to add to."""
@@ -259,9 +301,11 @@ class Browser:
         if self.recorder:
             self.recorder.attach(self._ctx)
         self.page: Page = self._ctx.new_page()
-        self._carts: list[tuple[float, Request]] = []  # the shop app's own cart calls, newest last
+        self._cart_req: Request | None = None  # the shop app's latest cart call, unread
         self._cart: dict | None = None
         self._cart_at = 0.0
+        self._order_req: Request | None = None
+        self._order: dict | None = None
         self.page.on("requestfinished", self._seen)  # not "response": a navigation can cut its body off forever
         self.page.set_default_timeout(TIMEOUT_MS)
         return self
@@ -286,35 +330,16 @@ class Browser:
 
     def _seen(self, req: Request) -> None:
         """Keeps it, unread: reading the body here, inside Playwright's event, is not safe."""
-        if req.method == "PUT" and urlsplit(req.url).path == CART_API:
-            self._carts.append((time.monotonic(), req))
+        call = (req.method, urlsplit(req.url).path)
+        if call in CART_API:
+            self._cart_req, self._cart_at = req, time.monotonic()
+        elif call == ORDER_API:
+            self._order_req = req
 
     def _cart_api(self) -> dict | None:
-        """The latest cart reply, as far as the bot reads it: never its address or wallet parts.
-        Read before every navigation, which discards the bodies of the page's replies."""
-        if self._carts:
-            self._cart_at, req = self._carts[-1]
-            self._carts.clear()
-            try:
-                data = req.response().json()
-                rows = [p for s in data.get("storeLevelCartProducts") or [] for p in s.get("cartProducts") or []]
-                self._cart = {
-                    "items": [
-                        [
-                            p["storeProduct"]["productVariant"]["id"],
-                            p["quantity"],
-                            p["storeProduct"]["discountedSellingPrice"],
-                            p["storeProduct"]["availableQuantity"],
-                            p["storeProduct"]["isActive"],
-                        ]
-                        for p in rows
-                    ],
-                    "oos": len(data.get("oosProducts") or []),
-                    "item_total": data.get("itemTotalAmount"),
-                    "to_pay": data.get("toPay"),
-                }
-            except Exception as e:  # its shape is the shop's to change: evidence, never a failure
-                self._cart = {"unreadable": type(e).__name__}
+        """The latest cart reply. Read before every navigation, which discards the page's reply bodies."""
+        if self._cart_req:
+            self._cart, self._cart_req = _read(self._cart_req, _cart_view), None
         # age: a reply older than the page's last change is not a disagreement
         return self._cart and {**self._cart, "age": round(time.monotonic() - self._cart_at, 1)}
 
@@ -532,6 +557,8 @@ class Browser:
                 continue
             seen.add(c["url"])
             price, mrp = _prices(lines, c["struck"])
+            if not price:
+                log.info("card without a price", lines=lines)
             image = "" if "placeholder" in c["image"].lower() else c["image"].replace("f-auto", "f-jpg")
             found.append(Product(*card, c["url"], price, image, mrp))
             if len(found) == limit:
@@ -552,24 +579,46 @@ class Browser:
         add = self.page.locator(PLUS, has_text="Add to Cart")
         if not add.count():
             return "out of stock"
-        for _ in range(2):  # a tap on a page still loading can be lost
-            add.first.evaluate("b => b.click()")  # the sticky search bar overlaps it for mouse clicks
-            if self._wait(add.first, 5, "hidden"):
-                break
-        else:
+        badge = self.page.locator(CART_COUNT).first
+        before = _text(badge)
+        if not self._tap(add.first, lambda: self._wait(add.first, 5, "hidden")):
             return "the shop didn't take it into the cart"
-        for _ in range(qty - 1):
-            self.page.locator(PLUS).first.evaluate("b => b.click()")
-            self.page.wait_for_timeout(1000)
-        badge = self.page.locator(CART_COUNT)
-        log.info("added", product=product.name, qty=qty, cart_count=badge.first.inner_text() if badge.count() else None)
+        self._changed(badge, before, 5)  # + taps are judged by the count: the add's own change first
+        for n in range(1, qty):
+            if not self._one_more(badge):
+                log.info("quantity not raised", product=product.name, qty=n, asked=qty)
+                break
+        log.info("added", product=product.name, qty=qty, cart_count=_text(badge) or None)
         return None
 
+    def _one_more(self, badge: Locator) -> bool:
+        """False: the shop's per-order limit, or lost taps; the cart check tells which."""
+        before = _text(badge)
+        # 8 s: a slow tap tapped again would add two
+        return self._tap(self.page.locator(PLUS).first, lambda: self._changed(badge, before, 8))
+
+    def _tap(self, button: Locator, took: Callable[[], bool]) -> bool:
+        """Twice at most: a tap on a page still loading can be lost."""
+        for _ in range(2):
+            button.evaluate("b => b.click()")  # the sticky search bar overlaps it for mouse clicks
+            if took():
+                return True
+        return False
+
+    def _until(self, done: Callable[[], bool], seconds: float) -> bool:
+        for _ in range(int(seconds * 4)):
+            if done():
+                return True
+            self.page.wait_for_timeout(250)
+        return done()
+
     def _open_cart(self) -> dict:
+        opened = time.monotonic()
         self.page.locator("[data-testid=cart-btn]").first.click()
         cart = self.page.locator(CART).first
         if not self._wait(cart, TIMEOUT_MS // 1000):
             raise ShopError("the cart did not open")
+        self._until(lambda: self._cart_at >= opened, 5)  # opening it asks the shop for the cart
         loaded = self._wait(cart.locator("[data-testid$=cart-qty]").or_(cart.get_by_text("Item Total")).first, 10)
         read = self.page.evaluate(CART_JS)
         text = read["text"]
@@ -612,12 +661,10 @@ class Browser:
         self.page.keyboard.press("Escape")
 
     def _changed(self, locator: Locator, before: str, seconds: int = 15) -> bool:
-        for _ in range(seconds * 4):
-            self.page.wait_for_timeout(250)
-            if _text(locator) != before:
-                self.page.wait_for_timeout(500)  # the next tap must not land mid-update
-                return True
-        return False
+        if not self._until(lambda: _text(locator) != before, seconds):
+            return False
+        self.page.wait_for_timeout(500)  # the next tap must not land mid-update
+        return True
 
     def _pay_with(self, wallet: bool) -> dict:
         """Sets the wallet box, unticks reward coins; returns the cart as it then is."""
@@ -667,6 +714,7 @@ class Browser:
             if product is None:
                 result.problems.append(f"unexpected item in the cart: {' '.join(item['lines'][:2])}")
             elif item["qty"] != expected[product]:
+                seen.add(product)
                 result.problems.append(f"{product.name}: {item['qty']} in the cart, expected {expected[product]}")
             else:
                 seen.add(product)
@@ -719,7 +767,7 @@ class Browser:
         log.info("tapped", button="Place Order")
         self.page.wait_for_timeout(3000)
         self._skip_upsell("Place Order")
-        self.page.wait_for_timeout(15_000)  # "Confirming your order..."
+        self._await_order()
 
     def has_pay_button(self, total: float) -> bool:
         """Taps nothing."""
@@ -746,10 +794,20 @@ class Browser:
             log.info("tapped", button="cash on delivery")
             if not (pay := self._pay_button(PAY_COD, total, 10)):
                 return f"no Pay ₹{total:g} on delivery button"
+        self._order_req = None  # an earlier tap's reply is not this order's
         pay.click()
         log.info("tapped", button="pay on delivery")
-        self.page.wait_for_timeout(15_000)  # "Confirming your order..."
+        self._await_order()
         return None
+
+    def _await_order(self) -> None:
+        """Reads the shop's reply to Place Order before anything navigates."""
+        if not self._until(lambda: self._order_req is not None, 30):
+            log.info("no order reply")
+            return
+        self._order = _read(self._order_req, _order_view)
+        log.info("order reply", **self._order)
+        self.page.wait_for_timeout(10_000)  # "Confirming your order...": let the page finish
 
     def _pay_button(self, pattern: re.Pattern, total: float, seconds: int) -> Locator | None:
         """Only a button for exactly ₹total."""
@@ -785,6 +843,9 @@ class Browser:
             self.page.wait_for_timeout(3000)
 
     def confirm(self, total: float, since: datetime) -> bool:
+        """By the shop's reply to Place Order; unless it says created, by the Orders page."""
+        if self._order and self._order.get("created"):
+            return True
         for _ in range(3):
             self.goto("/account/orders")
             body = self.page.locator("body").inner_text().split("Log Out", 1)[-1]
@@ -795,6 +856,7 @@ class Browser:
                 if _money(m.group(1)) == total and placed >= since - timedelta(minutes=1):
                     return True
             else:
-                log.info("no order on the orders page")
+                lines = [line for line in body.split("\n") if re.search(r"₹|Order|Placed|Delivered|Arriv", line)]
+                log.info("no order on the orders page", at=self._at(), lines=lines[:12])
             self.page.wait_for_timeout(5000)
         return False
