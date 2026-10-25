@@ -1,7 +1,8 @@
 import pytest
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
-from grocerybot.shop import ADDRESS, LOGGED_OUT, Browser, Rules, ShopError, _card, _loggable, _prices, _shows_size
+from grocerybot.shops.base import Rules, ShopError, card, prices, shows_size
+from grocerybot.shops.zepto import ADDRESS, LOGGED_OUT, Zepto, _loggable
 
 
 @pytest.mark.parametrize(
@@ -16,11 +17,11 @@ from grocerybot.shop import ADDRESS, LOGGED_OUT, Browser, Rules, ShopError, _car
     ],
 )
 def test_prices(lines, struck, expected):
-    assert _prices(lines, struck) == expected
+    assert prices(lines, struck) == expected
 
 
 @pytest.mark.parametrize(
-    ("lines", "card"),
+    ("lines", "expected_card"),
     [
         (["ADD", "₹89", "Eggs", "1 pack"], ("Eggs", "1 pack")),
         (["Lemon", "1 pc", "₹51", "ADD"], ("Lemon", "1 pc")),
@@ -39,8 +40,8 @@ def test_prices(lines, struck, expected):
         (["ADD", "₹20"], None),
     ],
 )  # fmt: skip
-def test_card(lines, card):
-    assert _card(lines) == card
+def test_card(lines, expected_card):
+    assert card(lines) == expected_card
 
 
 @pytest.mark.parametrize(
@@ -64,7 +65,7 @@ def test_card(lines, card):
     ],
 )
 def test_shows_size(size, page, shown):
-    assert _shows_size(size, page) is shown
+    assert shows_size(size, page) is shown
 
 
 @pytest.mark.parametrize(
@@ -76,7 +77,7 @@ def test_shows_size(size, page, shown):
     ],
 )
 def test_a_cart_without_items(text, login_button, problem):
-    b = Browser.__new__(Browser)
+    b = Zepto.__new__(Zepto)
     b._pay_with = b._open_cart = lambda *_, **__: {"text": text, "items": [], "boxes": []}
     b.page = type("Page", (), {"locator": lambda _, s: Found(int(login_button))})()
     if login_button:
@@ -106,7 +107,7 @@ class Found:
     def filter(self, visible):
         return self
 
-    def inner_text(self):
+    def inner_text(self, **_):
         return self.text
 
 
@@ -120,7 +121,7 @@ class Found:
     ],
 )
 def test_check_session(address, login_button, error):
-    b = Browser.__new__(Browser)
+    b = Zepto.__new__(Zepto)
     b.base = "https://shop.example"
     found = {ADDRESS: Found(bool(address), address), LOGGED_OUT: Found(int(login_button))}
     b.page = type("Page", (), {"url": b.base + "/", "locator": lambda _, s: found[s]})()

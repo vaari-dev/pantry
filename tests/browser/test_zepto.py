@@ -1,32 +1,30 @@
-"""shop.Browser in real Chrome against shop.html, under xvfb-run (as CI runs them)."""
+"""The Zepto driver in real Chrome against zepto.html, under xvfb-run (as CI runs them)."""
 
 import json
-import os
-import threading
 import time
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 
 import pytest
+from fake_shop import Page, serving
 from structlog.testing import capture_logs
 
 from grocerybot import orders
-from grocerybot import shop as shop_module
 from grocerybot.accounts import Accounts
 from grocerybot.catalog import Product
 from grocerybot.config import Config
-from grocerybot.shop import Browser, Rules, ShopError
+from grocerybot.shops import Rules, ShopError, base
+from grocerybot.shops.zepto import Zepto
 
 RULES = Rules("Home", "T6/503", 900)
 PRODUCTS = {k: Product(name, size, f"/pn/{k}") for k, name, size in [
     ("kinley", "Kinley Soda", "750 ml"), ("chips", "BRB Chips", "48 g"), ("orange", "Orange Nagpur", "1 kg"),
     ("kajal", "Colossal Kajal", "1 pc (0.35 g)"),
 ]}  # fmt: skip
-PRICES = {"kinley": 20, "chips": 30, "orange": 57, "kajal": 199}  # as shop.html
+PRICES = {"kinley": 20, "chips": 30, "orange": 57, "kajal": 199}  # as zepto.html
 CANT_REMOVE = "the shop's cart has items the bot can't remove"
 
 
-class Shop(SimpleHTTPRequestHandler):
+class Shop(Page):
+    html = "zepto.html"
     stalls = 0  # requests to /stall to leave unanswered for 3 s, as at 06:31 and 06:36 UTC on 24 Oct
 
     def do_GET(self):
@@ -64,26 +62,17 @@ class Shop(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def translate_path(self, path):
-        return str(Path(__file__).with_name("shop.html"))
-
-    def log_message(self, *_): ...
-
 
 @pytest.fixture(scope="module")
 def server():
-    if not os.environ.get("DISPLAY"):
-        pytest.skip("needs a display: run under xvfb-run")
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Shop)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{httpd.server_port}"
-    httpd.shutdown()
+    with serving(Shop) as url:
+        yield url
 
 
 @pytest.fixture
 def shop(server, tmp_path):
     """(browser, given): given(items, oos, **cfg) sets the shop's state."""
-    with Browser(server, None, None, tmp_path) as b:
+    with Zepto(server, None, None, tmp_path) as b:
 
         def given(items=None, oos=(), **cfg):
             b.goto("/")
@@ -244,7 +233,7 @@ def test_unreachable_shop(shop):
 
 def test_a_stalled_page_loads_on_the_second_try(shop, monkeypatch):
     b, _ = shop
-    monkeypatch.setattr(shop_module, "TIMEOUT_MS", 4000)  # 2 s a try
+    monkeypatch.setattr(base, "TIMEOUT_MS", 4000)  # 2 s a try
     Shop.stalls = 1
     with capture_logs() as logs:
         b.goto("/stall")
@@ -255,13 +244,13 @@ def test_a_stalled_page_loads_on_the_second_try(shop, monkeypatch):
 
 
 def test_any_page_error_reaches_the_user_as_a_reason(server, tmp_path):
-    with pytest.raises(ShopError, match="stopped responding"), Browser(server, None, None, tmp_path) as b:
+    with pytest.raises(ShopError, match="stopped responding"), Zepto(server, None, None, tmp_path) as b:
         b.page.locator("#missing").click(timeout=100)
 
 
 def test_a_failed_state_save_does_not_change_the_outcome(server, tmp_path):
     (state := tmp_path / "state.json").write_text('{"cookies": [], "origins": []}')
-    with Browser(server, state, None, tmp_path) as b:
+    with Zepto(server, state, None, tmp_path) as b:
         b._ctx.close()  # as when Chrome dies during Place Order
 
 
@@ -281,18 +270,16 @@ def test_end_to_end_a_card_with_a_brand_line_is_picked_and_ordered(server, tmp_p
     """24 Oct, 14:16-14:29 UTC: search, pick, then fill and check the cart, with no part faked but the shop."""
     accounts = Accounts(tmp_path, 1)
     (state := tmp_path / "state.json").write_text('{"cookies": [], "origins": []}')
-    hh = accounts.connect(1, "Asha", "Home", "T6/503", state)
-    accounts.update(hh.id, place_orders=False)
-    hh = accounts.get(hh.id)
-    with Browser(server, hh.state_file, None, tmp_path) as b:
+    hh = accounts.connect(1, "Asha", "zepto", "Home", "T6/503", state, ordering=False)
+    with Zepto(server, hh.state_file, None, tmp_path) as b:
         b.goto("/")
         b.page.evaluate("() => localStorage.shop = JSON.stringify({items: {}, oos: {}, cfg: {limits: {kajal: 2}}})")
         [found] = b.search("kajal")
     assert (found.label(), found.price, found.mrp) == ("Colossal Kajal (1 pc (0.35 g))", "₹199", "₹299")
     key = hh.catalog().learn("kajal", found)
 
-    monkeypatch.setattr(orders, "browser", lambda cfg, hh: Browser(server, hh.state_file, None, tmp_path))
-    cfg = Config(server, "", 1, "", tmp_path, None, 9)
+    monkeypatch.setattr(orders, "browser", lambda cfg, hh: Zepto(server, hh.state_file, None, tmp_path))
+    cfg = Config({"zepto": server}, "", 1, "", tmp_path, None, 9)
     out = orders.order(cfg, hh, [(key, 3)])
     assert (out.result, out.problems, out.unavailable) == ("cart ready", [], {})
     assert out.lines == ["Colossal Kajal (1 pc (0.35 g)) ×2  (the most the shop allows, of 3)"]

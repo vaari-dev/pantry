@@ -1,8 +1,8 @@
 # grocery-bot
 
 Order groceries by Telegram voice note or text, like *"bread aur do anda"*. Each family connects
-its own shop account; the bot fills the cart, checks it, and pays from the shop's wallet, or cash
-on delivery when that falls short.
+its own Zepto or Blinkit account; the bot fills the cart, checks it, and pays from Zepto's wallet, or
+cash on delivery when that falls short (Blinkit: cash on delivery only).
 
 ```
 Telegram ⇄ bot (OCI box, Docker)
@@ -11,7 +11,9 @@ Telegram ⇄ bot (OCI box, Docker)
             └─ real Chrome on a virtual screen → Tailscale → home exit node → shop
 ```
 
-The shop refuses headless browsers and data-centre IPs, hence real Chrome leaving through home.
+The shops refuse headless browsers and data-centre IPs, hence real Chrome leaving through home.
+Each shop is a driver in `shops/`; Blinkit is on trial: offered to the admin only, with ordering off
+until they turn it on, while its markup is confirmed in production.
 
 ## Use
 
@@ -29,6 +31,7 @@ never retried.
 |---|---|
 | voice or text | order it |
 | `/basket`, `/clear`, `/usual` | waiting items, empty them, what is due |
+| `/shop` | which shop orders go to; the owner switches or connects another (picks are kept per shop) |
 | `/settings` | the account's settings; the owner changes them with `/limit 1500`, `/minimum 99`, `/ordering off`, `/setup` (address, login) |
 | `/members`, `/invite`, `/leave` | who orders here; add one person; leave (the last one out deletes the account) |
 | `/id` | your Telegram id |

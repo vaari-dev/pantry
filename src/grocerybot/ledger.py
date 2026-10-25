@@ -1,4 +1,4 @@
-"""ledger.json: {"orders": [{"id", "day", "at", "status", "total", "items"}], "basket": [[key, qty]],
+"""ledger.json: {"orders": [{"id", "day", "at", "status", "total", "items", "shop"}], "basket": [[key, qty]],
 "hold": [chat, until] | null, "offer": [chat, message] | null}
 
 hold: when the basket gets placed. offer: the one message whose Order now button works.
@@ -62,7 +62,7 @@ class Ledger:
             if o["day"] == today and o["status"] in ("placed", "placing", "unknown")
         )
 
-    def begin(self, items: list[tuple[str, int]], total: float) -> str:
+    def begin(self, items: list[tuple[str, int]], total: float, shop: str) -> str:
         order_id = uuid.uuid4().hex[:8]
         now = datetime.now()
         order = {
@@ -72,6 +72,7 @@ class Ledger:
             "status": "placing",
             "total": total,
             "items": [list(i) for i in items],
+            "shop": shop,
         }
         with self._edit() as data:
             data["orders"] = [*data["orders"], order][-1000:]

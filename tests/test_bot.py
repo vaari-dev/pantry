@@ -10,7 +10,7 @@ from grocerybot import bot as botmod
 from grocerybot.catalog import Product
 from grocerybot.config import Config
 from grocerybot.ledger import Ledger
-from grocerybot.shop import Cart, ShopError
+from grocerybot.shops import Cart, ShopError
 
 ADMIN, NEW = 1, 42
 ADDRESS = "Home\nT6/503, MG Road"
@@ -55,13 +55,15 @@ class FakeShop:
 @pytest.fixture
 def bot(tmp_path, monkeypatch):
     @contextlib.contextmanager
-    def login_browser(cfg, session):
+    def login_browser(cfg, shop, session):
         yield FakeShop(session)
         session.write_text("{}")
 
     monkeypatch.setattr(botmod.orders, "login_browser", login_browser)
     monkeypatch.setattr(botmod.signal, "signal", lambda *_: None)  # run() must not take pytest's SIGTERM
-    cfg = Config("https://shop.example", "token", ADMIN, "small", tmp_path, None, 9)
+    cfg = Config(
+        {"zepto": "https://shop.example", "blinkit": "https://b.example"}, "token", ADMIN, "small", tmp_path, None, 9
+    )
     b = botmod.Bot(cfg)
     b.tg = FakeTelegram()
     botmod.threading.Thread(target=b._worker, daemon=True).start()
@@ -170,7 +172,9 @@ class FakeBrowser:
         problems = ["over today's limit"] if total > rules.budget else []
         return Cart(total, total, problems=problems, prices=prices, capped=capped)
 
-    def place(self): ...
+    def ready(self, cart): ...
+
+    def place(self, cart): ...
 
     def confirm(self, total, since):
         return True
@@ -184,7 +188,7 @@ class FakeBrowser:
 @pytest.fixture
 def shop(bot, monkeypatch):
     (session := bot.cfg.data_dir / "state.json").write_text("{}")
-    hh = bot.accounts.connect(NEW, "Asha", "Home", "T6/503", session)
+    hh = bot.accounts.connect(NEW, "Asha", "zepto", "Home", "T6/503", session, ordering=True)
     bot.accounts.allow(NEW)
     for item in ("bread", "milk"):
         hh.catalog().learn(item, Product(item.title(), "1 pc", f"https://shop.example/{item}", "₹60"))
@@ -534,7 +538,7 @@ def test_basket_waits_for_an_order_in_progress(bot, shop):
 def test_ledger_edits_from_two_threads_both_land(tmp_path):
     ledger = Ledger(tmp_path / "ledger.json")
     threads = [threading.Thread(target=ledger.set_offer, args=(1, n)) for n in range(20)]
-    threads += [threading.Thread(target=ledger.begin, args=([("bread", 1)], 60)) for _ in range(20)]
+    threads += [threading.Thread(target=ledger.begin, args=([("bread", 1)], 60, "zepto")) for _ in range(20)]
     for t in threads:
         t.start()
     for t in threads:
@@ -546,7 +550,7 @@ def test_ledger_edits_from_two_threads_both_land(tmp_path):
 def test_a_failure_after_place_order_is_unconfirmed_never_not_ordered(bot, shop, error):
     hh, browser = shop
 
-    def place():
+    def place(cart):
         raise error
 
     browser.place = place
@@ -575,7 +579,7 @@ def test_the_shops_lower_total_waits_and_corrects_the_prices(bot, shop):
     bot._on_message(message("bread, milk"))
     sent(bot, "⏳ I'll order this", having="Total ₹120")
     tap(bot, hh)
-    said(bot, "🧺 The shop's total is ₹90, below the ₹100 minimum")
+    said(bot, "🧺 Zepto's total is ₹90, below the ₹100 minimum")
     assert hh.ledger().basket() == [("bread", 1), ("milk", 1)]
     bot._on_message(message("/basket"))
     sent(bot, "🧺 Your basket", having="Total ₹90 (orders start at ₹100)")
@@ -616,5 +620,94 @@ def test_with_ordering_off_every_message_fills_the_shop_cart(bot, shop):
     hh, browser = shop
     bot.accounts.update(hh.id, place_orders=False)
     bot._on_message(message("2 bread"))
-    said(bot, "🛒 Cart ready (₹120)")
+    said(bot, "🛒 Zepto cart ready (₹120)")
     assert browser.opened == 1
+
+
+def test_only_the_admin_is_offered_a_shop_on_trial(bot):
+    bot._on_message(message("/setup", uid=ADMIN))
+    keyboard = said(bot, "Which shop is your account on?", chat=ADMIN)
+    assert [row[0]["text"] for row in keyboard["keyboard"]] == ["Zepto", "Blinkit (trial)"]
+    bot._on_message(message("Blinkit (trial)", uid=ADMIN))
+    assert said(bot, "Let's connect your Blinkit account", chat=ADMIN) == botmod.SHARE_PHONE
+    bot._on_message(message(contact={"phone_number": "9876543210"}, uid=ADMIN))
+    said(bot, "📩 Step 2 of 3\n\nBlinkit just texted you", chat=ADMIN)
+    bot._on_message(message("123456", uid=ADMIN))
+    keyboard = said(bot, "Your saved addresses", chat=ADMIN)
+    bot._on_message(message(keyboard["keyboard"][0][0]["text"], uid=ADMIN))
+    sent(bot, "🎉 You're all set", chat=ADMIN, having="Home on Blinkit, carts filled for you to order in its app")
+    hh = bot.accounts.household_of(ADMIN)
+    assert (hh.shop, hh.place_orders, hh.state_file) == ("blinkit", False, hh.dir / "blinkit" / "session.json")
+
+
+def test_everyone_else_connects_zepto_without_a_question(bot):
+    bot.accounts.allow(NEW)
+    bot._on_message(message("/setup"))
+    said(bot, "Let's connect your Zepto account")
+    assert not [t for _, t, _ in bot.tg.sent if t.startswith("Which shop")]
+
+
+def shop_tap(bot, shop, uid=NEW):
+    bot._on_button({"id": "q", "from": {"id": uid, "first_name": "Asha"}, "data": f"shop:{shop}",
+                    "message": {"chat": {"id": uid}, "message_id": 3}})  # fmt: skip
+
+
+@pytest.fixture
+def admin_shop(bot, shop):
+    """The shop fixture's household, owned by the admin, with Blinkit connected too and Zepto in use."""
+    hh, browser = shop
+    bot.accounts.join(ADMIN, "Admin", bot.accounts.invite(hh.id))
+    bot.accounts.leave(NEW, hh.id)  # the admin owns it now
+    (session := bot.cfg.data_dir / "b.json").write_text("{}")
+    bot.accounts.connect(ADMIN, "Admin", "blinkit", "Home", "T6/503", session, ordering=False)
+    hh = bot.accounts.switch(hh.id, "zepto")
+    (hh.dir / "zepto" / "session.json").write_text("{}")  # leave() logged Zepto out
+    return hh, browser
+
+
+def test_shop_shows_where_orders_go_and_switches_by_button(bot, admin_shop):
+    hh, _ = admin_shop
+    hh.catalog("blinkit").learn("bread", Product("Harvest Bread", "400 g", "/prn/harvest-bread/prid/7", "₹40"))
+    hh.ledger().set_basket([("bread", 1), ("milk", 2)])
+    bot._on_message(message("/shop", uid=ADMIN))
+    assert said(bot, "🏪 Orders go to Zepto, paid from its wallet", chat=ADMIN) == [
+        ("Switch to Blinkit (trial)", "shop:blinkit")
+    ]
+    shop_tap(bot, "blinkit", uid=ADMIN)
+    text = sent(bot, "🏪 Orders now go to Blinkit", chat=ADMIN)
+    assert "Not picked on Blinkit yet, so taken out of the basket: milk. Send them again to choose." in text
+    assert "Placing orders is off here" in text
+    assert text.endswith("• Harvest Bread (400 g) ×1  ₹40\n\nTotal ₹40 (orders start at ₹100)")
+    hh = bot.accounts.get(hh.id)
+    assert (hh.shop, hh.ledger().basket()) == ("blinkit", [("bread", 1)])
+    assert hh.ledger().offer() == (ADMIN, len(bot.tg.sent))  # Order now on the switch message
+
+
+def test_a_switch_ends_open_picks_of_the_old_shops_products(bot, admin_shop):
+    hh, _ = admin_shop
+    bot.tg.edit_text = lambda *_: None
+    bot._on_message(message("jam", uid=ADMIN))
+    said(bot, "Jam 2", chat=ADMIN)
+    pid = next(iter(bot.picking))
+    shop_tap(bot, "blinkit", uid=ADMIN)
+    said(bot, "🏪 Orders now go to Blinkit", chat=ADMIN)
+    assert bot.picking == {}
+    bot._pick(bot.accounts.get(hh.id), f"{pid}:0:1")
+    assert not hh.catalog("blinkit").options("jam") and not hh.catalog("zepto").options("jam")
+
+
+def test_only_the_owner_changes_the_shop(bot, admin_shop):
+    hh, _ = admin_shop
+    bot.accounts.join(NEW, "Asha", bot.accounts.invite(hh.id))
+    shop_tap(bot, "blinkit")
+    assert bot.tg.answers[-1] == "Only the account's owner can change its shop."
+    assert bot.accounts.get(hh.id).shop == "zepto"
+
+
+def test_settings_and_alerts_name_the_shop(bot, shop):
+    hh, _ = shop
+    bot._on_message(message("/settings"))
+    said(bot, "Shop: Zepto, paid from its wallet, or cash on delivery when that falls short (/shop)\nDelivery: Home")
+    hh.ledger().begin([("bread", 1)], 60, "blinkit")
+    bot._resume()
+    sent(bot, "⚠️ An order (₹60", having="Check the Blinkit app; it was NOT retried.")

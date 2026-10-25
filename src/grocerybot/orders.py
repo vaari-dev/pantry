@@ -7,7 +7,7 @@ import structlog
 from .accounts import Household
 from .catalog import combine, rupees
 from .config import Config
-from .shop import Browser, Rules, ShopError
+from .shops import SHOPS, Browser, Rules, ShopError
 
 log = structlog.get_logger(__name__)
 
@@ -41,11 +41,12 @@ class Outcome:
 
 
 def browser(cfg: Config, hh: Household, images: bool = False) -> Browser:
-    return Browser(cfg.shop_url, hh.state_file, cfg.proxy, hh.debug_dir, images=images, record=cfg.api_map)
+    shop = SHOPS[hh.shop]
+    return shop(cfg.shop_urls[hh.shop], hh.state_file, cfg.proxy, hh.debug_dir, images=images, record=cfg.api_map)
 
 
-def login_browser(cfg: Config, state_file: Path) -> Browser:
-    return Browser(cfg.shop_url, state_file, cfg.proxy, cfg.debug_dir, fresh=True)
+def login_browser(cfg: Config, shop: str, state_file: Path) -> Browser:
+    return SHOPS[shop](cfg.shop_urls[shop], state_file, cfg.proxy, cfg.debug_dir, fresh=True)
 
 
 def rules(hh: Household) -> Rules:
@@ -53,7 +54,7 @@ def rules(hh: Household) -> Rules:
 
 
 def exit_ip(cfg: Config) -> str:
-    with Browser(cfg.shop_url, None, cfg.proxy, cfg.debug_dir) as b:
+    with Browser(cfg.shop_urls["zepto"], None, cfg.proxy, cfg.debug_dir) as b:
         return b.public_ip()
 
 
@@ -136,18 +137,18 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
             out.waiting = True
             ledger.set_basket(items)
             return out
-        if cart.cod and not b.has_pay_button(cart.total):
-            out.problems.append(f"could not find the cart's Pay ₹{cart.total:g} button")
-            b.screenshot("cart")
+        if problem := b.ready(cart):
+            out.problems.append(problem)
+            b.screenshot("payment")
             return out
         if not hh.place_orders:
             return out
 
-        attempt, started = ledger.begin(placed_items, cart.total), datetime.now()
+        attempt, started = ledger.begin(placed_items, cart.total, hh.shop), datetime.now()
         ledger.set_basket(kept)  # never ordered twice, even if the outcome is unclear
         log.info("attempt recorded", total=cart.total, cod=cart.cod)
         try:
-            if stopped := (b.place_cod(cart.total) if cart.cod else b.place()):
+            if stopped := b.place(cart):
                 log.info("payment stopped", reason=stopped)
                 b.screenshot("payment")
             out.placed = b.confirm(cart.total, started)

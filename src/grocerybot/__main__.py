@@ -10,7 +10,7 @@ import sys
 from . import config, logs, orders, store
 from .accounts import Accounts
 from .bot import Bot
-from .shop import ShopError
+from .shops import ShopError
 
 
 def main() -> None:
@@ -28,9 +28,9 @@ def main() -> None:
     for hh in Accounts(cfg.data_dir, cfg.admin_id).all():
         try:
             orders.check(cfg, hh)
-            print(f"ok: account {hh.id}")
+            print(f"ok: account {hh.id} ({hh.shop})")
         except ShopError as e:
-            print(f"not ready: account {hh.id}: {e}")
+            print(f"not ready: account {hh.id} ({hh.shop}): {e}")
 
 
 if __name__ == "__main__":

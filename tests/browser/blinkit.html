@@ -1,0 +1,125 @@
+<!doctype html>
+<!-- Blinkit, as far as shops/blinkit.py reads it. State lives in localStorage.shop: {items, orders, cfg};
+     localStorage.auth holds the login. cfg: limits ({product: n}: more taps show the "can't add more"
+     toast), sizes ({product: size} search shows instead), elsewhere (the cart delivers to another
+     address), noCash (cash is disabled), payShows (the amount the payment page shows instead). -->
+<html><head><meta charset="utf-8"><title>Blinkit</title>
+<style>.toast:not(.on), .modal:not(.on), #cart:not(.on), #pay:not(.on) { display: none }</style></head><body>
+<header>
+  <div class="LocationBar__Container-sc-x1" id="bar"><div>Delivery in 8 minutes</div>
+    <div id="to">Home - T6/503, Prestige Road, Bengaluru</div></div>
+  <div class="ProfileButton__Container-sc-x2" id="profile"></div>
+  <div class="CartButton__Container-sc-x3" id="cart-btn"></div>
+</header>
+<div class="modal" id="addresses">
+  <div class="AddressList__AddressItemWrapper-sc-a" data-to="Home - T6/503, Prestige Road, Bengaluru">
+    <div class="AddressList__AddressLabel-sc-a">Home</div><div>T6/503, Prestige Road, Bengaluru</div></div>
+  <div class="AddressList__AddressItemWrapper-sc-a" data-to="Work - 4th floor, Tower B, Whitefield">
+    <div class="AddressList__AddressLabel-sc-a">Work</div><div>4th floor, Tower B, Whitefield</div></div>
+</div>
+<div class="modal" id="login">
+  <input type="tel" id="phone"><button id="next">Next</button>
+  <div id="otp" style="display: none"><input maxlength="1"><input maxlength="1"><input maxlength="1"><input maxlength="1"></div>
+</div>
+<main id="main"></main>
+<div class="toast" id="toast">Sorry, you can't add more of this item</div>
+<div class="CartWrapper__CartContainer-sc-c" id="cart"></div>
+<div id="pay"><iframe id="payment_widget"></iframe><button class="Zpayments__Button-sc-p" id="pay-now">Pay Now</button></div>
+<script>
+const PRODUCTS = {
+  101: {name: "Kinley Soda", size: "750 ml", price: 20},
+  102: {name: "BRB Chips", size: "48 g", price: 30, mrp: 40},
+  103: {name: "Bisleri Water", size: "1 l", price: 20, ad: true},
+};
+const load = () => JSON.parse(localStorage.shop || '{"items":{},"orders":[],"cfg":{}}');
+const save = s => { localStorage.shop = JSON.stringify(s); render(); };
+const $ = id => document.getElementById(id);
+const total = s => Object.entries(s.items).reduce((t, [k, q]) => t + PRODUCTS[k].price * q, 0);
+const bill = s => total(s) + 2;
+const stepper = (k, q) => `<span class="icon-minus" data-k="${k}">-</span><div>${q}</div><span class="icon-plus" data-k="${k}">+</span>`;
+const bump = (k, by) => {
+  const s = load(), q = (s.items[k] || 0) + by, limit = s.cfg.limits?.[PRODUCTS[k].name] ?? 99;
+  if (q > limit) return void $("toast").classList.add("on");
+  q > 0 ? (s.items[k] = q) : delete s.items[k];
+  save(s);
+};
+document.addEventListener("click", e => {
+  const k = e.target.dataset.k;
+  if (e.target.classList.contains("icon-plus")) bump(k, 1);
+  if (e.target.classList.contains("icon-minus")) bump(k, -1);
+  if (e.target.dataset.add) bump(e.target.dataset.add, 1);
+});
+
+function render() {
+  const s = load(), n = Object.values(s.items).reduce((a, b) => a + b, 0);
+  $("profile").textContent = localStorage.auth ? "Account" : "Login";
+  if (localStorage.to) $("to").textContent = localStorage.to;
+  $("cart-btn").innerHTML = n ? `<div>${n} items</div><div>₹${total(s)}</div>` : "My Cart";
+  if (location.pathname === "/s/") search(s);
+  if ($("cart").classList.contains("on")) drawCart(s);
+}
+
+function search(s) {
+  const q = new URLSearchParams(location.search).get("q").toLowerCase();
+  $("main").innerHTML = Object.entries(PRODUCTS).filter(([, p]) => p.name.toLowerCase().includes(q.split(" ")[0]))
+    .map(([k, p]) => `<div role="button" tabindex="0" id="${k}"><img src="/img/${k}.png">` +
+      (p.ad ? "<div>Ad</div>" : "") + `<div>8 MINS</div><div class="tw-line-clamp-2">${p.name}</div>` +
+      `<div>${s.cfg.sizes?.[p.name] ?? p.size}</div><div>₹${p.price}</div>` +
+      (p.mrp ? `<div style="text-decoration: line-through">₹${p.mrp}</div>` : "") +
+      (s.items[k] ? stepper(k, s.items[k]) : `<div role="button" data-add="${k}">ADD</div>`) + "</div>")
+    .join("");
+}
+
+function drawCart(s) {
+  if (!Object.keys(s.items).length) return void ($("cart").innerHTML = "<div>You don't have any items in your cart</div>");
+  const to = s.cfg.elsewhere ? ["Work", "4th floor, Tower B, Whitefield"] : ["Home", "T6/503, Prestige Road, Bengaluru"];
+  $("cart").innerHTML =
+    `<div><div class="ListStrip__Heading-sc-l">Delivering to ${to[0]}</div><div class="ListStrip__SubHeading-sc-l">${to[1]}</div></div>` +
+    Object.entries(s.items).map(([k, q]) => `<div class="DefaultProductCard__Container-sc-d"><div>${PRODUCTS[k].name}</div>` +
+      `<div>${PRODUCTS[k].size}</div>` + (PRODUCTS[k].mrp ? `<div style="text-decoration: line-through">₹${PRODUCTS[k].mrp * q}</div>` : "") +
+      `<div>₹${PRODUCTS[k].price * q}</div>${stepper(k, q)}</div>`).join("") +
+    `<div class="BillCard__BillItemContainer-sc-b"><div>Items total</div><div>₹${total(s)}</div></div>` +
+    `<div class="BillCard__BillItemContainer-sc-b"><div>Delivery charge</div><div>₹25</div><div>FREE</div></div>` +
+    `<div class="BillCard__BillItemContainer-sc-b"><div>Handling charge</div><div>₹2</div></div>` +
+    `<div class="BillCard__BillItemContainer-sc-b"><div>Grand total</div><div>₹${bill(s)}</div></div>` +
+    `<div role="button" id="proceed"><div>₹${bill(s)}</div><div>Proceed To Pay</div></div>`;
+  $("proceed").onclick = () => {
+    $("cart").classList.remove("on");  // the shop's payment page replaces the cart
+    $("pay").classList.add("on");
+    const cash = s.cfg.noCash ? '<div title="Cash" disabled><div role="button" aria-disabled="true">Cash</div></div>'
+      : '<div title="Cash"><div role="button" onclick="parent.cash = true">Cash</div></div>';
+    $("payment_widget").srcdoc = `<div title="UPI"><div role="button">UPI</div></div>${cash}<div>To pay ₹${s.cfg.payShows ?? bill(s)}</div>`;
+  };
+}
+
+$("cart-btn").onclick = () => { if (Object.keys(load().items).length) { $("cart").classList.add("on"); drawCart(load()); } };
+$("pay-now").onclick = () => {
+  if (!window.cash) return;
+  const s = load(), at = new Date();
+  s.orders.unshift({total: bill(s), at: at.toLocaleString("en-IN", {day: "numeric", month: "short"}) + ", " +
+    at.toLocaleString("en-US", {hour: "numeric", minute: "2-digit"}).toLowerCase()});
+  s.items = {};
+  save(s);
+};
+$("bar").onclick = () => $("addresses").classList.add("on");
+document.querySelectorAll("#addresses > div").forEach(a => a.onclick = () => {
+  localStorage.to = a.dataset.to;
+  $("addresses").classList.remove("on");
+  render();
+});
+$("profile").onclick = () => { if (!localStorage.auth) $("login").classList.add("on"); };
+$("next").onclick = () => { if ($("phone").value.length === 10) $("otp").style.display = ""; };
+document.querySelectorAll("#otp input").forEach((box, i, all) => box.oninput = () => {
+  if (i < 3) return all[i + 1].focus();
+  if ([...all].map(b => b.value).join("") === "1234") {
+    localStorage.auth = JSON.stringify({accessToken: "t", phoneNumber: $("phone").value});
+    $("login").classList.remove("on");
+    render();
+  }
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") $("cart").classList.remove("on"); });
+if (location.pathname === "/account/orders")
+  $("main").innerHTML = `<div class="BffOrderHistory__Container-sc-o"><div>` +
+    load().orders.map(o => `<div><div>Arriving in 8 mins</div><div>₹${o.total}</div><div>${o.at}</div></div>`).join("") + "</div></div>";
+render();
+</script></body></html>

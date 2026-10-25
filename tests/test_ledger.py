@@ -6,15 +6,15 @@ from grocerybot.ledger import Ledger
 
 def test_spend_counts_placed_and_unconfirmed(tmp_path):
     ledger = Ledger(tmp_path / "ledger.json")
-    ledger.finish(ledger.begin([("egg", 1)], 87), "placed")
-    ledger.finish(ledger.begin([("milk", 1)], 60), "unknown")
-    ledger.finish(ledger.begin([("bread", 1)], 75), "failed")
+    ledger.finish(ledger.begin([("egg", 1)], 87, "zepto"), "placed")
+    ledger.finish(ledger.begin([("milk", 1)], 60, "zepto"), "unknown")
+    ledger.finish(ledger.begin([("bread", 1)], 75, "zepto"), "failed")
     assert ledger.spent_today() == 147
 
 
 def test_interrupted_attempts_are_reported_once(tmp_path):
     ledger = Ledger(tmp_path / "ledger.json")
-    ledger.begin([("egg", 1)], 87)  # crash before finish()
+    ledger.begin([("egg", 1)], 87, "zepto")  # crash before finish()
     assert [o["total"] for o in ledger.interrupted()] == [87]
     assert ledger.interrupted() == []
     assert ledger.spent_today() == 87  # still counted against the cap
@@ -45,7 +45,7 @@ def test_due_uses_usual_gap_and_skips_lapsed(tmp_path):
 def test_basket_is_kept_alongside_orders(tmp_path):
     ledger = Ledger(tmp_path / "ledger.json")
     ledger.set_basket([("bread", 1)])
-    ledger.finish(ledger.begin([("egg", 1)], 87), "placed")
+    ledger.finish(ledger.begin([("egg", 1)], 87, "zepto"), "placed")
     assert ledger.basket() == [("bread", 1)]
     assert ledger.spent_today() == 87
     ledger.set_basket([])

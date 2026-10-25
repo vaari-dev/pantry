@@ -16,7 +16,7 @@ def _required(name: str) -> str:
 
 @dataclass(frozen=True)
 class Config:
-    shop_url: str
+    shop_urls: dict[str, str]  # shop key -> its site
     telegram_token: str
     admin_id: int  # lets new people in, gets the bot's own alerts
     whisper_model: str
@@ -35,7 +35,7 @@ class Config:
 
 def load() -> Config:
     return Config(
-        shop_url=_required("SHOP_URL"),
+        shop_urls={"zepto": _required("SHOP_URL"), "blinkit": os.environ.get("BLINKIT_URL", "https://blinkit.com")},
         telegram_token=_required("TELEGRAM_BOT_TOKEN"),
         admin_id=int(_required("TELEGRAM_ADMIN_ID")),
         whisper_model=os.environ.get("WHISPER_MODEL", "small"),

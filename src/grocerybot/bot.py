@@ -22,7 +22,7 @@ from . import orders, store
 from .accounts import Accounts, Household, address_parts
 from .catalog import Product, plan
 from .config import Config
-from .shop import Browser, ShopError
+from .shops import SHOPS, Browser, ShopError
 from .speech import Transcriber
 from .telegram import Telegram, TelegramError, strikethrough
 
@@ -33,6 +33,7 @@ COMMANDS = {
     "clear": "Empty the waiting basket",
     "usual": "What we usually need around now",
     "settings": "Address, limits, ordering on/off",
+    "shop": "Which shop orders go to",
     "members": "Who orders with this account",
     "invite": "Let someone order with your account",
     "setup": "Connect your shop account",
@@ -121,6 +122,14 @@ def _basket(hh: Household) -> str:
 
 def _order_now(hh: Household) -> list[tuple[str, str]]:
     return [("🛒 Order now", f"now:{hh.id}")]
+
+
+def _shop(hh: Household) -> type[Browser]:
+    return SHOPS[hh.shop]
+
+
+def _label(shop: str) -> str:
+    return SHOPS[shop].NAME + (" (trial)" if SHOPS[shop].TRIAL else "")
 
 
 class SetupStopped(Exception):
@@ -231,10 +240,11 @@ class Bot:
         for hh in self.accounts.all():
             for o in hh.ledger().interrupted():
                 log.warning("interrupted order found", household_id=hh.id, total=o["total"], at=o["at"])
+                shop = SHOPS[o.get("shop", "zepto")].NAME  # orders from before Blinkit were Zepto's
                 self.alert(
                     hh.owner,
                     f"⚠️ An order (₹{o['total']:g}, {o['at']}) was interrupted while being placed. "
-                    "Check the shop's app; it was NOT retried.",
+                    f"Check the {shop} app; it was NOT retried.",
                 )
             if not (held := hh.ledger().hold()):
                 continue
@@ -306,7 +316,7 @@ class Bot:
                     log.info("health check ok")
                 except ShopError as e:
                     log.warning("health check failed", error=e.logged)
-                    self.alert(hh.owner, f"⚠️ Daily check of your shop account failed: {e}.")
+                    self.alert(hh.owner, f"⚠️ Daily check of your {_shop(hh).NAME} account failed: {e}.")
 
     def _say(self, chat_id: int, text: str, buttons=None, markup=None, entities=None) -> int | None:
         try:
@@ -379,6 +389,8 @@ class Bot:
             self._members(chat_id, uid, hh)
         elif command == "/settings":
             self._settings(chat_id, hh)
+        elif command == "/shop":
+            self._shops(chat_id, uid, hh)
         elif command == "/invite":
             if self._owner(chat_id, uid, hh):
                 self._invite(chat_id, hh)
@@ -410,9 +422,11 @@ class Bot:
         bind_contextvars(user_id=uid, chat_id=(cb.get("message") or {}).get("chat", {}).get("id"))
         if hh := self.accounts.household_of(uid):
             bind_contextvars(household_id=hh.id)
-        log.info("button pressed", kind=kind if kind in ("allow", "remove", "now") else "pick")
+        log.info("button pressed", kind=kind if kind in ("allow", "remove", "now", "shop") else "pick")
         if kind == "now":
             return self._now(cb, hh, arg)
+        if kind == "shop":
+            return self._shop_button(cb, hh, arg)
         self.tg.answer(cb["id"])
         if kind in ("allow", "remove"):
             done = self._allow(uid, int(arg)) if kind == "allow" else self._remove(uid, int(arg))
@@ -596,7 +610,7 @@ class Bot:
                 raise
             if isinstance(e, ShopError):
                 log.warning("order stopped by the shop", error=e.logged)
-                reason = f"Couldn't order: {e}."
+                reason = f"Couldn't order on {_shop(hh).NAME}: {e}."
             else:
                 log.exception("order failed")
                 reason = "Something went wrong, so nothing was ordered."
@@ -616,20 +630,21 @@ class Bot:
         total = f"₹{out.total:g}" if out.total is not None else ""
         how = ", cash on delivery" if out.cod else ""
         problems = "".join(f"\n- {p}" for p in out.problems)
+        shop = _shop(hh).NAME
         if out.placed:
-            text = f"✅ Ordered, {total} {'cash on delivery' if out.cod else 'from the wallet'}:"
+            text = f"✅ Ordered on {shop}, {total} {'cash on delivery' if out.cod else 'from the wallet'}:"
         elif out.unconfirmed:
-            text = f"⚠️ I couldn't confirm the order. Check the shop's app before resending.{problems}"
+            text = f"⚠️ I couldn't confirm the order. Check the {shop} app before resending.{problems}"
         elif out.waiting and out.estimated:
             text = f"{_basket(hh)}\nSend more to add."
         elif out.waiting:
-            text = f"🧺 The shop's total is ₹{out.item_total:g}, below the ₹{hh.min_order:g} minimum; send more to add."
+            text = f"🧺 {shop}'s total is ₹{out.item_total:g}, below the ₹{hh.min_order:g} minimum; send more to add."
         elif out.held:
             text = f"⏳ I'll order this in {HOLD // 60} minutes; send more to add, or tap Order now.\n\n{_basket(hh)}"
             self._offer_now(chat_id, hh, f"{text}\n{details}".strip())
             return self._hold(chat_id, hh, HOLD)
         elif not out.problems:
-            text = f"🛒 Cart ready ({total}{how}); placing orders is off (/settings)."
+            text = f"🛒 {shop} cart ready ({total}{how}); placing orders is off, so order it in the app (/settings)."
         else:
             text = f"❌ Not ordered:{problems}"
             if hh.ledger().basket():
@@ -661,10 +676,10 @@ class Bot:
                 self._not_set_up(new, "🎉 You're in! ")
         return True
 
-    def _start_setup(self, uid: int, name: str) -> None:
-        """Setup runs in the private chat, whose id is the user's id."""
+    def _start_setup(self, uid: int, name: str, shop: str | None = None) -> None:
+        """Setup runs in the private chat, whose id is the user's id. shop: None asks, if there is a choice."""
         self.replies[uid] = queue.Queue()
-        threading.Thread(target=self._setup, args=(uid, name), daemon=True).start()
+        threading.Thread(target=self._setup, args=(uid, name, shop), daemon=True).start()
 
     def _not_set_up(self, chat_id: int, prefix: str = "") -> None:
         # Group chats have negative ids; a reply keyboard there would pop up for everyone.
@@ -733,11 +748,70 @@ class Bot:
     def _settings(self, chat_id: int, hh: Household) -> None:
         self._say(
             chat_id,
+            f"Shop: {_shop(hh).NAME}, paid {_shop(hh).PAYS} (/shop)\n"
             f"Delivery: {hh.address_label}, must include {hh.address_match!r} (/setup to change)\n"
             f"Daily limit: ₹{hh.daily_cap:g}, ₹{hh.ledger().spent_today():g} spent today (/limit 1500)\n"
             f"Smallest order: ₹{hh.min_order:g} (/minimum 99)\n"
             f"Placing orders: {'on' if hh.place_orders else 'off, cart only'} (/ordering on or off)",
         )
+
+    def _offered(self, uid: int) -> list[str]:
+        """Shops on trial are offered to the admin only."""
+        return [key for key, shop in SHOPS.items() if not shop.TRIAL or uid == self.cfg.admin_id]
+
+    def _shops(self, chat_id: int, uid: int, hh: Household) -> None:
+        """The shop orders go to; for the owner, a button per other shop: switch if logged in, else connect."""
+        text = f"🏪 Orders go to {_shop(hh).NAME}, paid {_shop(hh).PAYS}."
+        others = [k for k in self._offered(uid) if k != hh.shop]
+        if not others:
+            return self._say(chat_id, text)
+        if uid != hh.owner:
+            return self._say(chat_id, f"{text}\nOnly {self.accounts.name(hh.owner)} can change it.")
+        buttons = [
+            (f"Switch to {_label(k)}" if hh.logged_in(k) else f"Connect {_label(k)}", f"shop:{k}") for k in others
+        ]
+        self._say(chat_id, text, buttons)
+
+    def _shop_button(self, cb: dict, hh: Household | None, shop: str) -> None:
+        user = cb.get("from", {})
+        if not hh or user.get("id") != hh.owner or shop not in self._offered(hh.owner):
+            return self.tg.answer(cb["id"], "Only the account's owner can change its shop.")
+        if msg := cb.get("message"):
+            self.tg.remove_buttons(msg["chat"]["id"], msg["message_id"])
+        if hh.logged_in(shop):
+            self.tg.answer(cb["id"], f"Switching to {SHOPS[shop].NAME} …")
+            return self._queue(self._switch, (msg or {}).get("chat", {}).get("id", hh.owner), hh, shop)
+        self.tg.answer(cb["id"], "Let's connect it in our private chat.")
+        self._start_setup(hh.owner, user.get("first_name", ""), shop)
+
+    def _switch(self, chat_id: int, hh: Household, shop: str) -> None:
+        """On the worker, so no order is half-way. Items never picked at the new shop leave the basket,
+        named, and open picks of the old shop's products end."""
+        self._unhold(hh)
+        self._withdraw(hh)
+        with self.lock:
+            ended = [p for p in self.picking.values() if p.household == hh.id]
+            self.picking = {pid: p for pid, p in self.picking.items() if p.household != hh.id}
+        self._save()
+        for p in ended:
+            for mid in filter(None, (i for *_, ids in p.asks.values() for i in ids)):
+                self.tg.remove_buttons(p.chat_id, mid)
+        hh = self.accounts.switch(hh.id, shop)
+        log.info("shop switched", shop=shop, picks_ended=len(ended))
+        catalog, basket = hh.catalog(), hh.ledger().basket()
+        unpicked = [key for key, _ in basket if not catalog.options(key)]
+        hh.ledger().set_basket([(k, q) for k, q in basket if k not in unpicked])
+        name = _shop(hh).NAME
+        lines = [f"🏪 Orders now go to {name}, paid {_shop(hh).PAYS}."]
+        if unpicked:
+            lines.append(f"Not picked on {name} yet, so taken out of the basket: {', '.join(unpicked)}. "
+                         "Send them again to choose.")  # fmt: skip
+        if not hh.place_orders:
+            lines.append(f"Placing orders is off here: I fill and check the {name} cart, you order in its app "
+                         "(/ordering on).")  # fmt: skip
+        if basket := _basket(hh):
+            return self._offer_now(chat_id, hh, "\n".join([*lines, "", basket]))
+        self._say(chat_id, "\n".join(lines))
 
     def _change(self, chat_id: int, hh: Household, command: str, arg: str) -> None:
         key, parse, example = SETTINGS[command]
@@ -776,14 +850,27 @@ class Bot:
             uid, f"❌ {reason[:1].upper()}{reason[1:]}. Nothing changed; send /setup to try again.", markup=NO_KEYBOARD
         )
 
-    def _setup(self, uid: int, name: str) -> None:
+    def _which_shop(self, uid: int) -> str:
+        offered = self._offered(uid)
+        if len(offered) == 1:
+            return offered[0]
+        labels = {_label(k): k for k in offered}
+        keyboard = {"keyboard": [[{"text": t}] for t in labels], "resize_keyboard": True}
+        answer = self._ask(uid, "Which shop is your account on? (/cancel stops)", markup=keyboard)
+        if answer not in labels:
+            raise SetupStopped("That isn't one of the shops")
+        return labels[answer]
+
+    def _setup(self, uid: int, name: str, shop: str | None) -> None:
         bind_contextvars(user_id=uid, chat_id=uid)  # a fresh thread; maybe started by the admin's tap
         log.info("setup started")
         try:
+            shop = shop or self._which_shop(uid)
+            bind_contextvars(shop=shop)
             phone = self._ask(
                 uid,
-                "Let's connect your shop account 🛒  Step 1 of 3\n\n"
-                "Tap the button to share the phone number you log in to the shop with, or type it. "
+                f"Let's connect your {SHOPS[shop].NAME} account 🛒  Step 1 of 3\n\n"
+                f"Tap the button to share the phone number you log in to {SHOPS[shop].NAME} with, or type it. "
                 "I only use it to log in, and I delete it from this chat. (/cancel stops)",
                 markup=SHARE_PHONE,
                 secret=True,
@@ -795,30 +882,36 @@ class Bot:
         finally:
             self.replies.pop(uid, None)
         busy = " right after the order in progress" if self.jobs.unfinished_tasks else ""
-        self._say(uid, f"Thanks! Asking the shop for a login code for ••••••{phone[-4:]}{busy}…", markup=NO_KEYBOARD)
-        self._queue(self._login, uid, name, phone)
+        shop_name = SHOPS[shop].NAME
+        self._say(uid, f"Thanks! Asking {shop_name} for a login code for ••••••{phone[-4:]}{busy}…", markup=NO_KEYBOARD)
+        self._queue(self._login, uid, name, phone, shop)
 
-    def _login(self, uid: int, name: str, phone: str) -> None:
+    def _login(self, uid: int, name: str, phone: str, shop: str) -> None:
         session = self.cfg.data_dir / f".login-{uid}.json"
         self.replies[uid] = queue.Queue()
         try:
-            with orders.login_browser(self.cfg, session) as b:
+            with orders.login_browser(self.cfg, shop, session) as b:
                 b.request_otp(phone)
                 log.info("login code requested")
                 otp = self._ask(
-                    uid, "📩 Step 2 of 3\n\nThe shop just texted you a login code. Send it here:", OTP_WAIT, secret=True
-                )
+                    uid, f"📩 Step 2 of 3\n\n{SHOPS[shop].NAME} just texted you a login code. Send it here:", OTP_WAIT,
+                    secret=True,
+                )  # fmt: skip
                 b.enter_otp(re.sub(r"\D", "", otp))
                 log.info("logged in")
                 self._say(uid, "✅ Logged in!\n\n📍 Step 3 of 3: where should orders go?")
                 label, match = self._choose_address(uid, b)
-            hh = self.accounts.connect(uid, name, label, match, session)
+            hh = self.accounts.connect(uid, name, shop, label, match, session, ordering=not SHOPS[shop].TRIAL)
             log.info("household connected", household_id=hh.id)
-            paid = "paid from your wallet or on delivery" if hh.place_orders else "carts filled for you (/ordering on)"
+            paid = (
+                f"paid {_shop(hh).PAYS}"
+                if hh.place_orders
+                else "carts filled for you to order in its app (/ordering on)"
+            )
             self._say(
                 uid,
                 f"🎉 You're all set{', ' + name if name else ''}!\n\n{TRY}\n\n"
-                f"Orders go to {hh.address_label}, {paid}, up to ₹{hh.daily_cap:g} a day "
+                f"Orders go to {hh.address_label} on {_shop(hh).NAME}, {paid}, up to ₹{hh.daily_cap:g} a day "
                 "(/settings). Want family to order too? Send /invite.",
                 markup=NO_KEYBOARD,
             )
