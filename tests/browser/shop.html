@@ -3,8 +3,8 @@
      cfg: loggedOut, noRemove (out of stock rows without a Remove button), countsOos (the header
      count includes them), lag (ms before a tap lands), cartLoad (ms before the cart fills),
      dropAdds (Add to Cart taps to ignore), dropPlus (+ taps to ignore), sizes ({product: size} the product page shows instead),
-     limits ({product: n}: the most one order may have; more taps are ignored), orderFails (Place Order's
-     call says no order was created). -->
+     limits ({product: n}: the most one order may have; more taps are ignored), noCartReply (no cart calls),
+     orderReply (Place Order's reply in place of a created order's). -->
 <html><head><meta charset="utf-8"><title>Shop</title></head><body>
 <header>
   <button data-testid="login-btn" id="login" style="display:none">Login</button>
@@ -24,7 +24,7 @@ const PRODUCTS = {
 };
 const load = () => JSON.parse(localStorage.shop || '{"items":{},"oos":{},"cfg":{}}');
 // As the shop's app: "create" for a cart that was empty, then PUT; it reads the reply before it moves on.
-const sync = (s, create) => fetch(create ? "/cfs/api/v1/cart/create" : "/cfs/api/v1/cart",
+const sync = (s, create) => s.cfg.noCartReply ? Promise.resolve() : fetch(create ? "/cfs/api/v1/cart/create" : "/cfs/api/v1/cart",
   {method: create ? "POST" : "PUT", body: JSON.stringify({items: s.items, oos: s.oos, limits: s.cfg.limits ?? {}})})
   .then(r => r.json());
 const save = s => {
@@ -70,7 +70,7 @@ function drawCart(s) {
 }
 
 window.placeOrder = total => later(() => fetch("/api/v3/order/", {method: "POST",
-  body: JSON.stringify({total, fails: !!load().cfg.orderFails})}).then(r => r.json())
+  body: JSON.stringify({total, reply: load().cfg.orderReply})}).then(r => r.json())
   .then(() => history.pushState({}, "", "/order/status/1")));  // a client-side move, as the shop's
 window.minus = k => later(() => { const s = load(); if (!--s.items[k]) delete s.items[k]; save(s); });
 window.remove = k => later(() => { const s = load(); delete s.items[k]; save(s); });

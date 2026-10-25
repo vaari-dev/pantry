@@ -40,18 +40,15 @@ class Shop(SimpleHTTPRequestHandler):
         if self.path == "/cfs/api/v1/cart/create":
             return self.do_PUT()
         sent = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        created = not sent["fails"]
-        self._reply(
-            {  # Place Order's call, in the shop's shape
-                "isOrderCreated": created,
-                "status": "CREATED" if created else "FAILED",
-                "failureReason": None if created else "ITEMS_UNAVAILABLE",
-                "itemTotalAmount": sent["total"] * 100,
-                "walletBalanceUsed": sent["total"] * 100,
-                "orderId": "never logged",
-            },
-            201,
-        )
+        created = {  # Place Order's reply, in the shop's shape
+            "isOrderCreated": True,
+            "status": "CREATED",
+            "failureReason": None,
+            "itemTotalAmount": sent["total"] * 100,
+            "walletBalanceUsed": sent["total"] * 100,
+            "orderId": "never logged",
+        }
+        self._reply(sent.get("reply") or created, 201)
 
     def do_PUT(self):
         """The cart reply, in the shop's shape, for the cart the page sends."""
@@ -214,9 +211,11 @@ def test_a_size_written_differently_is_added(shop):
     assert skipped == []
     assert cart(b) == {"kajal": 1}
     assert reviewed.prices == {PRODUCTS["kajal"]: "₹199"}  # not the struck-through ₹299
-    b._carts.clear()
+    b.page.evaluate("() => { const s = load(); s.cfg.noCartReply = true; localStorage.shop = JSON.stringify(s); }")
     b._cart = None
-    assert b.review_cart({PRODUCTS["kajal"]: 1}, RULES).prices == {PRODUCTS["kajal"]: "₹199"}  # by the page alone
+    with capture_logs() as logs:
+        assert b.review_cart({PRODUCTS["kajal"]: 1}, RULES).prices == {PRODUCTS["kajal"]: "₹199"}
+    assert "cart reply not used" in [e["event"] for e in logs]  # by the page alone
 
 
 def test_the_shops_limit_per_order_is_ordered_not_failed(shop):
@@ -331,34 +330,41 @@ def test_a_lost_plus_tap_is_tapped_again(shop):
 
 def test_a_short_quantity_is_one_problem(shop):
     b, given = shop
-    given(dropPlus=9)
+    given(dropPlus=9, noCartReply=True)  # by the page alone, as at 03:43 UTC
     b.empty_cart()
     b.add(PRODUCTS["chips"], 2)
-    b._carts.clear()
-    b._cart = None  # by the page alone, as at 03:43 UTC
-    assert b.review_cart({PRODUCTS["chips"]: 2}, RULES).problems == ["BRB Chips: 1 in the cart, expected 2"]
+    with capture_logs() as logs:
+        assert b.review_cart({PRODUCTS["chips"]: 2}, RULES).problems == ["BRB Chips: 1 in the cart, expected 2"]
+    assert "cart reply not used" in [e["event"] for e in logs]
 
 
 def test_the_cart_reply_is_read_when_the_cart_was_empty(shop):
     """An empty cart's first add is the shop app's "create" call, not a PUT."""
     b, given = shop
     given()
-    with capture_logs() as logs:
-        order(b, "kinley")
-    assert [e for e in logs if e["event"] == "cart read"][-1]["api"]["items"] == [["kinley", 1, 2000, 9, True]]
+    b.add(PRODUCTS["kinley"], 1)
+    assert b._cart_api()["items"] == [["kinley", 1, 2000, 9, True]]
 
 
-@pytest.mark.parametrize("fails", [False, True])
-def test_an_order_is_confirmed_by_the_shops_reply(shop, fails):
+def test_an_order_is_confirmed_by_the_shops_reply(shop):
     """25 Oct, 03:44 UTC: placed, but the Orders page check found nothing, so the user was told to check."""
     b, given = shop
-    given(orderFails=fails)
+    given()
     _, reviewed = order(b, "kinley")
     with capture_logs() as logs:
         b.place()
-        placed = b.confirm(reviewed.total, datetime.now())
-    assert placed is not fails
+        assert b.confirm(reviewed.total, datetime.now())
     assert not [e for e in logs if e["event"] == "page loaded"]  # never went looking on the Orders page
-    reply = [e for e in logs if e["event"] == "order reply"][-1]
-    assert (reply["created"], reply["item_total"]) == (not fails, 2000)
+    assert [(e["created"], e["item_total"]) for e in logs if e["event"] == "order reply"] == [(True, 2000)]
     assert "never logged" not in str(logs)
+
+
+@pytest.mark.parametrize("reply", [{"isOrderCreated": False, "status": "PENDING"}, {"error": "busy"}])
+def test_an_order_not_said_created_is_looked_for(shop, reply):
+    b, given = shop
+    given(orderReply=reply)
+    _, reviewed = order(b, "kinley")
+    with capture_logs() as logs:
+        b.place()
+        assert not b.confirm(reviewed.total, datetime.now())  # the fake has no Orders page
+    assert [e["at"] for e in logs if e["event"] == "no order on the orders page"] == ["/account/orders"] * 3
