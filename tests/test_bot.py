@@ -876,7 +876,10 @@ DAIRY = Product("Mother Dairy Cow Milk", "1 l", "https://shop.example/dairy", "�
 def press(bot, start, label):
     """Taps the button labelled label on the message starting with start."""
     data = dict(said(bot, start))[label]
-    bot._on_button({"id": "q", "from": {"id": NEW}, "data": data, "message": {"chat": {"id": NEW}, "message_id": 1}})
+    message_id = next(n for n, (_, text, _) in enumerate(bot.tg.sent, 1) if text.startswith(start))
+    bot._on_button(
+        {"id": "q", "from": {"id": NEW}, "data": data, "message": {"chat": {"id": NEW}, "message_id": message_id}}
+    )
 
 
 def test_an_amount_is_made_up_from_the_sizes_on_sale(bot, shop):
@@ -1037,22 +1040,26 @@ def test_a_change_and_new_items_in_one_message_are_answered_together(bot, shop):
     assert hh.ledger().basket() == [("bread", 1), ("milk", 1), ("jam", 1)]
 
 
-def test_a_newer_list_keeps_what_the_open_one_had_settled(bot, shop):
-    hh, _ = shop
+def test_a_newer_list_joins_the_open_one_and_keeps_its_address(bot, shop):
+    hh, fake = shop
     hh.catalog().learn("cow milk", Choice("Amul Cow Milk", [AMUL[1]]))
-    reads(bot, add=[("cow milk", "20 l"), ("bread", 1)])
-    bot._on_message(message("20 litre cow milk, bread"))
+    bot.accounts.update(hh.id, min_order=0)
+    reads(bot, add=[("cow milk", "20 l")], address="work", now=True)
+    bot._on_message(message("20 litre cow milk to work abhi"))
     said(bot, "❓ cow milk 20 l?")
-    reads(bot, add=[("jam", 1)])
+    reads(bot, add=[("jam", 1), ("bread", 1)])
     bot.tg.edit_text = lambda *_: None
     bot._on_message(message("jam"))
     said(bot, "Jam 1")
-    bot._pick(hh, f"{next(iter(bot.picking))}:0:0")
-    sent(bot, "⏳ I'll order this", having="• Bread ×1")
-    assert hh.ledger().basket() == [("bread", 1), ("jam", 1)]
+    [(pid, picking)] = bot.picking.items()
+    bot._pick(hh, f"{pid}:{next(iter(picking.asks))}:0")
+    press(bot, "❓ cow milk 20 l?", "1 l")
+    said(bot, "✅ Ordered to Work")
+    assert fake.orders == 1 and fake.placed_to == ["addr-work"]
+    assert hh.ledger().address() is None and placed(hh) == [[["bread", 1], ["jam", 1], ["cow milk", "1 l"]]]
 
 
-def test_an_unanswered_cart_only_question_is_not_ordered_later(bot, shop):
+def test_an_unanswered_cart_only_question_is_dropped_when_ordering_goes_on(bot, shop):
     hh, fake = shop
     bot.accounts.update(hh.id, place_orders=False)
     hh.catalog().learn("cow milk", one(DAIRY))
@@ -1064,9 +1071,58 @@ def test_an_unanswered_cart_only_question_is_not_ordered_later(bot, shop):
     said(bot, "❓ Amul Cow Milk has only 1 l today.")
     reads(bot, add=[("bread", 2)])
     bot._on_message(message("2 bread"))
-    said(bot, "🛒 Cart ready")
-    assert {p.name: n for p, n in fake.cart.items()} == {"Bread": 2}
-    hh.ledger().set_basket([("cow milk", "2 l")])
+    said(bot, "Adding bread ×2")
+    assert hh.ledger().basket() == [("cow milk", "2 l"), ("bread", 2)]  # still asking
     bot._on_message(message("/ordering on", uid=NEW))
     said(bot, "Delivery:")
     assert hh.ledger().basket() == []
+
+
+def test_a_far_over_change_with_now_waits_for_the_answer(bot, shop):
+    hh, _ = shop
+    hh.ledger().set_basket([("bread", 1), ("milk", 1)])
+    reads(bot, change=[("bread", 30)], now=True)
+    bot._on_message(message("make it 30 bread abhi"))
+    press(bot, "❓ bread ×30?", "×1")
+    said(bot, "✅ Ordered")
+    assert placed(hh) == [[["bread", 1], ["milk", 1]]]
+
+
+def test_ordering_on_again_keeps_the_basket(bot, shop):
+    hh, _ = shop
+    hh.ledger().set_basket([("bread", 1)])
+    bot._on_message(message("/ordering on"))
+    said(bot, "Delivery:")
+    assert hh.ledger().basket() == [("bread", 1)]
+
+
+def test_a_pick_open_at_the_28_oct_deploy_survives_it(bot, shop):
+    hh, _ = shop
+    jam = vars(Product("Jam", "1 pc", "https://shop.example/jam", "₹60"))
+    old = {"chat_id": NEW, "household": hh.id, "ready": [["bread", 1]], "asks": {"0": ["jam", 1, [jam], [None]]},
+           "picked": [], "started": time.time(), "when": "hold", "address": []}  # fmt: skip
+    store.write(bot.saved, {"offset": 9, "at": time.time(), "picking": {"p1": old}})
+    new = restarted(bot)
+    new._pick(hh, "p1:0:0")
+    sent(new, "⏳ I'll order this", having="• Jam ×1")
+    assert placed(hh) == [] and hh.ledger().basket() == [("bread", 1), ("jam", 1)]
+
+
+def test_an_old_question_cannot_answer_a_new_one(bot, shop):
+    hh, fake = shop
+    hh.catalog().learn("cow milk", one(DAIRY))
+    hh.catalog().learn("cow milk", Choice("Amul Cow Milk", [AMUL[1]]))
+    fake.search = lambda query, limit=4: []
+    fake.limits = {AMUL[1].label(): 1}
+    reads(bot, add=[("cow milk", "2 l")], now=True)
+    for _ in range(2):  # asked again: the first question's buttons go
+        bot._on_message(message("2 litre cow milk abhi"))
+        idle(bot)
+    first, second = (n for n, (_, t, _) in enumerate(bot.tg.sent, 1) if t.startswith("❓"))
+    assert (NEW, first) in bot.tg.unbuttoned
+    tap_more = {"id": "q", "from": {"id": NEW}, "data": f"more:{hh.id}:y", "message": {"chat": {"id": NEW}}}
+    bot._on_button(tap_more | {"message": {"chat": {"id": NEW}, "message_id": first}})
+    idle(bot)
+    assert fake.orders == 0
+    bot._on_button(tap_more | {"message": {"chat": {"id": NEW}, "message_id": second}})
+    said(bot, "✅ Ordered")

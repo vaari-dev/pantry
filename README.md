@@ -21,10 +21,9 @@ New people message the bot; the admin taps *Let them in*. `/setup` (private chat
 phone number, the code the shop texts, and one of the account's saved addresses; the bot deletes
 the number and code from the chat. Family joins through an owner's `/invite` link.
 
-Ask by count or amount: *"2 bread"*, *"2 litre cow milk"*. The first time, you pick the product
-(Amul Cow Milk, with all its sizes); after that the bot makes the amount up from the cheapest mix of
-its sizes on sale, within the shop's per-order limits. If that falls short, it asks before adding
-your next product for that item. Far more than you usually get is asked about first.
+Ask by count or amount, *"2 bread"*, *"2 litre cow milk"*: you pick the product once, and the bot
+buys the cheapest mix of its sizes within the shop's limits. It asks before adding another product,
+or far more than usual.
 
 The bot sets the shop cart to exactly the basket, then checks the shop's bill before ordering: only
 the expected items, the account's address, paid fully from the wallet or fully on delivery, within

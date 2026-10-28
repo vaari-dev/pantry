@@ -127,3 +127,11 @@ def test_a_pick_saved_with_its_brand_as_name_reads_as_its_full_name(tmp_path):
     assert (kajal.name, kajal.size, kajal.label()) == ("Elle 18 Eyedrama Kajal Bold Black", "", kajal.name)
     assert kajal.variant == "0006f6cd-ed90-49ea-9e8d-bcddaebe00c4"
     assert catalog.choices("lemon")[0].sizes[0].label() == "Lemon (1 pc)"
+
+
+def test_a_pick_with_its_size_only_in_its_name_measures(tmp_path):
+    """Before 24 Oct, cards with a brand line were saved as name=brand, size=name."""
+    old = {"name": "Amul", "size": "Amul Taaza Toned Milk 500 ml", "url": "/pn/taaza/pvid/1", "price": "₹28"}
+    store.write(tmp_path / "catalog.json", {"milk": {"options": [old]}})
+    [milk] = Catalog(tmp_path / "catalog.json").choices("milk")
+    assert milk.wants("2 l") == (2000, "ml") and milk.wants(2) == (1000, "ml")

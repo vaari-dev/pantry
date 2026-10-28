@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import structlog
 
 from .accounts import Household
-from .catalog import PACK, QUANTITY, Choice, Product, Qty, amount, combine, measure, rupees, same_product, shown
+from .catalog import PACK, QUANTITY, Choice, Product, Qty, amount, combine, rupees, same_product, shown, size_of
 from .fill import MAX_PACKS, Offer, cheapest
 from .shop import Rules, ShopError, Zepto
 
@@ -55,7 +55,7 @@ def check(hh: Household) -> None:
 
 
 def _wants(qty: Qty, choice: Choice) -> tuple[int, str, str]:
-    """(how much, its unit, a note when the sizes can't tell)."""
+    """(how much, its unit, a note when the sizes don't say)."""
     if want := choice.wants(qty):
         return *want, ""
     return 1, PACK, f"its size doesn't say how much makes {qty}"
@@ -71,7 +71,7 @@ def _as(value: int, unit: str) -> str:
 
 
 def _parts(take: dict[Product, int]) -> str:
-    """ "Amul Cow Milk 1 l x1 + 500 ml x2" """
+    """ "Amul Cow Milk 1 l x1 + 500 ml x2 + Mother Dairy Cow Milk 1 l x1" """
     parts, last = [], None
     for p, n in take.items():
         name = QUANTITY.sub(" ", p.name).strip() or p.name
@@ -91,10 +91,15 @@ def _sizes(choice: Choice, unit: str) -> list[Product]:
 
 
 def _size(p: Product, unit: str) -> int:
-    """How much one pack of p is, in unit; 0 if it isn't sold that way."""
+    """0: not sold that way."""
     if unit == PACK:
         return 1
-    return m[0] if (m := measure(p.size)) and m[1] == unit else 0
+    return m[0] if (m := size_of(p)) and m[1] == unit else 0
+
+
+def _seen(choice: Choice, unit: str) -> list[Offer]:
+    """Its sizes at the prices last seen, without the shop's limits."""
+    return [Offer(p, size, MAX_PACKS, rupees(p.price)) for p in _sizes(choice, unit) if (size := _size(p, unit))]
 
 
 def line(key: str, qty: Qty, take: dict[Product, int], note: str = "") -> str:
@@ -105,16 +110,14 @@ def line(key: str, qty: Qty, take: dict[Product, int], note: str = "") -> str:
 
 
 def priced(hh: Household) -> tuple[list[tuple[str, float | None]], float, int]:
-    """The basket at the prices last seen in the shop, its usual products without the shop's limits:
-    (line, amount or None) rows, total, unpriced."""
+    """The basket from the first choices at the prices last seen: (line, amount) rows, total, unpriced."""
     catalog, rows = hh.catalog(), []
     for key, qty in hh.ledger().basket():
         if not (choices := catalog.choices(key)):
             rows.append((f"{key} {shown(qty)}", None))
             continue
         want, unit, note = _wants(qty, choices[0])
-        sizes = [(p, size) for p in _sizes(choices[0], unit) if (size := _size(p, unit))]
-        take = cheapest(want, [Offer(p, size, MAX_PACKS, rupees(p.price)) for p, size in sizes])
+        take = cheapest(want, _seen(choices[0], unit))
         rows.append((line(key, qty, take, note), _cost(take)))
     return rows, sum(a or 0 for _, a in rows), sum(a is None for _, a in rows)
 
@@ -123,8 +126,7 @@ def usual_pack(choice: Choice, qty: Qty) -> Product | None:
     """For an amount, the size its cheapest mix uses most; None for a count."""
     if isinstance(qty, int) or not (want := choice.wants(qty)):
         return None
-    sizes = [Offer(p, size, MAX_PACKS, rupees(p.price)) for p in choice.sizes if (size := _size(p, want[1]))]
-    take = cheapest(want[0], sizes)
+    take = cheapest(want[0], _seen(choice, want[1]))
     return max(take, key=take.get, default=None)
 
 
@@ -133,21 +135,20 @@ def unusual(hh: Household, key: str, qty: Qty) -> Qty | None:
     order, more than three times three usual packs. Else None."""
     if not (choices := hh.catalog().choices(key)) or not (want := choices[0].wants(qty)):
         return None
+    pack = choices[0].wants(1)[0]
     before = [w[0] for q in hh.ledger().bought(key) if (w := choices[0].wants(q)) and w[1] == want[1]]
-    usual = statistics.median(before) if before else choices[0].wants(1)[0]
+    usual = statistics.median(before) if before else pack
     if want[0] <= 3 * usual * (1 if before else 3):
         return None
-    if want[1] == PACK or (isinstance(qty, int) and not before):
-        return max(1, round(usual / (choices[0].wants(1)[0])))
-    return amount(round(usual), want[1])
+    return max(1, round(usual / pack)) if isinstance(qty, int) else amount(round(usual), want[1])
 
 
 def _offers(z: Zepto, choice: Choice, unit: str) -> tuple[list[Offer], str | None]:
-    """The choice's sizes on sale now, also ones not seen before; and why none, if so."""
+    """Its sizes on sale now, also ones not seen before; and why none, if so."""
     sizes = _sizes(choice, unit)
     if unit != PACK:
         try:
-            found = z.search(choice.name, limit=12)
+            found = z.search(choice.name)
         except ShopError:
             found = []
         sizes += [p for p in found if same_product(p, choice.sizes[0]) and all(p.variant != s.variant for s in sizes)]
@@ -165,21 +166,21 @@ def _offers(z: Zepto, choice: Choice, unit: str) -> tuple[list[Offer], str | Non
 @dataclass
 class Fill:
     take: dict[Product, int] = field(default_factory=dict)
-    note: str = ""  # on anything short
+    note: str = ""
     why: str = ""  # nothing could be added
-    ask: str = ""  # whether to make it up with the household's other products
+    ask: str = ""
 
 
 def _fill(z: Zepto, qty: Qty, choices: list[Choice], others: bool | None) -> Fill:
-    """Packs for qty from the household's first product; its other products only when the first can't
-    make it up and others is True (None: ask)."""
+    """Packs for qty from the household's first product; from its next ones only for what the first
+    can't make up, and when others is True (None: ask)."""
     want, unit, note = _wants(qty, choices[0])
     first, why = _offers(z, choices[0], unit)
     take = cheapest(want, first)
     got = _got(take, first)
     if got < want and len(choices) > 1 and others is not False:
         extra, offers = {}, list(first)
-        for choice in choices[1:]:  # in the household's order, each only for what is still missing
+        for choice in choices[1:]:
             if (wants := choice.wants(1)) and wants[1] == unit and got + _got(extra, offers) < want:
                 found = _offers(z, choice, unit)[0]
                 offers += found
@@ -204,13 +205,8 @@ def order(hh: Household, items: list[tuple[str, Qty]], when: str = "due") -> Out
     to a silent second order: an unfinished attempt is reported, not retried."""
     catalog, ledger = hh.catalog(), hh.ledger()
     out, limits = Outcome(), rules(hh)
-    before = ledger.basket() if hh.place_orders or not items else []  # with ordering off, only an answer's
-    items, others = combine(before, items), ledger.others()
-    if not hh.place_orders:  # nothing waits in the basket, so neither does its address
-        ledger.set_basket([])
-        ledger.set_address()
-    if hh.place_orders:
-        ledger.set_basket(items)
+    items, others = combine(ledger.basket(), items), ledger.others()
+    ledger.set_basket(items)
     if limits.budget <= 0:
         out.over_limit = True
         out.problems.append(f"today's limit of ₹{hh.daily_cap:g} is used up")
@@ -244,9 +240,6 @@ def order(hh: Household, items: list[tuple[str, Qty]], when: str = "due") -> Out
                 p = next((e for e in expected if e.variant == p.variant), p)
                 expected[p] = expected.get(p, 0) + n
         if out.questions:  # nothing is ordered until they are answered
-            ledger.set_basket(items)  # also with ordering off, for the answer to find
-            for key, allowed in {**others, **dict.fromkeys(out.questions)}.items():
-                ledger.set_others(key, allowed)
             return out
         kept = [(k, q) for k, q in items if k in out.unavailable]  # stay in the basket, whatever happens
         if not expected:
@@ -269,6 +262,7 @@ def order(hh: Household, items: list[tuple[str, Qty]], when: str = "due") -> Out
             ledger.set_basket(items)
             return out
         if not hh.place_orders:
+            ledger.set_basket([])
             return out
 
         attempt = ledger.begin([(key, qty) for key, qty, *_ in filled], cart.total)

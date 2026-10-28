@@ -341,7 +341,7 @@ class Zepto:
             raise ShopError("the shop would not deliver to the saved address; its owner can /setup again")
         return Address(address_id, got.get("label") or "", got.get("addressLine") or "")
 
-    def search(self, query: str, limit: int = 4) -> list[Product]:
+    def search(self, query: str, limit: int = 12) -> list[Product]:
         found = []
         for p in self.tool("search_products", query=query).get("products") or []:
             if p.get("isAd") or not (p.get("availableQuantity") and p.get("storeProductId")):
@@ -376,7 +376,6 @@ class Zepto:
         return max(0, min(p.get("availableQuantity") or 0, p.get("maxAllowedQuantity") or 0)) or "out of stock"
 
     def price(self, product: Product) -> str:
-        """As stock last read it; "" if not read."""
         return self._price.get(product.variant, "")
 
     def fill(self, items: dict[Product, int]) -> None:

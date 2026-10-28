@@ -1,11 +1,11 @@
 """ledger.json: {"orders": [{"id", "day", "at", "status", "total", "items"}], "basket": [[key, qty]],
 "hold": [chat, until] | null, "offer": [chat, message] | null, "address": [id, label] | null,
-"others": {item: true | false | null}}
+"others": {item: bool}, "asked": {item: [chat, message, when]}}
 
 hold: when the basket gets placed. offer: the one message whose Order now button works.
 address: where the basket goes instead of the household's address, until it is empty.
-others: whether a basket item may be made up with the household's other products (null: asked, no answer
-yet), while it is in the basket.
+others: whether a basket item may be made up with the household's other products; asked: the question
+about it waiting for an answer. Both last while the item is in the basket.
 
 status: placing -> placed | failed | unknown. "placing" left over after a crash may or may not
 have gone through: it is reported, never retried.
@@ -20,7 +20,7 @@ from pathlib import Path
 from . import store
 from .catalog import Qty
 
-EMPTY = {"orders": [], "basket": [], "hold": None, "offer": None, "address": None, "others": {}}
+EMPTY = {"orders": [], "basket": [], "hold": None, "offer": None, "address": None, "others": {}, "asked": {}}
 
 
 class Ledger:
@@ -47,17 +47,25 @@ class Ledger:
         with self._edit() as data:
             data["basket"] = [list(i) for i in items]
             data["address"] = data["address"] if items else None
-            data["others"] = {k: v for k, v in data.get("others", {}).items() if k in dict(items)}
+            for answers in ("others", "asked"):
+                data[answers] = {k: v for k, v in data.get(answers, {}).items() if k in dict(items)}
 
-    def others(self) -> dict[str, bool | None]:
+    def others(self) -> dict[str, bool]:
         return self._read()["others"]
 
-    def set_others(self, key: str, allowed: bool | None) -> None:
+    def set_others(self, key: str, allowed: bool) -> None:
         with self._edit() as data:
             data["others"] = {**data.get("others", {}), key: allowed}
+            data["asked"] = {k: v for k, v in data.get("asked", {}).items() if k != key}
+
+    def asked(self) -> dict[str, list]:
+        return self._read()["asked"]
+
+    def set_asked(self, key: str, chat_id: int, message_id: int | None, when: str) -> None:
+        with self._edit() as data:
+            data["asked"] = {**data.get("asked", {}), key: [chat_id, message_id, when]}
 
     def bought(self, key: str) -> list[Qty]:
-        """What was asked for of key in placed orders, oldest first."""
         return [q for o in self._orders() if o["status"] == "placed" for k, q in o["items"] if k == key]
 
     def hold(self) -> tuple[int, datetime] | None:

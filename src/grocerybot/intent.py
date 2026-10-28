@@ -26,7 +26,7 @@ name: the household's word for it, copied exactly, when one of their words means
 else a short singular search term for the shop (English where that is usual: anda -> egg). qty: how many packs, 1 if \
 not said. Sizes and weights are not quantities: "1 kg aloo", "a dozen eggs", "aadha litre doodh" \
 are each 1. In Hindi "do" before an item is 2 ("do anda"), elsewhere it means "give". \
-amount: the size or weight asked for, per pack: said, those words copied exactly ("2 litre", \
+amount: the size or weight asked for in all: said, those words copied exactly ("2 litre", \
 "aadha kilo"); value and unit (ml, l, g or kg) its number and unit ("aadha kilo" is 0.5 kg). \
 Empty said, value 0 and unit "" when no size or weight is said.
 - change: items already in the basket to set to a new quantity; 0 removes ("no bread", \
@@ -125,17 +125,13 @@ def grounded(reply: dict, text: str) -> Request:
         return said(words) and named and quoted
 
     def size(i: dict) -> Qty:
-        """The amount, when the message says it with its unit; else the count."""
+        """The amount, when the message says it with its unit and any digits match; else the count."""
         a, qty = i["amount"], i["qty"]
-        if not (qty and a["unit"] and a["value"] > 0 and said(a["said"])):
-            return qty
-        asked = measure(f"{a['value'] * qty} {a['unit']}")
-        quoted = measure(a["said"])  # with digits, they must be the value's
+        asked = measure(f"{a['value']} {a['unit']}") if qty and a["value"] > 0 and said(a["said"]) else None
         if not asked or not UNIT_WORDS[asked[1]].search(normalize(a["said"])):
             return qty
-        if quoted and quoted[0] * qty != asked[0]:
-            return qty
-        return amount(*asked)
+        quoted = measure(a["said"])
+        return qty if quoted and quoted != asked else amount(*asked)
 
     def items(key: str, least: int) -> list[tuple[str, Qty]]:
         return [

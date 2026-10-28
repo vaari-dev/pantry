@@ -1,8 +1,6 @@
-"""Words people say -> the products a household buys for them, best first; each product in all its sizes.
+"""Words people say -> the products a household buys for them, best first, each in the sizes seen.
 
 catalog.json: {"milk": {"aliases": ["doodh"], "choices": [{"name": "Amul Cow Milk", "sizes": [product, ...]}, ...]}}
-A choice's first size is the household's usual pack. An item is asked for as a count (2) or an
-amount ("2 l"); orders make either up from the sizes on sale.
 """
 
 import re
@@ -88,6 +86,11 @@ def normalize(text: str) -> str:
     return " ".join(re.sub(r"[^a-z0-9]+", " ", text.lower()).split())
 
 
+def size_of(p: Product) -> tuple[int, str] | None:
+    """Before 24 Oct, some picks were saved with their size in the name only."""
+    return measure(p.size) or (measure(p.name) if not p.size else None)
+
+
 def same_product(a: Product, b: Product) -> bool:
     """Two sizes of one product: by the shop's id, else by the name without its size."""
     if a.family and b.family:
@@ -107,11 +110,12 @@ class Choice:
 
     @classmethod
     def from_json(cls, d: dict) -> "Choice":
-        return cls(d["name"], [_repaired(Product(**p)) for p in d["sizes"]])
+        """Also a single product, as picks open at the 28 Oct deploy were saved."""
+        return cls(d["name"], [_repaired(Product(**p)) for p in d.get("sizes", [d])])
 
     def wants(self, qty: Qty) -> tuple[int, str] | None:
-        """How much qty is, in the unit its sizes compare in: an amount as said, a count in usual packs."""
-        usual = measure(self.sizes[0].size) if self.sizes else None
+        """qty in the unit its sizes compare in: a count is of usual packs; None if they don't compare."""
+        usual = size_of(self.sizes[0]) if self.sizes else None
         if isinstance(qty, int):
             return (qty * usual[0], usual[1]) if usual else (qty, PACK)
         want = measure(qty)
@@ -119,7 +123,7 @@ class Choice:
 
 
 def grouped(found: list[Product], limit: int) -> list[Choice]:
-    """Search results as products, each in all the sizes found, in the shop's order."""
+    """Search results as products, each in all the sizes found."""
     choices: list[Choice] = []
     for p in found:
         if same := next((c for c in choices if same_product(c.sizes[0], p)), None):
@@ -127,7 +131,7 @@ def grouped(found: list[Product], limit: int) -> list[Choice]:
         elif len(choices) < limit:
             choices.append(Choice(QUANTITY.sub(" ", p.name).strip() or p.name, [p]))
     for c in choices:
-        c.sizes.sort(key=lambda p: (not (m := measure(p.size)), m and m[0]))
+        c.sizes.sort(key=lambda p: (not (m := size_of(p)), m and m[0]))
     return choices
 
 
@@ -161,14 +165,10 @@ class Catalog:
                         p["price"] = prices.get(p["url"], p["price"])
                 entry.pop("options", None)
 
-    def items(self) -> list[str]:
-        return list(self._load())
-
     def vocabulary(self) -> list[str]:
         return [n for key, entry in self._load().items() for n in (key, *entry.get("aliases", []))]
 
     def learn(self, spoken: str, choice: Choice, usual: Product | None = None) -> str:
-        """Remember a picked product as the first choice for what was said, usual pack first. Returns the key."""
         usual = usual or choice.sizes[0]
         picked = Choice(choice.name, [usual, *(p for p in choice.sizes if p.url != usual.url)])
         with store.edit(self.path, {}) as items:
@@ -224,7 +224,6 @@ def plan(items: list[tuple[str, Qty]], catalog: Catalog) -> Plan:
 
 
 def combine(basket: list[tuple[str, Qty]], items: list[tuple[str, Qty]]) -> list[tuple[str, Qty]]:
-    """The waiting basket plus a new list; repeats add up."""
     merged: dict[str, Qty] = {}
     for key, qty in [*basket, *items]:
         merged[key] = add(merged.get(key), qty)
