@@ -20,12 +20,11 @@ New people message the bot; the admin taps *Let them in*. `/setup` (private chat
 phone number, the code the shop texts, and one of the account's saved addresses; the bot deletes
 the number and code from the chat. Family joins through an owner's `/invite` link.
 
-The bot owns the shop cart: it sets it to exactly the basket, then reads the shop's bill and checks
-it before ordering: only the expected items, the account's address, paid fully from the wallet or
-fully on delivery, within the daily limit. Lists under the
-smallest order wait in the basket; a cart that reaches it is placed 3 minutes later, or at once with
-*Order now*. Each attempt is recorded before the order call, and confirmed by a new order in the
-shop's history, so an interrupted order is reported, never retried.
+The bot sets the shop cart to exactly the basket, then checks the shop's bill before ordering: only
+the expected items, the account's address, paid fully from the wallet or fully on delivery, within
+the daily limit. Lists under the smallest order wait in the basket; a basket that reaches it is
+placed 3 minutes later, or at once with *Order now*. Each attempt is recorded before the order call
+and confirmed by its id in the shop's history, so an interrupted order is reported, never retried.
 
 | | |
 |---|---|
