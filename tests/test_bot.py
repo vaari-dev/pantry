@@ -783,6 +783,37 @@ def test_an_address_goes_if_none_of_its_items_were_added(bot, shop):
     assert hh.ledger().address() is None
 
 
+def test_an_address_with_clear_is_not_kept(bot, shop):
+    hh, _ = shop
+    hh.ledger().set_basket([("bread", 1)])
+    reads(bot, clear_basket=True, address="work")
+    bot._on_message(message("sab cancel, work pe bhejna"))
+    said(bot, "Basket emptied.")
+    idle(bot)
+    assert hh.ledger().address() is None
+
+
+def test_a_picked_item_goes_to_its_address(bot, shop):
+    _, fake = shop
+    reads(bot, add=[("jam", 1)], address="work", now=True)
+    bot._on_message(message("jam to work abhi"))
+    said(bot, 'Which "jam"')
+    bot._on_button({"id": "q", "from": {"id": NEW}, "data": f"{next(iter(bot.picking))}:0:0"})
+    said(bot, "✅ Ordered to Work")
+    assert fake.placed_to == ["addr-work"]
+
+
+def test_an_address_waits_for_its_items(bot, shop):
+    hh, _ = shop
+    reads(bot, add=[("jam", 1)], address="work")
+    bot._on_message(message("jam to work"))
+    said(bot, 'Which "jam"')
+    reads(bot, add=[("milk", 2)])
+    bot._on_message(message("2 milk"))
+    said(bot, "⏳ I'll order this")
+    assert hh.ledger().address() is None
+
+
 def test_clear_drops_the_address(bot, shop):
     hh, _ = shop
     hh.ledger().set_address("addr-work", "Work")

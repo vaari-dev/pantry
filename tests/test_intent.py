@@ -40,9 +40,10 @@ def test_a_setting_needs_its_value_said():
             {"said": "limit badha do", "name": "limit", "value": "5000"},
             {"said": "minimum 99", "name": "minimum", "value": "9"},
             {"said": "limit 2,000", "name": "limit", "value": "2000"},
+            {"said": "hold it on", "name": "ordering", "value": "on"},
         ]
     }
-    text = "Bread order kar do, limit badha do, minimum 99, limit 2,000"
+    text = "Bread order kar do, limit badha do, minimum 99, limit 2,000, hold it on"
     assert grounded(reply, text).settings == [("limit", "2000")]
 
 

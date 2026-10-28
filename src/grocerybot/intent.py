@@ -99,7 +99,9 @@ def grounded(reply: dict, text: str) -> Request:
 
     def setting(s: dict) -> bool:
         value, words = s["value"], s["said"]
-        return said(words) and (value == re.sub(r"\D", "", words) if value.isdigit() else said(value, words))
+        named = {"limit": "limit", "minimum": "minimum", "ordering": "order"}[s["name"]] in words.lower()
+        quoted = value == re.sub(r"\D", "", words) if value.isdigit() else said(value, words)
+        return said(words) and named and quoted
 
     def items(key: str, least: int) -> list[tuple[str, int]]:
         return [(i["name"], i["qty"]) for i in reply[key] if said(i["said"]) and i["name"] and i["qty"] >= least]

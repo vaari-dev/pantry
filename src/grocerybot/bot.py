@@ -138,6 +138,7 @@ class Picking:
     picked: list[tuple[str, int]] = field(default_factory=list)
     started: float = field(default_factory=time.time)
     when: str = "hold"
+    address: tuple[str, ...] = ()  # (id, label) of a saved address said with the items
 
     def to_json(self) -> dict:
         asks = {n: [name, qty, [vars(p) for p in options], ids] for n, (name, qty, options, ids) in self.asks.items()}
@@ -452,23 +453,23 @@ class Bot:
 
     def _handle(self, chat_id: int, uid: int, hh: Household, text: str) -> None:
         r = self.read(text, hh.catalog().vocabulary(), [key for key, _ in hh.ledger().basket()])
-        to = None
-        if r.address and not (to := self._saved_address(chat_id, hh, r)):
-            return
+        address = ()
+        if r.address:
+            if not (to := self._saved_address(chat_id, hh, r)):
+                return
+            address = (to.id, to.label)
         for name, value in r.settings:
             if self._owner(chat_id, uid, hh):
                 self._change(chat_id, hh, f"/{name}", value)
         hh = self.accounts.get(hh.id) or hh
         if r.clear_basket:
             self._clear(chat_id, hh)
-        if to and to.id != hh.address_id:
-            hh.ledger().set_address(to.id, to.label)
-        elif to:
-            hh.ledger().set_address()
         if r.change:
             self._change_basket(chat_id, hh, r.change)
         if r.add:
-            return self._add(chat_id, hh, r.add, "now" if r.now else "hold")
+            return self._add(chat_id, hh, r.add, "now" if r.now else "hold", address)
+        if address and hh.ledger().basket():
+            hh.ledger().set_address(*address)
         if r.now:
             return self._order(chat_id, hh, [], "now")
         if r.show_basket or r.change or r.address:
@@ -505,18 +506,13 @@ class Bot:
             self._unhold(hh)
             self._withdraw(hh)
 
-    def _nothing_added(self, chat_id: int, hh: Household, text: str) -> None:
-        if not hh.ledger().basket():  # an address said with these items isn't for later ones
-            hh.ledger().set_address()
-        self._say(chat_id, text)
-
     def _show_basket(self, chat_id: int, hh: Household) -> None:
         if text := _basket(hh):
             self._offer_now(chat_id, hh, text)
         else:
             self._say(chat_id, "The basket is empty.")
 
-    def _add(self, chat_id: int, hh: Household, items: list[tuple[str, int]], when: str) -> None:
+    def _add(self, chat_id: int, hh: Household, items: list[tuple[str, int]], when: str, address: tuple) -> None:
         p = plan(items, hh.catalog())
         log.info("list planned", ready=len(p.ready), to_pick=len(p.to_pick), notes=len(p.notes))
         for note in p.notes:
@@ -536,13 +532,13 @@ class Bot:
         asks = {n: (name, qty, options, []) for n, (name, qty, _, options) in enumerate(found) if options}
         if not asks:
             if not p.ready:
-                return self._nothing_added(chat_id, hh, "I didn't catch any items.")
-            return self._order(chat_id, hh, p.ready, when)
+                return self._say(chat_id, "I didn't catch any items.")
+            return self._order(chat_id, hh, p.ready, when, address)
 
         pid = secrets.token_hex(4)
         with self.lock:
             self.picking = {k: v for k, v in self.picking.items() if v.chat_id != chat_id}  # newest list wins
-            self.picking[pid] = Picking(chat_id, hh.id, p.ready, asks, when=when)
+            self.picking[pid] = Picking(chat_id, hh.id, p.ready, asks, when=when, address=address)
         if p.ready:
             self._say(chat_id, f"Got: {_items(p.ready)}. Pick the rest:")
         for n, (name, qty, options, ids) in list(asks.items()):  # taps answer (pop) items while these go out
@@ -592,9 +588,9 @@ class Bot:
             self.tg.edit_text(picking.chat_id, ids[0], f'"{name}": {result}')
         if done:
             if items := picking.ready + picking.picked:
-                self._queue(self._order, picking.chat_id, hh, items, picking.when)
+                self._queue(self._order, picking.chat_id, hh, items, picking.when, picking.address)
             else:
-                self._nothing_added(picking.chat_id, hh, "Nothing left to order.")
+                self._say(picking.chat_id, "Nothing left to order.")
 
     def _clear(self, chat_id: int, hh: Household) -> None:
         self._unhold(hh)
@@ -649,7 +645,9 @@ class Bot:
             return self._offer_now(to, hh, text)
         self._order(chat_id, hh, [], "due")
 
-    def _order(self, chat_id: int, hh: Household, items: list[tuple[str, int]], when: str = "hold") -> None:
+    def _order(self, chat_id: int, hh: Household, items: list[tuple[str, int]], when="hold", address=()) -> None:
+        if address:  # once its items join the basket
+            hh.ledger().set_address(*address)
         self._unhold(hh)
         self._withdraw(hh)
         if items:
