@@ -2,7 +2,7 @@
 name = "grocerybot"
 version = "0.1.0"
 description = "Order groceries online from Telegram voice notes"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = ["structlog>=25"]
 
 [project.optional-dependencies]
@@ -21,7 +21,7 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py312"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
