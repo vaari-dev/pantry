@@ -16,8 +16,8 @@ EMPTY = {
 }
 
 
-def item(said, name, qty=1):
-    return {"said": said, "name": name, "qty": qty}
+def item(said, name, qty=1, amount=("", 0, "")):
+    return {"said": said, "name": name, "qty": qty, "amount": dict(zip(("said", "value", "unit"), amount, strict=True))}
 
 
 def test_only_what_the_message_says_counts():
@@ -89,3 +89,32 @@ def test_claude_reads_with_the_households_words_and_basket():
 def test_a_refusal_is_not_a_reading():
     with pytest.raises(ValueError, match="refusal"):
         reader(FakeClient(EMPTY, stop="refusal"))("2 milk", [], [])
+
+
+def test_an_amount_counts_when_the_message_says_it_with_its_unit():
+    reply = EMPTY | {
+        "add": [
+            item("cow milk", "cow milk", 1, ("2 litre", 2, "l")),
+            item("paneer", "paneer", 1, ("aadha kilo", 0.5, "kg")),
+            item("doodh", "milk", 2, ("2 litre", 2, "l")),  # one "2" read twice
+            item("atta", "atta", 1, ("5 kg", 10, "kg")),  # not the amount said
+            item("rice", "rice", 1, ("bada", 5, "kg")),  # no unit said
+            item("oil", "oil", 1, ("1 litre", 1, "kg")),  # a weight for a volume
+            item("chawal", "rice", 1, ("2 kilo", 5, "kg")),  # not the amount said
+            item("dahi", "dahi", 2, ("500 ml", 1, "l")),  # two packs of 500 ml, said in all
+        ]
+    }
+    text = (
+        "2 litre cow milk, aadha kilo paneer, 2 litre doodh, 5 kg atta, bada rice, 1 litre oil, 2 kilo chawal, "
+        "do 500 ml dahi"
+    )
+    assert grounded(reply, text).add == [
+        ("cow milk", "2 l"),
+        ("paneer", "500 g"),
+        ("milk", "2 l"),
+        ("atta", 1),
+        ("rice", 1),
+        ("oil", 1),
+        ("rice", 1),
+        ("dahi", "1 l"),
+    ]

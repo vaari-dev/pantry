@@ -15,13 +15,14 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import NamedTuple
 
 import structlog
 from structlog.contextvars import bind_contextvars, bound_contextvars, clear_contextvars, get_contextvars
 
 from . import orders, store
 from .accounts import Accounts, Household
-from .catalog import Product, normalize, plan
+from .catalog import Choice, Qty, combine, grouped, normalize, plan, shown
 from .config import Config
 from .intent import Reader, Request
 from .shop import Address, Login, ShopError, Zepto
@@ -65,6 +66,7 @@ ALERT_REPEAT = timedelta(hours=6)
 ANSWER_WAIT = 600
 OTP_WAIT = 300
 HOLD = 180
+CARDS = 4  # products shown to pick from
 PICK_HOLD, PICK_WAIT = 60, 600  # an open pick delays a held order in PICK_HOLD steps, for up to PICK_WAIT
 STALE = timedelta(minutes=5)  # a restart this late past a hold asks before ordering
 KEPT = "Still in the /basket: tap Order now to try again, or /clear to empty it."
@@ -94,8 +96,8 @@ SETTINGS = {  # command: (setting, parse, example)
 }
 
 
-def _items(items: list[tuple[str, int]]) -> str:
-    return ", ".join(f"{k} ×{q}" for k, q in items)
+def _items(items: list[tuple[str, Qty]]) -> str:
+    return ", ".join(f"{k} {shown(q)}" for k, q in items)
 
 
 def _basket(hh: Household) -> str:
@@ -103,7 +105,7 @@ def _basket(hh: Household) -> str:
     rows, total, unpriced = orders.priced(hh)
     if not rows:
         return ""
-    lines = [f"• {label} ×{qty}" + (f"  ₹{amount:g}" if amount else "") for label, qty, amount in rows]
+    lines = [f"• {text}" for text, _ in rows]
     total_line = f"Total ₹{total:g}" + (f" + {unpriced} without a price" if unpriced else "")
     if not unpriced and total < hh.min_order:
         total_line += f" (orders start at ₹{hh.min_order:g})"
@@ -120,29 +122,46 @@ class SetupStopped(Exception):
     pass
 
 
+class Check(NamedTuple):
+    """Far more than usual of an item, until they say how much."""
+
+    item: str
+    asked: Qty
+    usual: Qty
+    change: bool  # sets the basket's quantity, rather than adds to it
+    ids: list[int]
+
+
 @dataclass
 class Picking:
+    """What messages left open in a chat: products to pick, amounts to confirm. What they settled
+    waits in the basket; the rest is ordered once all is answered."""
+
     chat_id: int
     household: str
-    ready: list[tuple[str, int]]
-    asks: dict[int, tuple[str, int, list[Product], list[int]]]  # n -> spoken, qty, options, message ids
-    picked: list[tuple[str, int]] = field(default_factory=list)
+    asks: dict[int, tuple[str, Qty, list[Choice], list[int]]]  # n -> spoken, qty, choices, message ids
+    checks: dict[int, Check] = field(default_factory=dict)
+    picked: list[tuple[str, Qty]] = field(default_factory=list)
+    changed: list[tuple[str, Qty]] = field(default_factory=list)
     started: float = field(default_factory=time.time)
     when: str = "hold"
     address: tuple[str, ...] = ()  # (id, label) of a saved address said with the items
+    numbered: int = 0  # asks and checks so far: a number is never used twice
 
     def to_json(self) -> dict:
-        asks = {n: [name, qty, [vars(p) for p in options], ids] for n, (name, qty, options, ids) in self.asks.items()}
+        asks = {n: [name, qty, [c.to_json() for c in cs], ids] for n, (name, qty, cs, ids) in self.asks.items()}
         return {**vars(self), "asks": asks}
 
     @classmethod
     def from_json(cls, d: dict) -> "Picking":
         asks = {
-            int(n): (name, qty, [Product(**p) for p in options], ids)
-            for n, (name, qty, options, ids) in d["asks"].items()
+            int(n): (name, qty, [Choice.from_json(c) for c in cs], ids) for n, (name, qty, cs, ids) in d["asks"].items()
         }
-        ready, picked = ([tuple(i) for i in d[k]] for k in ("ready", "picked"))
-        return cls(**{**d, "asks": asks, "ready": ready, "picked": picked})
+        checks = {int(n): Check(*c) for n, c in d.get("checks", {}).items()}
+        picked = [tuple(i) for i in d.get("ready", []) + d["picked"]]  # "ready": saved before 28 Oct
+        changed = [tuple(i) for i in d.get("changed", [])]
+        d = {"numbered": max([*asks, *checks], default=-1) + 1} | {k: v for k, v in d.items() if k != "ready"}
+        return cls(**{**d, "asks": asks, "checks": checks, "picked": picked, "changed": changed})
 
 
 class Bot:
@@ -402,14 +421,17 @@ class Bot:
         bind_contextvars(user_id=uid, chat_id=(cb.get("message") or {}).get("chat", {}).get("id"))
         if hh := self.accounts.household_of(uid):
             bind_contextvars(household_id=hh.id)
-        log.info("button pressed", kind=kind if kind in ("allow", "remove", "now") else "pick")
+        log.info("button pressed", kind=kind if kind in ("allow", "remove", "now", "more") else "pick")
         if kind == "now":
             return self._now(cb, hh, arg)
         self.tg.answer(cb["id"])
+        msg = cb.get("message") or {}
         if kind in ("allow", "remove"):
             done = self._allow(uid, int(arg)) if kind == "allow" else self._remove(uid, int(arg))
-            if done and (msg := cb.get("message")):
+            if done and msg:
                 self.tg.remove_buttons(msg["chat"]["id"], msg["message_id"])
+        elif hh and kind == "more" and msg and arg.startswith(f"{hh.id}:"):
+            self._queue(self._answer_others, msg["chat"]["id"], msg["message_id"], hh, arg.endswith(":y"))
         elif hh:
             self._pick(hh, data)
 
@@ -455,10 +477,9 @@ class Bot:
         hh = self.accounts.get(hh.id) or hh
         if r.clear_basket:
             self._clear(chat_id, hh)
-        if r.change:
-            self._change_basket(chat_id, hh, r.change)
-        if r.add:
-            return self._add(chat_id, hh, r.add, "now" if r.now else "hold", address)
+        checks = self._change_basket(chat_id, hh, r.change) if r.change else []
+        if r.add or checks:
+            return self._add(chat_id, hh, r.add, "now" if r.now else "hold", address, checks)
         if address and hh.ledger().basket():
             hh.ledger().set_address(*address)
         if r.now:
@@ -483,19 +504,23 @@ class Bot:
             return None
         return found[0]
 
-    def _change_basket(self, chat_id: int, hh: Household, changes: list[tuple[str, int]]) -> None:
-        catalog, basket = hh.catalog(), dict(hh.ledger().basket())
+    def _change_basket(self, chat_id: int, hh: Household, changes: list[tuple[str, Qty]], checked=False) -> list:
+        """Returns checks for the changes far over usual, which wait for an answer."""
+        catalog, basket, checks = hh.catalog(), dict(hh.ledger().basket()), []
         for name, qty in changes:
             if (key := catalog.lookup(name)) not in basket:
                 self._say(chat_id, f'"{name}" isn\'t in the basket.')
-            elif qty:
-                basket[key] = min(qty, catalog.max_qty(key))
-            else:
+            elif not qty:
                 basket.pop(key)
+            elif not checked and (usual := orders.unusual(hh, key, qty)) is not None:
+                checks.append(Check(key, qty, usual, True, []))
+            else:
+                basket[key] = qty
         hh.ledger().set_basket(list(basket.items()))
         if not basket:
             self._unhold(hh)
             self._withdraw(hh)
+        return checks
 
     def _show_basket(self, chat_id: int, hh: Household) -> None:
         if text := _basket(hh):
@@ -503,70 +528,153 @@ class Bot:
         else:
             self._say(chat_id, "The basket is empty.")
 
-    def _add(self, chat_id: int, hh: Household, items: list[tuple[str, int]], when: str, address: tuple) -> None:
+    def _add(
+        self, chat_id: int, hh: Household, items: list[tuple[str, Qty]], when: str, address: tuple, checks=()
+    ) -> None:
         p = plan(items, hh.catalog())
-        log.info("list planned", ready=len(p.ready), to_pick=len(p.to_pick), notes=len(p.notes))
-        for note in p.notes:
-            self._say(chat_id, note)
         found = []
         if p.to_pick:
             with Zepto(hh.state_file) as z:
                 z.deliver_to(hh.address_id)
-                found = [(name, qty, z.search(name)) for name, qty in p.to_pick]
-        for name, _, options in found:
-            if not options:
+                found = [(name, qty, grouped(z.search(name), CARDS)) for name, qty in p.to_pick]
+        ready, checks = [], list(checks)
+        for key, qty in p.ready:
+            if (usual := orders.unusual(hh, key, qty)) is not None:
+                checks.append(Check(key, qty, usual, False, []))
+            else:
+                ready.append((key, qty))
+        log.info("list planned", ready=len(ready), to_pick=len(p.to_pick), unusual=len(checks))
+        for name, _, choices in found:
+            if not choices:
                 log.info("item not found")
                 self._say(chat_id, f'Couldn\'t find "{name}" in the shop; leaving it out.')
-        asks = {n: (name, qty, options, []) for n, (name, qty, options) in enumerate(found) if options}
-        if not asks:
-            if not p.ready:
+        asks = [(name, qty, choices, []) for name, qty, choices in found if choices]
+        if not (asks or checks):
+            if not ready:
                 return self._say(chat_id, "I didn't catch any items.")
-            return self._order(chat_id, hh, p.ready, when, address)
+            return self._order(chat_id, hh, ready, when, address)
+        if ready:
+            hh.ledger().set_basket(combine(hh.ledger().basket(), ready))
+            if address:
+                hh.ledger().set_address(*address)
+            self._say(chat_id, f"Got: {_items(ready)}. " + ("Pick the rest:" if asks else "One question:"))
+        self._start_picking(chat_id, hh, asks, checks, when, address)
 
-        pid = secrets.token_hex(4)
+    def _start_picking(
+        self, chat_id: int, hh: Household, asks: list, checks: list[Check], when: str, address: tuple
+    ) -> None:
+        """Joins the chat's open picking, if any."""
         with self.lock:
-            self.picking = {k: v for k, v in self.picking.items() if v.chat_id != chat_id}  # newest list wins
-            self.picking[pid] = Picking(chat_id, hh.id, p.ready, asks, when=when, address=address)
-        if p.ready:
-            self._say(chat_id, f"Got: {_items(p.ready)}. Pick the rest:")
-        for n, (name, qty, options, ids) in list(asks.items()):  # taps answer (pop) items while these go out
-            ids.append(self._say(chat_id, f'Which "{name}" (×{qty})?', [("Skip this item", f"{pid}:{n}:x")]))
-            ids += [self._offer(chat_id, product, f"{pid}:{n}:{i}") for i, product in enumerate(options)]
+            mine = [(k, v) for k, v in self.picking.items() if (v.chat_id, v.household) == (chat_id, hh.id)]
+            stale = [self.picking.pop(k) for k, v in mine if time.time() - v.started >= PICK_WAIT]
+            pid, picking = next(((k, v) for k, v in mine if k in self.picking), None) or (
+                secrets.token_hex(4),
+                Picking(chat_id, hh.id, {}),
+            )
+            new_asks = dict(enumerate(asks, picking.numbered))
+            new_checks = dict(enumerate(checks, picking.numbered + len(asks)))
+            picking.numbered += len(asks) + len(checks)
+            picking.asks |= new_asks
+            picking.checks |= new_checks
+            picking.when = "now" if "now" in (picking.when, when) else when
+            picking.address = address or picking.address
+            picking.started = time.time()
+            self.picking[pid] = picking
+        for old in stale:  # left open too long, it no longer holds new items back
+            hh.ledger().set_basket(combine(hh.ledger().basket(), old.picked))
+            for ids in [*(a[3] for a in old.asks.values()), *(c.ids for c in old.checks.values())]:
+                for mid in filter(None, ids):
+                    self.tg.remove_buttons(chat_id, mid)
+        for n, (name, qty, choices, ids) in new_asks.items():  # taps answer (pop) items while these go out
+            ids.append(self._say(chat_id, f'Which "{name}" ({shown(qty)})?', [("Skip this item", f"{pid}:{n}:x")]))
+            ids += [self._offer(chat_id, choice, qty, f"{pid}:{n}:{i}") for i, choice in enumerate(choices)]
+        for n, check in new_checks.items():
+            self._send_check(chat_id, hh, pid, n, check)
         self._save()  # with the message ids, which a pick after a restart cleans up
 
-    def _offer(self, chat_id: int, product: Product, data: str) -> int | None:
-        caption = f"{product.name}\nSize: {product.size}" + (f"  ·  {product.price}" if product.price else "")
-        entities = None
-        if product.price and product.mrp:
-            caption += f" {product.mrp}"
-            entities = [strikethrough(caption, product.mrp)]
-        buttons = [("✅ Pick", data)]
-        if product.image:
+    def _send_check(self, chat_id: int, hh: Household, pid: str, n: int, check: Check) -> None:
+        """Far more than usual is more often misheard than meant."""
+        data, asked, usual = f"{pid}:c{n}:", shown(check.asked), shown(check.usual)
+        why = f"You usually get {usual}." if hh.ledger().bought(check.item) else "That's a lot for a first order."
+        buttons = [(f"Yes, {asked}", data + "a"), (usual, data + "u"), ("Skip", data + "x")]
+        check.ids.append(self._say(chat_id, f"❓ {check.item} {asked}? {why}", buttons))
+
+    def _offer(self, chat_id: int, choice: Choice, qty: Qty, data: str) -> int | None:
+        """For a count, each size is a button: the tap also picks the usual pack."""
+        caption, entities = f"{choice.name}\n", []
+        for n, p in enumerate(choice.sizes):
+            caption += (" · " if n else "") + " ".join(filter(None, (p.size, p.price)))
+            if p.price and p.mrp:
+                caption += f" {p.mrp}"
+                entities.append(strikethrough(caption, p.mrp))
+        if isinstance(qty, int) and len(choice.sizes) > 1:
+            buttons = [(f"✅ {p.size}", f"{data}.{n}") for n, p in enumerate(choice.sizes)]
+        else:
+            buttons = [("✅ Pick", data)]
+        if image := next((p.image for p in choice.sizes if p.image), ""):
             try:
-                return self.tg.send_photo(chat_id, product.image, caption, buttons, entities)
+                return self.tg.send_photo(chat_id, image, caption, buttons, entities or None)
             except TelegramError as e:
                 log.info("photo not shown", to_chat_id=chat_id, error=str(e))
-        return self._say(chat_id, caption, buttons, entities=entities)
+        return self._say(chat_id, caption, buttons, entities=entities or None)
+
+    def _ask_others(self, chat_id: int, hh: Household, questions: dict[str, str], when: str) -> None:
+        """Only the latest question for an item can be answered."""
+        for key, question in questions.items():
+            if old := hh.ledger().asked().get(key):
+                self.tg.remove_buttons(*old[:2])
+            data = f"more:{hh.id}:"
+            message_id = self._say(chat_id, f"❓ {question}", [("Yes", data + "y"), ("No", data + "n")])
+            hh.ledger().set_asked(key, chat_id, message_id, when)
+
+    def _answer_others(self, chat_id: int, message_id: int, hh: Household, yes: bool) -> None:
+        """On the worker. Once every question is answered, the order goes on."""
+        asked = hh.ledger().asked()
+        if not (key := next((k for k, (c, m, _) in asked.items() if (c, m) == (chat_id, message_id)), None)):
+            return
+        hh.ledger().set_others(key, yes)
+        self.tg.remove_buttons(chat_id, message_id)
+        self.tg.edit_text(chat_id, message_id, f"{key}: {'✔ adding it' if yes else '✖ only what there is'}")
+        log.info("others answered", allowed=yes)
+        if not hh.ledger().asked():
+            self._order(chat_id, hh, [], asked[key][2])
 
     def _pick(self, hh: Household, data: str) -> None:
+        """A tap on a product card, or on a check (n starts with c)."""
         try:
             pid, n, choice = data.rsplit(":", 2)
+            checking, n = n.startswith("c"), int(n.removeprefix("c"))
         except ValueError:
             return
+        check = None
         with self.lock:
             picking = self.picking.get(pid)
-            if not picking or picking.household != hh.id or int(n) not in picking.asks:
+            open_ = {} if not picking or picking.household != hh.id else picking.checks if checking else picking.asks
+            if n not in open_:
                 log.info("pick ignored", reason="stale or already answered")
                 return
-            name, qty, options, ids = picking.asks.pop(int(n))
-            if choice == "x":
-                result = "✖ skipped"
+            if checking:
+                c = picking.checks.pop(n)
+                name, ids, qty = c.item, c.ids, {"a": c.asked, "u": c.usual}.get(choice)
+                result = "✖ skipped" if qty is None else f"✔ {shown(qty)}"
+                (picking.changed if c.change else picking.picked).extend([] if qty is None else [(name, qty)])
             else:
-                product = options[int(choice)]
-                picking.picked.append((hh.catalog().learn(name, product), qty))
-                result = f"✔ {product.label()}"
-            done = not picking.asks
-            log.info("item picked" if choice != "x" else "item skipped", remaining=len(picking.asks))
+                name, qty, choices, ids = picking.asks.pop(n)
+                result = "✖ skipped"
+                if choice != "x":
+                    i, _, size = choice.partition(".")
+                    picked = choices[int(i)]
+                    pack = picked.sizes[int(size)] if size else orders.usual_pack(picked, qty)
+                    key = hh.catalog().learn(name, picked, pack)
+                    result = f"✔ {picked.name}" + (f" {pack.size}" if size else "")
+                    if (usual := orders.unusual(hh, key, qty)) is not None:
+                        check = picking.checks[n] = Check(key, qty, usual, False, [])
+                    else:
+                        picking.picked.append((key, qty))
+            done = not (picking.asks or picking.checks)
+            log.info(
+                "item picked" if choice != "x" else "item skipped", remaining=len(picking.asks) + len(picking.checks)
+            )
             if done:
                 self.picking.pop(pid)
         self._save()
@@ -574,11 +682,20 @@ class Bot:
             self.tg.remove_buttons(picking.chat_id, mid)
         if ids[0]:
             self.tg.edit_text(picking.chat_id, ids[0], f'"{name}": {result}')
+        if check:
+            self._send_check(picking.chat_id, hh, pid, n, check)
+            self._save()
         if done:
-            if items := picking.ready + picking.picked:
-                self._queue(self._order, picking.chat_id, hh, items, picking.when, picking.address)
-            else:
-                self._say(picking.chat_id, "Nothing left to order.")
+            self._queue(self._settled, picking.chat_id, hh, picking)
+
+    def _settled(self, chat_id: int, hh: Household, picking: Picking) -> None:
+        if picking.changed:
+            self._change_basket(chat_id, hh, picking.changed, checked=True)
+        if picking.picked or picking.when == "now" or (hh.ledger().basket() and not picking.changed):
+            return self._order(chat_id, hh, picking.picked, picking.when, picking.address)
+        if picking.changed:
+            return self._show_basket(chat_id, hh)
+        self._say(chat_id, "Nothing left to order.")
 
     def _clear(self, chat_id: int, hh: Household) -> None:
         self._unhold(hh)
@@ -633,7 +750,7 @@ class Bot:
             return self._offer_now(to, hh, text)
         self._order(chat_id, hh, [], "due")
 
-    def _order(self, chat_id: int, hh: Household, items: list[tuple[str, int]], when="hold", address=()) -> None:
+    def _order(self, chat_id: int, hh: Household, items: list[tuple[str, Qty]], when="hold", address=()) -> None:
         if address:  # once its items join the basket
             hh.ledger().set_address(*address)
         self._unhold(hh)
@@ -657,6 +774,9 @@ class Bot:
                 log.exception("order failed")
                 reason = "Something went wrong, so nothing was ordered."
             return self._offer_now(chat_id, hh, f"❌ {reason}\n{KEPT}")
+        if out.questions:
+            log.info("order asking", questions=len(out.questions))
+            return self._ask_others(chat_id, hh, out.questions, when)
         log.info(
             "order finished",
             result=out.result,
@@ -804,8 +924,13 @@ class Bot:
             log.info("setting rejected", setting=key)
             return self._say(chat_id, f"For example: {command} {example}")
         self.accounts.update(hh.id, **{key: value})
+        if key == "place_orders" and value and not hh.place_orders:  # what cart-only use left isn't ordered
+            self._queue(self._drop_basket, chat_id, hh)
         log.info("setting changed", setting=key)
         self._settings(chat_id, self.accounts.get(hh.id))
+
+    def _drop_basket(self, _chat_id: int, hh: Household) -> None:
+        hh.ledger().set_basket([])
 
     def _ask(self, uid: int, question: str, wait: int = ANSWER_WAIT, markup=None, secret=False) -> str:
         """Their next message; secret ones (phone number, OTP) are deleted from the chat."""

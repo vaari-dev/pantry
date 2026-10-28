@@ -1,8 +1,11 @@
 """ledger.json: {"orders": [{"id", "day", "at", "status", "total", "items"}], "basket": [[key, qty]],
-"hold": [chat, until] | null, "offer": [chat, message] | null, "address": [id, label] | null}
+"hold": [chat, until] | null, "offer": [chat, message] | null, "address": [id, label] | null,
+"others": {item: bool}, "asked": {item: [chat, message, when]}}
 
 hold: when the basket gets placed. offer: the one message whose Order now button works.
 address: where the basket goes instead of the household's address, until it is empty.
+others: whether a basket item may be made up with the household's other products; asked: the question
+about it waiting for an answer. Both last while the item is in the basket.
 
 status: placing -> placed | failed | unknown. "placing" left over after a crash may or may not
 have gone through: it is reported, never retried.
@@ -15,8 +18,9 @@ from itertools import pairwise
 from pathlib import Path
 
 from . import store
+from .catalog import Qty
 
-EMPTY = {"orders": [], "basket": [], "hold": None, "offer": None, "address": None}
+EMPTY = {"orders": [], "basket": [], "hold": None, "offer": None, "address": None, "others": {}, "asked": {}}
 
 
 class Ledger:
@@ -32,17 +36,37 @@ class Ledger:
     def _edit(self):
         return store.edit(self.path, EMPTY)
 
-    def basket(self) -> list[tuple[str, int]]:
+    def basket(self) -> list[tuple[str, Qty]]:
         return [(key, qty) for key, qty in self._read()["basket"]]
 
     def _set(self, key: str, value) -> None:
         with self._edit() as data:
             data[key] = value
 
-    def set_basket(self, items: list[tuple[str, int]]) -> None:
+    def set_basket(self, items: list[tuple[str, Qty]]) -> None:
         with self._edit() as data:
             data["basket"] = [list(i) for i in items]
             data["address"] = data["address"] if items else None
+            for answers in ("others", "asked"):
+                data[answers] = {k: v for k, v in data.get(answers, {}).items() if k in dict(items)}
+
+    def others(self) -> dict[str, bool]:
+        return self._read()["others"]
+
+    def set_others(self, key: str, allowed: bool) -> None:
+        with self._edit() as data:
+            data["others"] = {**data.get("others", {}), key: allowed}
+            data["asked"] = {k: v for k, v in data.get("asked", {}).items() if k != key}
+
+    def asked(self) -> dict[str, list]:
+        return self._read()["asked"]
+
+    def set_asked(self, key: str, chat_id: int, message_id: int | None, when: str) -> None:
+        with self._edit() as data:
+            data["asked"] = {**data.get("asked", {}), key: [chat_id, message_id, when]}
+
+    def bought(self, key: str) -> list[Qty]:
+        return [q for o in self._orders() if o["status"] == "placed" for k, q in o["items"] if k == key]
 
     def hold(self) -> tuple[int, datetime] | None:
         return (h[0], datetime.fromisoformat(h[1])) if (h := self._read()["hold"]) else None
@@ -71,7 +95,7 @@ class Ledger:
             if o["day"] == today and o["status"] in ("placed", "placing", "unknown")
         )
 
-    def begin(self, items: list[tuple[str, int]], total: float) -> str:
+    def begin(self, items: list[tuple[str, Qty]], total: float) -> str:
         order_id = uuid.uuid4().hex[:8]
         now = datetime.now()
         order = {
@@ -103,7 +127,7 @@ class Ledger:
                 o["status"] = "unknown"
         return stuck
 
-    def due(self, today: date | None = None) -> list[tuple[str, int]]:
+    def due(self, today: date | None = None) -> list[tuple[str, Qty]]:
         """Items bought 3+ times whose usual gap has passed (but not lapsed: > 3 gaps)."""
         today = today or date.today()
         history: dict[str, list[tuple[date, int]]] = {}
@@ -120,5 +144,7 @@ class Ledger:
             every = statistics.median(gaps)
             since = (today - days[-1]).days
             if every <= since <= 3 * every:
-                due.append((since / every, key, round(statistics.median(q for _, q in buys))))
+                qtys = [q for _, q in buys]
+                usual = round(statistics.median(qtys)) if all(isinstance(q, int) for q in qtys) else qtys[-1]
+                due.append((since / every, key, usual))
         return [(key, qty) for _, key, qty in sorted(due, reverse=True)]
