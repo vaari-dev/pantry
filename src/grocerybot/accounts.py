@@ -39,10 +39,6 @@ class Household:
     def state_file(self) -> Path:
         return self.dir / "session.json"
 
-    @property
-    def debug_dir(self) -> Path:
-        return self.dir / "debug"
-
     def catalog(self) -> Catalog:
         return Catalog(self.dir / "catalog.json")
 

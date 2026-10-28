@@ -4,6 +4,7 @@ Login is the shop's own OAuth sign-in (phone, then the code it texts), done with
 calls. The account's tokens live in a file and are renewed before they lapse."""
 
 import base64
+import fcntl
 import hashlib
 import json
 import re
@@ -35,6 +36,8 @@ DEVICE = "grocery-bot"  # update_cart wants one; the cart is the account's eithe
 NOT_CONNECTED = "this account is not connected to the shop; its owner can /setup again"
 LOGIN_EXPIRED = "the shop login has expired; the account's owner can /setup again"
 NOT_ANSWERING = "the shop is not answering; try again in a minute"
+TOKENS = frozenset({"access_token", "refresh_token"})
+ADDRESSED = frozenset({"select_saved_address", "create_order", "create_wallet_order"})  # refusals may quote it
 PACK = re.compile(r"^1 (?:pack|pc|unit) \((.+)\)$")  # "1 pack (500 ml)" says "500 ml"
 log = structlog.get_logger(__name__)
 
@@ -131,8 +134,26 @@ def _tokens(reply: dict, client_id: str) -> dict:
         "client_id": client_id,
         "access_token": reply["access_token"],
         "refresh_token": reply["refresh_token"],
-        "expires_at": time.time() + reply.get("expires_in", 0),
+        "expires_at": time.time() + (reply.get("expires_in") or 7 * 86400),
     }
+
+
+def _problems(bill: dict, expected: dict[Product, int], rules: Rules) -> list[str]:
+    """What is wrong with a bill preview: anything but exactly the expected items, to the saved address."""
+    if not bill.get("isPreview"):
+        return ["the shop did not show the bill"]
+    problems = []
+    if not bill.get("deliverable"):
+        problems.append("the shop can't deliver there right now")
+    if (bill.get("deliveryAddress") or {}).get("id") != rules.address_id:
+        problems.append("the bill is not for your saved address (/settings)")
+    rows = {i.get("productVariantId"): i.get("quantity") for i in bill.get("items") or []}
+    for product, want in expected.items():
+        if (got := rows.pop(product.variant, None)) is None:
+            problems.append(f"{product.name} did not make it into the cart")
+        elif got != want:
+            problems.append(f"{product.name}: {got} in the cart, expected {want}")
+    return problems + ["an item the bot did not add is in the cart"] * len(rows)
 
 
 class Login:
@@ -209,7 +230,7 @@ class Login:
             },
             form=True,
         )
-        if status >= 300 or "refresh_token" not in reply:
+        if status >= 300 or not reply.keys() >= TOKENS:
             log.info("sign-in refused", step="token", status=status)
             raise ShopError("the shop did not finish the sign-in; try again")
         return _tokens(reply, self.client_id)
@@ -238,6 +259,16 @@ class Zepto:
     def __exit__(self, *_) -> None: ...
 
     def _renew(self) -> None:
+        """Locked across processes (`check` runs beside the bot): a refresh token works once."""
+        with open(self.login_file.with_suffix(".lock"), "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            saved = store.read(self.login_file, {})
+            if saved.keys() >= TOKENS and saved["refresh_token"] != self._login["refresh_token"]:
+                self._login = saved  # renewed meanwhile by the other process
+                return
+            self._renew_now()
+
+    def _renew_now(self) -> None:
         status, reply = _json(
             f"{AUTH}/token",
             {
@@ -248,7 +279,7 @@ class Zepto:
             },
             form=True,
         )
-        if status >= 300 or "refresh_token" not in reply:
+        if status >= 300 or not reply.keys() >= TOKENS:
             log.info("login not renewed", status=status)
             raise ShopError(LOGIN_EXPIRED)
         self._login = _tokens(reply, self._login["client_id"])
@@ -277,7 +308,11 @@ class Zepto:
         text = raw.decode()
         if "data:" in text and not text.lstrip().startswith("{"):  # a server-sent event stream
             text = [line[5:] for line in text.splitlines() if line.startswith("data:")][-1]
-        return json.loads(text) if text.strip() else {}
+        try:
+            return json.loads(text) if text.strip() else {}
+        except ValueError:
+            log.info("shop reply unreadable", method=method)
+            raise ShopError(NOT_ANSWERING) from None
 
     def tool(self, name: str, quiet: bool = False, **args) -> dict | None:
         """Its structured reply. A refusal raises ShopError with the shop's words, or with quiet, is None."""
@@ -286,7 +321,7 @@ class Zepto:
         if "error" in reply or result.get("isError"):
             said = " ".join(c.get("text", "") for c in result.get("content", [])) or str(reply.get("error"))
             said = said.removeprefix("Error:").strip().split("\n")[0][:200]
-            log.info("tool refused", tool=name, said=said)
+            log.info("tool refused", tool=name, said=None if name in ADDRESSED else said)
             if quiet:
                 return None
             raise ShopError(f"the shop said: {said}", f"{name} refused")
@@ -304,12 +339,12 @@ class Zepto:
         got = a.get("address") or {}
         if not a.get("success") or got.get("id") != address_id:
             raise ShopError("the shop would not deliver to the saved address; its owner can /setup again")
-        return Address(got["id"], got.get("label") or "", got.get("addressLine") or "")
+        return Address(address_id, got.get("label") or "", got.get("addressLine") or "")
 
     def search(self, query: str, limit: int = 4) -> list[Product]:
         found = []
         for p in self.tool("search_products", query=query).get("products") or []:
-            if p.get("isAd") or not p.get("availableQuantity"):
+            if p.get("isAd") or not (p.get("availableQuantity") and p.get("storeProductId")):
                 continue
             price, mrp = p.get("price"), p.get("mrp")
             found.append(
@@ -349,26 +384,18 @@ class Zepto:
     def review(self, expected: dict[Product, int], rules: Rules) -> Cart:
         """The shop's bill, without ordering. Pays from the wallet if it covers it all, else cash on delivery."""
         bill, result = self.tool("create_order", confirmOrder=False, userAddressId=rules.address_id), Cart()
-        if not bill.get("isPreview"):
-            result.problems.append("the shop did not show the bill")
-            return result
-        if not bill.get("deliverable"):
-            result.problems.append("the shop can't deliver there right now")
-        if (bill.get("deliveryAddress") or {}).get("id") != rules.address_id:
-            result.problems.append("the bill is not for your saved address (/settings)")
-        rows = {i["productVariantId"]: i for i in bill.get("items") or []}
-        for product, want in expected.items():
-            if (row := rows.pop(product.variant, None)) is None:
-                result.problems.append(f"{product.name} did not make it into the cart")
-            elif row.get("quantity") != want:
-                result.problems.append(f"{product.name}: {row.get('quantity')} in the cart, expected {want}")
-            elif row.get("price"):
+        result.problems = _problems(bill, expected, rules)
+        for row in bill.get("items") or []:
+            if (product := next((p for p in expected if p.variant == row.get("productVariantId")), None)) and row.get(
+                "price"
+            ):
                 result.prices[product] = _rupees(row["price"])
-        result.problems += ["an item the bot did not add is in the cart"] * len(rows)
         result.item_total = (bill.get("subTotal") or 0) / 100
         result.total = bill["toPayAmount"] / 100 if isinstance(bill.get("toPayAmount"), int) else None
         wallet = self.tool("create_wallet_order", quiet=True, confirmOrder=False, userAddressId=rules.address_id)
         result.cod = not (wallet and wallet.get("isPreview") and wallet.get("toPayAmount") == 0)
+        if not result.cod:  # the bill that would be placed
+            result.problems += [p for p in _problems(wallet, expected, rules) if p not in result.problems]
         log.info(
             "bill read",
             item_total=result.item_total,
@@ -399,8 +426,11 @@ class Zepto:
         for attempt in range(3):
             if attempt:
                 time.sleep(5)
-            orders = self.tool("list_order_history", limit=1, pageNumber=1).get("orders") or []
-            if orders and orders[0]["id"] != before:
+            try:
+                orders = self.tool("list_order_history", limit=1, pageNumber=1).get("orders") or []
+            except ShopError:
+                continue
+            if orders and orders[0].get("id") != before:
                 o = orders[0]
                 log.info("order found", status=o.get("formattedStatus"), total=o.get("grandTotalAmount"))
                 return True

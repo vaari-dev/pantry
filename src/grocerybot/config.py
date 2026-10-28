@@ -21,10 +21,6 @@ class Config:
     data_dir: Path
     health_hour: int
 
-    @property
-    def debug_dir(self) -> Path:
-        return self.data_dir / "debug"
-
 
 def load() -> Config:
     return Config(

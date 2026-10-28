@@ -1,7 +1,7 @@
 """Telegram front end.
 
-One worker thread does all shop work, one job at a time, so orders never overlap. /setup asks its
-questions on its own thread; the polling thread hands it the person's answers through `replies`.
+One worker thread runs the jobs, one at a time, so orders never overlap. /setup asks its questions
+and signs in on its own thread; the polling thread hands it the person's answers through `replies`.
 """
 
 import math
@@ -300,6 +300,8 @@ class Bot:
                 except ShopError as e:
                     log.warning("health check failed", error=e.logged)
                     self.alert(hh.owner, f"⚠️ Daily check of your shop account failed: {e}.")
+                except Exception:  # never the other accounts' checks
+                    log.exception("health check failed")
 
     def _say(self, chat_id: int, text: str, buttons=None, markup=None, entities=None) -> int | None:
         try:
@@ -450,7 +452,7 @@ class Bot:
             self._say(chat_id, note)
         found = []
         if p.to_pick:
-            with orders.shop(self.cfg, hh) as z:
+            with orders.shop(self.cfg, hh.state_file) as z:
                 z.deliver_to(hh.address_id)
                 found = [(name, qty, *_search(z, name)) for name, qty in p.to_pick]
         for name, _, query, options in found:
@@ -795,7 +797,7 @@ class Bot:
             store.write(session, login.enter_otp(re.sub(r"\D", "", otp)))
             log.info("logged in")
             self._say(uid, "✅ Logged in!\n\n📍 Step 3 of 3: where should orders go?")
-            with orders.login_shop(self.cfg, session) as z:
+            with orders.shop(self.cfg, session) as z:
                 address = self._choose_address(uid, z)
             hh = self.accounts.connect(uid, name, address.id, str(address), session)
             log.info("household connected", household_id=hh.id)

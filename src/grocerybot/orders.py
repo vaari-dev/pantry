@@ -39,16 +39,12 @@ class Outcome:
         return "blocked" if self.problems else "cart ready"
 
 
-def shop(cfg: Config, hh: Household) -> Zepto:
-    return Zepto(cfg.shop_url, hh.state_file)
+def shop(cfg: Config, login_file: Path) -> Zepto:
+    return Zepto(cfg.shop_url, login_file)
 
 
 def login() -> Login:
     return Login()
-
-
-def login_shop(cfg: Config, session: Path) -> Zepto:
-    return Zepto(cfg.shop_url, session)
 
 
 def rules(hh: Household) -> Rules:
@@ -57,7 +53,7 @@ def rules(hh: Household) -> Rules:
 
 def check(cfg: Config, hh: Household) -> None:
     """Also renews the login before it lapses."""
-    with shop(cfg, hh) as z:
+    with shop(cfg, hh.state_file) as z:
         z.deliver_to(hh.address_id)
 
 
@@ -98,7 +94,7 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
             out.held = not out.waiting
         return out
 
-    with shop(cfg, hh) as z:
+    with shop(cfg, hh.state_file) as z:
         z.deliver_to(limits.address_id)
         expected, added, capped = {}, [], {}
         for key, qty in items:

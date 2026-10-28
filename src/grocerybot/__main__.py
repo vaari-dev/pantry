@@ -25,6 +25,8 @@ def main() -> None:
             print(f"ok: account {hh.id}")
         except ShopError as e:
             print(f"not ready: account {hh.id}: {e}")
+        except Exception as e:
+            print(f"not ready: account {hh.id}: {type(e).__name__}")
 
 
 if __name__ == "__main__":

@@ -30,6 +30,8 @@ class FakeZepto:
         }
         self.refusals: dict[str, str] = {}  # tool -> what it says when refusing
         self.bill_address = None  # the address the bill says, if not the selected one
+        self.wallet_extra: dict[str, int] = {}  # put only in the wallet order's bill
+        self.history_down = 0  # order history reads that fail
 
     def __call__(self, url, body, headers):
         parts = urlsplit(url)
@@ -163,9 +165,14 @@ class FakeZepto:
         return self._bill(True, **args)
 
     def create_wallet_order(self, **args):
-        return self._bill(False, **args)
+        bill = self._bill(False, **args)
+        bill.get("items", []).extend({"productVariantId": v, "quantity": q} for v, q in self.wallet_extra.items())
+        return bill
 
     def list_order_history(self, **_):
+        if self.history_down:
+            self.history_down -= 1
+            raise KeyError("history")
         return {"orders": [{"id": o, "formattedStatus": "PLACED", "grandTotalAmount": 1} for o in self.orders]}
 
 
@@ -240,6 +247,16 @@ def test_a_login_near_its_end_is_renewed_and_kept(login_file, zepto):
     store.write(login_file, {**store.read(login_file, {}), "expires_at": time.time() + 3600})
     with Zepto("https://shop.example", login_file) as z:
         z.deliver_to(HOME)
+    assert store.read(login_file, {})["refresh_token"] == zepto.refresh == "refresh-3"
+
+
+def test_a_login_renewed_by_the_other_process_is_used_not_renewed_again(login_file, zepto):
+    """`check` runs beside the bot: the refresh token both read works only once."""
+    with Zepto("https://shop.example", login_file) as z:
+        with Zepto("https://shop.example", login_file) as other:
+            zepto.expired = True
+            other.deliver_to(HOME)  # renews
+        z.deliver_to(HOME)  # its token is the old one now
     assert store.read(login_file, {})["refresh_token"] == zepto.refresh == "refresh-3"
 
 
@@ -322,6 +339,12 @@ def test_the_bill_is_checked_before_ordering(login_file, zepto, setup, problem):
         assert order(z, {MILK: 1}).problems[0].startswith(problem)
 
 
+def test_the_wallet_bill_is_checked_too(login_file, zepto):
+    zepto.wallet_extra = {"pv-stranger": 1}
+    with Zepto("https://shop.example", login_file) as z:
+        assert order(z, {MILK: 1}).problems == ["an item the bot did not add is in the cart"]
+
+
 def test_a_cart_unlike_the_basket_is_a_problem(login_file, zepto, monkeypatch):
     with Zepto("https://shop.example", login_file) as z:
         for p in (MILK, EGGS):
@@ -354,6 +377,15 @@ def test_placing_is_confirmed_by_a_new_order_in_the_history(login_file, zepto, c
         assert z.confirm(before)
     assert [n for n, a in zepto.calls if a.get("confirmOrder")] == ["create_order" if cod else "create_wallet_order"]
     assert cart.cod is False
+
+
+def test_a_failed_history_read_is_tried_again(login_file, zepto):
+    with Zepto("https://shop.example", login_file) as z:
+        order(z, {MILK: 1})
+        before = z.latest_order()
+        z.place(Rules(HOME, 1000), cod=False)
+        zepto.history_down = 2
+        assert z.confirm(before)
 
 
 def test_no_new_order_is_not_confirmed(login_file, zepto):
