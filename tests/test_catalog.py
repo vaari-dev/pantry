@@ -43,6 +43,7 @@ def test_plan_merges_repeats(catalog):
     [
         ("1 L", (1000, "ml")),
         ("1 pack (2 x 500 g)", (1000, "g")),
+        ("500 ml x 2", (1000, "ml")),
         ("1.5 kg", (1500, "g")),
         ("6 pcs", None),
         ("0 ml", None),
@@ -75,6 +76,8 @@ def test_search_results_group_into_products_in_all_their_sizes():
         ("Mother Dairy Cow Milk", ["500 ml", "1 l"]),
     ]
     assert len(grouped([litre, toned, named], 2)) == 2
+    loose = Product("Amul Cow Milk", "1 pouch", "/a/pvid/3", family="a")
+    assert [p.size for p in grouped([loose, litre, half], 1)[0].sizes] == ["500 ml", "1 l", "1 pouch"]
 
 
 def test_learn_puts_the_pick_first_with_its_usual_pack(catalog):
@@ -86,6 +89,14 @@ def test_learn_puts_the_pick_first_with_its_usual_pack(catalog):
     catalog.learn("egg", Choice("Brown Eggs", [half]))
     assert [c.name for c in catalog.choices("egg")] == ["Brown Eggs", "Urban White Eggs"]
     assert catalog.learn("anar", one(Product("Pomegranate", "4 pcs", "/pn/anar/pvid/4"))) == "anar"
+
+
+def test_one_product_saved_before_28_oct_in_two_sizes_is_one_choice(tmp_path):
+    sizes = [vars(Product("Milk", size, f"/m/pvid/{size}")) for size in ("1 l", "500 ml")]
+    store.write(tmp_path / "catalog.json", {"milk": {"options": sizes}})
+    assert [[p.size for p in c.sizes] for c in Catalog(tmp_path / "catalog.json").choices("milk")] == [
+        ["500 ml", "1 l"]
+    ]
 
 
 def test_reprice_keeps_old_picks(catalog):

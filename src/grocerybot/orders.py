@@ -82,7 +82,7 @@ def _parts(take: dict[Product, int]) -> str:
 
 def _cost(take: dict[Product, int]) -> float | None:
     prices = [rupees(p.price) for p in take]
-    return sum(price * n for price, n in zip(prices, take.values(), strict=True)) if all(prices) else None
+    return sum(price * n for price, n in zip(prices, take.values(), strict=True)) if take and all(prices) else None
 
 
 def _sizes(choice: Choice, unit: str) -> list[Product]:
@@ -119,14 +119,23 @@ def priced(hh: Household) -> tuple[list[tuple[str, float | None]], float, int]:
     return rows, sum(a or 0 for _, a in rows), sum(a is None for _, a in rows)
 
 
+def usual_pack(choice: Choice, qty: Qty) -> Product | None:
+    """For an amount, the size its cheapest mix uses most; None for a count."""
+    if isinstance(qty, int) or not (want := choice.wants(qty)):
+        return None
+    sizes = [Offer(p, size, MAX_PACKS, rupees(p.price)) for p in choice.sizes if (size := _size(p, want[1]))]
+    take = cheapest(want[0], sizes)
+    return max(take, key=take.get, default=None)
+
+
 def unusual(hh: Household, key: str, qty: Qty) -> Qty | None:
-    """What the household usually gets of key, when qty is more than three times that (or than one
-    usual pack, before any order); else None."""
+    """What the household usually gets of key, when qty is more than three times that; before any
+    order, more than three times three usual packs. Else None."""
     if not (choices := hh.catalog().choices(key)) or not (want := choices[0].wants(qty)):
         return None
     before = [w[0] for q in hh.ledger().bought(key) if (w := choices[0].wants(q)) and w[1] == want[1]]
     usual = statistics.median(before) if before else choices[0].wants(1)[0]
-    if want[0] <= 3 * usual:
+    if want[0] <= 3 * usual * (1 if before else 3):
         return None
     if want[1] == PACK or (isinstance(qty, int) and not before):
         return max(1, round(usual / (choices[0].wants(1)[0])))
@@ -179,7 +188,7 @@ def _fill(z: Zepto, qty: Qty, choices: list[Choice], others: bool | None) -> Fil
             if not others:
                 has = f"has only {_as(got, unit)}" if take else "is out of stock"
                 return Fill(ask=f"{choices[0].name} {has} today. Add {_parts(extra)}?")
-            take, first, got = take | extra, offers, got + _got(extra, offers)
+            take, first, got = {**take, **extra}, offers, got + _got(extra, offers)
     log.info("item filled", sizes=len(first), packs=sum(take.values()), short=got < want)
     if take and got < want:
         note = f"{_as(got, unit)} of {_as(want, unit)}: all the shop allows"
@@ -195,9 +204,10 @@ def order(hh: Household, items: list[tuple[str, Qty]], when: str = "due") -> Out
     to a silent second order: an unfinished attempt is reported, not retried."""
     catalog, ledger = hh.catalog(), hh.ledger()
     out, limits = Outcome(), rules(hh)
+    items, others = combine(ledger.basket(), items), ledger.others()
     if not hh.place_orders:  # nothing waits in the basket, so neither does its address
+        ledger.set_basket([])
         ledger.set_address()
-    items = combine(ledger.basket(), items)
     if hh.place_orders:
         ledger.set_basket(items)
     if limits.budget <= 0:
@@ -217,7 +227,7 @@ def order(hh: Household, items: list[tuple[str, Qty]], when: str = "due") -> Out
 
     with Zepto(hh.state_file) as z:
         z.deliver_to(limits.address_id)
-        expected, filled, others = {}, [], ledger.others()
+        expected, filled = {}, []
         for key, qty in items:
             if not (choices := catalog.choices(key)):
                 out.unavailable[key] = "no choice saved"
@@ -233,8 +243,9 @@ def order(hh: Household, items: list[tuple[str, Qty]], when: str = "due") -> Out
                 p = next((e for e in expected if e.variant == p.variant), p)
                 expected[p] = expected.get(p, 0) + n
         if out.questions:  # nothing is ordered until they are answered
-            for key in out.questions:
-                ledger.set_others(key, None)
+            ledger.set_basket(items)  # also with ordering off, for the answer to find
+            for key, allowed in {**others, **dict.fromkeys(out.questions)}.items():
+                ledger.set_others(key, allowed)
             return out
         kept = [(k, q) for k, q in items if k in out.unavailable]  # stay in the basket, whatever happens
         if not expected:

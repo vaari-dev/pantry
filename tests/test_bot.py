@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from grocerybot import bot as botmod
+from grocerybot import store
 from grocerybot.catalog import Choice, Product
 from grocerybot.config import Config
 from grocerybot.intent import Request
@@ -890,8 +891,9 @@ def test_an_amount_is_made_up_from_the_sizes_on_sale(bot, shop):
     bot._pick(hh, f"{next(iter(bot.picking))}:0:0")
     sent(bot, "⏳ I'll order this", having="• Cow milk 2 l: Amul Cow Milk 1 l ×2 · ₹140")
     tap(bot, hh)
-    sent(bot, "✅ Ordered", having="Cow milk 2 l: Amul Cow Milk 500 ml ×2 + 1 l ×1")
+    sent(bot, "✅ Ordered", having="Cow milk 2 l: Amul Cow Milk 1 l ×1 + 500 ml ×2")
     assert fake.cart == {AMUL[0]: 2, AMUL[1]: 1}
+    assert hh.catalog().choices("cow milk")[0].sizes[0].variant == AMUL[1].variant  # what the amount is mostly
     assert placed(hh) == [[["cow milk", "2 l"]]]
 
 
@@ -947,10 +949,65 @@ def test_far_more_than_usual_is_asked_first(bot, shop):
     hh.ledger().finish(hh.ledger().begin([("cow milk", "2 l")], 140), "placed")
     reads(bot, add=[("cow milk", "20 l"), ("bread", 1)])
     bot._on_message(message("20 litre cow milk, bread"))
-    sent(bot, "🧺 Your basket", having="• Bread ×1")
     press(bot, "❓ cow milk 20 l? You usually get 2 l.", "2 l")
-    sent(bot, "⏳ I'll order this", having="• Cow milk 2 l: Amul Cow Milk 1 l ×2")
+    press(bot, "❓ cow milk 20 l? You usually get 2 l.", "Yes, 20 l")  # answered already
+    sent(bot, "⏳ I'll order this", having="• Bread ×1: Bread 1 pc ×1 · ₹60\n• Cow milk 2 l: Amul Cow Milk 1 l ×2")
     assert hh.ledger().basket() == [("bread", 1), ("cow milk", "2 l")]
+
+
+def test_the_question_keeps_the_address_and_now_for_one_order(bot, shop):
+    hh, fake = shop
+    hh.catalog().learn("cow milk", Choice("Amul Cow Milk", [AMUL[1]]))
+    bot.accounts.update(hh.id, min_order=0)
+    reads(bot, add=[("cow milk", "20 l"), ("bread", 1)], now=True, address="work")
+    bot._on_message(message("20 litre cow milk, bread to work abhi"))
+    press(bot, "❓ cow milk 20 l? That's a lot for a first order.", "1 l")
+    said(bot, "✅ Ordered to Work")
+    assert fake.placed_to == ["addr-work"]
+
+
+def test_a_new_item_or_a_change_far_over_one_pack_is_asked(bot, shop):
+    hh, _ = shop
+    reads(bot, add=[("jam", 20)])
+    bot.tg.edit_text = lambda *_: None
+    bot._on_message(message("20 jam"))
+    said(bot, "Jam 1")
+    bot._pick(hh, f"{next(iter(bot.picking))}:0:0")
+    press(bot, "❓ jam ×20? That's a lot for a first order.", "Skip")
+    said(bot, "Nothing left to order.")
+    hh.ledger().set_basket([("bread", 1)])
+    reads(bot, change=[("bread", 30)])
+    bot._on_message(message("make it 30 bread"))
+    press(bot, "❓ bread ×30? That's a lot for a first order.", "Yes, ×30")
+    sent(bot, "🧺 Your basket", having="Bread ×30")
+    assert hh.ledger().basket() == [("bread", 30)]
+
+
+def test_with_ordering_off_an_answer_still_fills_the_cart(bot, shop):
+    hh, fake = shop
+    bot.accounts.update(hh.id, place_orders=False)
+    hh.catalog().learn("cow milk", one(DAIRY))
+    hh.catalog().learn("cow milk", Choice("Amul Cow Milk", [AMUL[1]]))
+    fake.search = lambda query, limit=4: []
+    fake.limits = {AMUL[1].label(): 1}
+    reads(bot, add=[("cow milk", "2 l")])
+    bot._on_message(message("2 litre cow milk"))
+    press(bot, "❓ Amul Cow Milk has only 1 l today.", "Yes")
+    said(bot, "🛒 Cart ready")
+    assert {p.variant: n for p, n in fake.cart.items()} == {AMUL[1].variant: 1, DAIRY.variant: 1}
+    assert hh.ledger().basket() == [] and hh.ledger().others() == {}
+
+
+def test_a_pick_saved_before_28_oct_in_two_sizes_is_one_product(bot, shop):
+    hh, fake = shop
+    store.write(hh.dir / "catalog.json", {"cow milk": {"aliases": [], "options": [vars(p) for p in reversed(AMUL)]}})
+    fake.search = lambda query, limit=4: []
+    fake.limits = {AMUL[1].label(): 1, AMUL[0].label(): 1}
+    reads(bot, add=[("cow milk", "2 l")])
+    bot._on_message(message("2 litre cow milk"))
+    said(bot, "⏳ I'll order this")
+    tap(bot, hh)
+    sent(bot, "✅ Ordered", having="(1.5 l of 2 l: all the shop allows)")
 
 
 def test_two_items_on_one_product_add_up_in_the_cart(bot, shop):

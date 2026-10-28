@@ -17,18 +17,19 @@ class Offer:
 
 
 def cheapest(want: int, offers: list[Offer]) -> dict[Product, int]:
-    """{product: packs}: the cheapest mix making want, or over by less than its smallest pack (and want);
-    when the limits can't reach that, the most under want, cheapest. Ties go to fewer packs."""
+    """{product: packs}: the cheapest mix making want, over by less than its smallest pack and at most
+    twice want (300 ml from a 500 ml pack, not a 5 l one); when the limits can't reach that, the most
+    under want, cheapest. Ties go to fewer packs."""
     if not offers:
         return {}
-    slack = min(min(o.size for o in offers), want)
+    top = min(want + min(o.size for o in offers) - 1, 2 * want)
     best: dict[int, tuple[float, int, tuple[int, ...]]] = {0: (0, 0, ())}  # got -> (cost, packs, counts)
     for o in offers:
         unit = o.price if o.price is not None else UNPRICED
         grown: dict[int, tuple[float, int, tuple[int, ...]]] = {}
         for got, (cost, packs, counts) in best.items():
             for n in range(min(o.most, MAX_PACKS) + 1):
-                if (total := got + n * o.size) >= want + slack:
+                if (total := got + n * o.size) > top:
                     break
                 state = (cost + n * unit, packs + n, (*counts, n))
                 if total not in grown or state[:2] < grown[total][:2]:

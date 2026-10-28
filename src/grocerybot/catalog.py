@@ -15,7 +15,7 @@ MAX_CHOICES = 3
 
 QUANTITY = re.compile(
     r"(?<![\w.])(?:(\d+)\s*x\s*)?(\d+(?:\.\d+)?)\s*"
-    r"(kg|gms?|g|mg|ml|ltrs?|litres?|liters?|l|pcs?|pieces?|units?|packs?|dozen|n)(?![a-z])"
+    r"(kg|gms?|g|mg|ml|ltrs?|litres?|liters?|l|pcs?|pieces?|units?|packs?|dozen|n)(?![a-z])(?:\s*x\s*(\d+)\b)?"
     r"|pack of (\d+)",
     re.I,
 )
@@ -31,7 +31,8 @@ def measure(text: str) -> tuple[int, str] | None:
     for m in QUANTITY.finditer(text or ""):
         unit = (m.group(3) or "").lower()
         base, factor = UNITS.get(unit[:2]) or UNITS.get(unit[:1], (None, 0))
-        if base and (value := round(int(m.group(1) or 1) * float(m.group(2)) * factor)) > 0:
+        times = int(m.group(1) or 1) * int(m.group(4) or 1)  # 2 x 500 ml, 500 ml x 2
+        if base and (value := round(times * float(m.group(2)) * factor)) > 0:
             return value, base
     return None
 
@@ -126,7 +127,7 @@ def grouped(found: list[Product], limit: int) -> list[Choice]:
         elif len(choices) < limit:
             choices.append(Choice(QUANTITY.sub(" ", p.name).strip() or p.name, [p]))
     for c in choices:
-        c.sizes.sort(key=lambda p: (measure(p.size) or (0, ""))[0])
+        c.sizes.sort(key=lambda p: (not (m := measure(p.size)), m and m[0]))
     return choices
 
 
@@ -184,7 +185,7 @@ def _choices(entry: dict) -> list[Choice]:
     if "choices" in entry:
         return [Choice.from_json(c) for c in entry["choices"] if c["sizes"]]
     old = [_repaired(Product(o["name"], o["size"], o["url"], o.get("price", ""))) for o in entry.get("options", [])]
-    return [Choice(p.name, [p]) for p in old if p.url]
+    return grouped([p for p in old if p.url], MAX_CHOICES)
 
 
 def _repaired(p: Product) -> Product:

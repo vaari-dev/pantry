@@ -20,7 +20,8 @@ def offers(*rows):
         (1500, [(LITRE, 1000, 5, 70), (THREE_QUARTERS, 750, 5, 50)], {THREE_QUARTERS: 2}),  # exactly, cheaper
         (2000, [(LITRE, 1000, 1, 70), (FIVE, 5000, 2, 300)], {LITRE: 1}),  # never far over: short instead
         (3000, [(LITRE, 1000, 1, 70), (HALF, 500, 1, 36)], {LITRE: 1, HALF: 1}),  # as near as the limits allow
-        (300, [(FIVE, 5000, 1, 300)], {}),
+        (300, [(FIVE, 5000, 1, 300)], {}),  # far too big
+        (500, [(LITRE, 1000, 3, 70)], {LITRE: 1}),  # twice what was asked, the only size there is
         (2, [(LITRE, 1, 9, None), (HALF, 1, 9, 36)], {HALF: 2}),  # a known price first
     ],
 )
