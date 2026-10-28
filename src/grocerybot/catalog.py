@@ -204,10 +204,10 @@ class Plan:
     notes: list[str]
 
 
-def plan(text: str, catalog: Catalog) -> Plan:
+def plan(items: list[tuple[str, int]], catalog: Catalog) -> Plan:
     merged: dict[str, int] = {}
     to_pick, notes = [], []
-    for name, qty in split_spoken(text):
+    for name, qty in items:
         key = catalog.lookup(name)
         if key and catalog.options(key):
             merged[key] = merged.get(key, 0) + qty

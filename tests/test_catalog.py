@@ -58,14 +58,14 @@ def test_lookup_aliases_plurals_and_misspellings(catalog):
 
 
 def test_plan_splits_ready_and_to_pick_and_caps(catalog):
-    p = plan("10 eggs, bread, doodh, anar", catalog)
+    p = plan(split_spoken("10 eggs, bread, doodh, anar"), catalog)
     assert p.ready == [("egg", 3), ("bread", 1)]
     assert p.to_pick == [("milk", 1), ("anar", 1)]  # known word without a product is picked too
     assert p.notes == ["egg: asked for 10, capped at 3"]
 
 
 def test_plan_merges_repeats(catalog):
-    assert plan("anda, 2 eggs", catalog).ready == [("egg", 3)]
+    assert plan(split_spoken("anda, 2 eggs"), catalog).ready == [("egg", 3)]
 
 
 def test_learn_puts_pick_first_and_keeps_backups(catalog):
