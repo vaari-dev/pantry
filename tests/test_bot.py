@@ -200,7 +200,10 @@ def shop(bot, monkeypatch):
 
 
 def tap(bot, hh, offer=None, uid=NEW, household=None):
-    chat_id, message_id = offer or hh.ledger().offer()
+    deadline = time.monotonic() + 5
+    while not (offer := offer or hh.ledger().offer()) and time.monotonic() < deadline:  # recorded just after it is sent
+        time.sleep(0.01)
+    chat_id, message_id = offer
     data = f"now:{household or hh.id}"
     bot._on_button(
         {"id": "q", "from": {"id": uid}, "data": data, "message": {"chat": {"id": chat_id}, "message_id": message_id}}
