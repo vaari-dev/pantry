@@ -23,7 +23,7 @@ from . import orders, store
 from .accounts import Accounts, Household
 from .catalog import Product, normalize, plan
 from .config import Config
-from .intent import Reader
+from .intent import Reader, Request
 from .shop import Address, Login, ShopError, Zepto
 from .speech import Transcriber
 from .telegram import Telegram, TelegramError, strikethrough
@@ -452,14 +452,19 @@ class Bot:
 
     def _handle(self, chat_id: int, uid: int, hh: Household, text: str) -> None:
         r = self.read(text, hh.catalog().vocabulary(), [key for key, _ in hh.ledger().basket()])
+        to = None
+        if r.address and not (to := self._saved_address(chat_id, hh, r)):
+            return
         for name, value in r.settings:
             if self._owner(chat_id, uid, hh):
                 self._change(chat_id, hh, f"/{name}", value)
         hh = self.accounts.get(hh.id) or hh
         if r.clear_basket:
             self._clear(chat_id, hh)
-        if r.address and not self._deliver_to(chat_id, hh, r.address):
-            return
+        if to and to.id != hh.address_id:
+            hh.ledger().set_address(to.id, to.label)
+        elif to:
+            hh.ledger().set_address()
         if r.change:
             self._change_basket(chat_id, hh, r.change)
         if r.add:
@@ -471,20 +476,20 @@ class Bot:
         if not (r.settings or r.clear_basket) and chat_id > 0:  # a group's chatter isn't for the bot
             self._say(chat_id, "I didn't catch any items.")
 
-    def _deliver_to(self, chat_id: int, hh: Household, said: str) -> bool:
-        """This basket goes to the saved address named; False if none or several match."""
+    def _saved_address(self, chat_id: int, hh: Household, r: Request) -> Address | None:
+        """The one saved address whose label holds what was said."""
+        if not (r.add or hh.ledger().basket()):
+            self._say(chat_id, "The basket is empty; send the items with the address.")
+            return None
         with Zepto(hh.state_file) as z:
             saved = z.addresses()
-        found = [a for a in saved if a.label and f" {normalize(a.label)} " in f" {normalize(said)} "]
+        found = [a for a in saved if a.label and f" {normalize(r.address)} " in f" {normalize(a.label)} "]
+        log.info("address matched", matches=len(found), saved=len(saved))
         if len(found) != 1:
-            log.info("address not matched", matches=len(found), saved=len(saved))
             labels = ", ".join(a.label for a in saved if a.label)
-            self._say(chat_id, f"Which saved address: {labels}? Send it again naming one; nothing changed.")
-            return False
-        to = found[0]
-        hh.ledger().set_address(*((to.id, to.label) if to.id != hh.address_id else ()))
-        log.info("address set", default=to.id == hh.address_id)
-        return True
+            self._say(chat_id, f"Which saved address: {labels}? Nothing changed; send it again naming one.")
+            return None
+        return found[0]
 
     def _change_basket(self, chat_id: int, hh: Household, changes: list[tuple[str, int]]) -> None:
         catalog, basket = hh.catalog(), dict(hh.ledger().basket())
@@ -499,6 +504,11 @@ class Bot:
         if not basket:
             self._unhold(hh)
             self._withdraw(hh)
+
+    def _nothing_added(self, chat_id: int, hh: Household, text: str) -> None:
+        if not hh.ledger().basket():  # an address said with these items isn't for later ones
+            hh.ledger().set_address()
+        self._say(chat_id, text)
 
     def _show_basket(self, chat_id: int, hh: Household) -> None:
         if text := _basket(hh):
@@ -526,7 +536,7 @@ class Bot:
         asks = {n: (name, qty, options, []) for n, (name, qty, _, options) in enumerate(found) if options}
         if not asks:
             if not p.ready:
-                return self._say(chat_id, "I didn't catch any items.")
+                return self._nothing_added(chat_id, hh, "I didn't catch any items.")
             return self._order(chat_id, hh, p.ready, when)
 
         pid = secrets.token_hex(4)
@@ -584,13 +594,12 @@ class Bot:
             if items := picking.ready + picking.picked:
                 self._queue(self._order, picking.chat_id, hh, items, picking.when)
             else:
-                self._say(picking.chat_id, "Nothing left to order.")
+                self._nothing_added(picking.chat_id, hh, "Nothing left to order.")
 
     def _clear(self, chat_id: int, hh: Household) -> None:
         self._unhold(hh)
         self._withdraw(hh)
         hh.ledger().set_basket([])
-        hh.ledger().set_address()
         self._say(chat_id, "Basket emptied.")
 
     def _hold(self, chat_id: int, hh: Household, seconds: float) -> None:

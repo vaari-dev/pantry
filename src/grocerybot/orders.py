@@ -67,6 +67,8 @@ def order(hh: Household, items: list[tuple[str, int]], when: str = "due") -> Out
     to a silent second order: an unfinished attempt is reported, not retried."""
     catalog, ledger = hh.catalog(), hh.ledger()
     out, limits = Outcome(), rules(hh)
+    if not hh.place_orders:  # nothing waits in the basket, so neither does its address
+        ledger.set_address()
     items = combine(ledger.basket(), items, catalog)
     if hh.place_orders:
         ledger.set_basket(items)
@@ -128,7 +130,6 @@ def order(hh: Household, items: list[tuple[str, int]], when: str = "due") -> Out
 
         attempt = ledger.begin(placed_items, cart.total)
         ledger.set_basket(kept)  # never ordered twice, even if the outcome is unclear
-        ledger.set_address()
         log.info("attempt recorded", total=cart.total, cod=cart.cod)
         stopped = placed = None
         try:

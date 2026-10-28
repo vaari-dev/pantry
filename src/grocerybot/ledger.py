@@ -2,7 +2,7 @@
 "hold": [chat, until] | null, "offer": [chat, message] | null, "address": [id, label] | null}
 
 hold: when the basket gets placed. offer: the one message whose Order now button works.
-address: where the basket goes instead of the household's address.
+address: where the basket goes instead of the household's address, until it is empty.
 
 status: placing -> placed | failed | unknown. "placing" left over after a crash may or may not
 have gone through: it is reported, never retried.
@@ -40,7 +40,9 @@ class Ledger:
             data[key] = value
 
     def set_basket(self, items: list[tuple[str, int]]) -> None:
-        self._set("basket", [list(i) for i in items])
+        with self._edit() as data:
+            data["basket"] = [list(i) for i in items]
+            data["address"] = data["address"] if items else None
 
     def hold(self) -> tuple[int, datetime] | None:
         return (h[0], datetime.fromisoformat(h[1])) if (h := self._read()["hold"]) else None

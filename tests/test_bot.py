@@ -736,7 +736,7 @@ def test_a_named_saved_address_takes_this_basket_only(bot, shop):
     assert (fake.placed_to, hh.ledger().address()) == (["addr-work"], None)
 
 
-@pytest.mark.parametrize("address", ["office", "home or work"])
+@pytest.mark.parametrize("address", ["office", "mummy's home", "home or work"])
 def test_an_unknown_or_unclear_address_changes_nothing(bot, shop, address):
     hh, _ = shop
     reads(bot, add=[("bread", 2)], address=address)
@@ -744,6 +744,43 @@ def test_an_unknown_or_unclear_address_changes_nothing(bot, shop, address):
     said(bot, "Which saved address: Home, Work?")
     idle(bot)
     assert (hh.ledger().basket(), hh.ledger().address()) == ([], None)
+
+
+def test_an_address_with_nothing_to_send_is_not_kept(bot, shop):
+    hh, _ = shop
+    reads(bot, address="work")
+    bot._on_message(message("work pe bhejo"))
+    said(bot, "The basket is empty; send the items with the address.")
+    assert hh.ledger().address() is None
+
+
+def test_the_address_goes_when_the_basket_empties(bot, shop):
+    hh, _ = shop
+    hh.ledger().set_basket([("bread", 1)])
+    hh.ledger().set_address("addr-work", "Work")
+    reads(bot, change=[("bread", 0)])
+    bot._on_message(message("no bread"))
+    said(bot, "The basket is empty.")
+    assert hh.ledger().address() is None
+
+
+def test_with_ordering_off_the_address_is_for_that_cart_only(bot, shop):
+    hh, _ = shop
+    bot.accounts.update(hh.id, place_orders=False)
+    reads(bot, add=[("bread", 2)], address="work")
+    bot._on_message(message("2 bread to work"))
+    said(bot, "🛒 Cart ready")
+    assert hh.ledger().address() is None
+
+
+def test_an_address_goes_if_none_of_its_items_were_added(bot, shop):
+    hh, _ = shop
+    reads(bot, add=[("jam", 1)], address="work")
+    bot._on_message(message("jam to work"))
+    said(bot, 'Which "jam"')
+    bot._on_button({"id": "q", "from": {"id": NEW}, "data": f"{next(iter(bot.picking))}:0:x"})
+    said(bot, "Nothing left to order.")
+    assert hh.ledger().address() is None
 
 
 def test_clear_drops_the_address(bot, shop):

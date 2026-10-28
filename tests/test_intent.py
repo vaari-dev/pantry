@@ -33,6 +33,19 @@ def test_only_what_the_message_says_counts():
     )
 
 
+def test_a_setting_needs_its_value_said():
+    reply = EMPTY | {
+        "settings": [
+            {"said": "order kar do", "name": "ordering", "value": "on"},
+            {"said": "limit badha do", "name": "limit", "value": "5000"},
+            {"said": "minimum 99", "name": "minimum", "value": "9"},
+            {"said": "limit 2,000", "name": "limit", "value": "2000"},
+        ]
+    }
+    text = "Bread order kar do, limit badha do, minimum 99, limit 2,000"
+    assert grounded(reply, text).settings == [("limit", "2000")]
+
+
 def test_now_needs_the_word():
     assert not grounded(EMPTY | {"now": True}, "bread please").now
     assert grounded(EMPTY | {"now": True}, "bread abhi").now
@@ -44,8 +57,8 @@ def test_an_address_must_be_quoted():
 
 
 class FakeClient:
-    def __init__(self, reply=None, error=None):
-        self.reply, self.error, self.asked = reply, error, None
+    def __init__(self, reply=None, error=None, stop="end_turn"):
+        self.reply, self.error, self.stop, self.asked = reply, error, stop, None
         self.messages = self
 
     def create(self, **asked):
@@ -54,7 +67,7 @@ class FakeClient:
             raise self.error
         usage = SimpleNamespace(input_tokens=1, cache_read_input_tokens=0, output_tokens=1)
         text = SimpleNamespace(type="text", text=json.dumps(self.reply))
-        return SimpleNamespace(stop_reason="end_turn", content=[text], usage=usage)
+        return SimpleNamespace(stop_reason=self.stop, content=[text], usage=usage)
 
 
 def reader(client):
@@ -73,3 +86,4 @@ def test_claude_reads_with_the_households_words_and_basket():
 def test_without_claude_a_message_is_a_list():
     assert Reader("")("bread aur do anda", [], []) == Request(add=[("bread", 1), ("anda", 2)])
     assert reader(FakeClient(error=TimeoutError()))("2 milk", [], []) == Request(add=[("milk", 2)])
+    assert reader(FakeClient(EMPTY, stop="refusal"))("2 milk", [], []) == Request(add=[("milk", 2)])
