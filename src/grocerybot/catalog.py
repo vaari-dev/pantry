@@ -185,7 +185,8 @@ def _choices(entry: dict) -> list[Choice]:
     if "choices" in entry:
         return [Choice.from_json(c) for c in entry["choices"] if c["sizes"]]
     old = [_repaired(Product(o["name"], o["size"], o["url"], o.get("price", ""))) for o in entry.get("options", [])]
-    return grouped([p for p in old if p.url], MAX_CHOICES)
+    old = [p for p in old if p.url]
+    return [Choice(c.name, sorted(c.sizes, key=old.index)) for c in grouped(old, MAX_CHOICES)]  # latest pick first
 
 
 def _repaired(p: Product) -> Product:

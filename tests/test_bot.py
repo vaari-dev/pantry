@@ -1022,3 +1022,51 @@ def test_two_items_on_one_product_add_up_in_the_cart(bot, shop):
     tap(bot, hh)
     said(bot, "✅ Ordered")
     assert {p.variant: n for p, n in fake.cart.items()} == {AMUL[0].variant: 2}
+
+
+def test_a_change_and_new_items_in_one_message_are_answered_together(bot, shop):
+    hh, _ = shop
+    hh.ledger().set_basket([("bread", 1), ("milk", 1)])
+    reads(bot, change=[("bread", 30)], add=[("jam", 1)])
+    bot.tg.edit_text = lambda *_: None
+    bot._on_message(message("make it 30 bread, and jam"))
+    said(bot, "Jam 1")
+    press(bot, "❓ bread ×30? That's a lot for a first order.", "×1")
+    bot._pick(hh, f"{next(iter(bot.picking))}:0:0")
+    sent(bot, "⏳ I'll order this", having="• Bread ×1")
+    assert hh.ledger().basket() == [("bread", 1), ("milk", 1), ("jam", 1)]
+
+
+def test_a_newer_list_keeps_what_the_open_one_had_settled(bot, shop):
+    hh, _ = shop
+    hh.catalog().learn("cow milk", Choice("Amul Cow Milk", [AMUL[1]]))
+    reads(bot, add=[("cow milk", "20 l"), ("bread", 1)])
+    bot._on_message(message("20 litre cow milk, bread"))
+    said(bot, "❓ cow milk 20 l?")
+    reads(bot, add=[("jam", 1)])
+    bot.tg.edit_text = lambda *_: None
+    bot._on_message(message("jam"))
+    said(bot, "Jam 1")
+    bot._pick(hh, f"{next(iter(bot.picking))}:0:0")
+    sent(bot, "⏳ I'll order this", having="• Bread ×1")
+    assert hh.ledger().basket() == [("bread", 1), ("jam", 1)]
+
+
+def test_an_unanswered_cart_only_question_is_not_ordered_later(bot, shop):
+    hh, fake = shop
+    bot.accounts.update(hh.id, place_orders=False)
+    hh.catalog().learn("cow milk", one(DAIRY))
+    hh.catalog().learn("cow milk", Choice("Amul Cow Milk", [AMUL[1]]))
+    fake.search = lambda query, limit=4: []
+    fake.limits = {AMUL[1].label(): 1}
+    reads(bot, add=[("cow milk", "2 l")])
+    bot._on_message(message("2 litre cow milk"))
+    said(bot, "❓ Amul Cow Milk has only 1 l today.")
+    reads(bot, add=[("bread", 2)])
+    bot._on_message(message("2 bread"))
+    said(bot, "🛒 Cart ready")
+    assert {p.name: n for p, n in fake.cart.items()} == {"Bread": 2}
+    hh.ledger().set_basket([("cow milk", "2 l")])
+    bot._on_message(message("/ordering on", uid=NEW))
+    said(bot, "Delivery:")
+    assert hh.ledger().basket() == []

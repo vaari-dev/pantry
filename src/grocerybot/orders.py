@@ -204,7 +204,8 @@ def order(hh: Household, items: list[tuple[str, Qty]], when: str = "due") -> Out
     to a silent second order: an unfinished attempt is reported, not retried."""
     catalog, ledger = hh.catalog(), hh.ledger()
     out, limits = Outcome(), rules(hh)
-    items, others = combine(ledger.basket(), items), ledger.others()
+    before = ledger.basket() if hh.place_orders or not items else []  # with ordering off, only an answer's
+    items, others = combine(before, items), ledger.others()
     if not hh.place_orders:  # nothing waits in the basket, so neither does its address
         ledger.set_basket([])
         ledger.set_address()

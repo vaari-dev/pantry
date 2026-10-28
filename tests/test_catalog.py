@@ -91,11 +91,11 @@ def test_learn_puts_the_pick_first_with_its_usual_pack(catalog):
     assert catalog.learn("anar", one(Product("Pomegranate", "4 pcs", "/pn/anar/pvid/4"))) == "anar"
 
 
-def test_one_product_saved_before_28_oct_in_two_sizes_is_one_choice(tmp_path):
+def test_one_product_saved_before_28_oct_in_two_sizes_is_one_choice_latest_first(tmp_path):
     sizes = [vars(Product("Milk", size, f"/m/pvid/{size}")) for size in ("1 l", "500 ml")]
     store.write(tmp_path / "catalog.json", {"milk": {"options": sizes}})
     assert [[p.size for p in c.sizes] for c in Catalog(tmp_path / "catalog.json").choices("milk")] == [
-        ["500 ml", "1 l"]
+        ["1 l", "500 ml"]
     ]
 
 
