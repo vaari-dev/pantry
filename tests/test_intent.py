@@ -22,7 +22,7 @@ def item(said, name, qty=1):
 
 def test_only_what_the_message_says_counts():
     reply = EMPTY | {
-        "add": [item("do anda", "eggs", 2), item("jam", "jam"), item("bread", "bread", 0)],
+        "add": [item("do anda", "Egg", 2), item("jam", "jam"), item("bread", "bread", 0), item("bread", "!")],
         "change": [item("Doodh", "milk", 0)],
         "address": "office",
         "settings": [
@@ -31,7 +31,7 @@ def test_only_what_the_message_says_counts():
         ],
     }
     assert grounded(reply, "Do anda, bread, doodh nahi, limit 2000.") == Request(
-        add=[("eggs", 2)], change=[("milk", 0)], settings=[("limit", "2000")]
+        add=[("egg", 2)], change=[("milk", 0)], settings=[("limit", "2000")]
     )
 
 
