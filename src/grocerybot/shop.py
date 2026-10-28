@@ -355,6 +355,7 @@ class Zepto:
                     _rupees(price) if price else "",
                     (p.get("imageUrl") or "").replace("f-auto", "f-jpg"),  # Telegram can't show the shop's avif
                     _rupees(mrp) if price and mrp and mrp > price else "",
+                    str(p.get("productId") or ""),
                 )
             )
             self._spid[p["productVariantId"]] = p["storeProductId"]
@@ -373,6 +374,10 @@ class Zepto:
         if p.get("sellingPrice"):
             self._price[product.variant] = _rupees(p["sellingPrice"])
         return max(0, min(p.get("availableQuantity") or 0, p.get("maxAllowedQuantity") or 0)) or "out of stock"
+
+    def price(self, product: Product) -> str:
+        """As stock last read it; "" if not read."""
+        return self._price.get(product.variant, "")
 
     def fill(self, items: dict[Product, int]) -> None:
         """Makes the cart exactly items: anything else in it goes."""

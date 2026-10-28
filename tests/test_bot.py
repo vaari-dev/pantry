@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from grocerybot import bot as botmod
-from grocerybot.catalog import Product
+from grocerybot.catalog import Choice, Product
 from grocerybot.config import Config
 from grocerybot.intent import Request
 from grocerybot.ledger import Ledger
@@ -140,14 +140,14 @@ def test_let_in_without_setup_offers_the_connect_button(bot):
 
 
 def test_offer_crosses_out_the_original_price(bot):
-    product = botmod.Product("Eggs 🥚", "1 pack", "/pn/eggs/pvid/1", "₹89", mrp="₹104")
+    product = Choice("Eggs 🥚", [Product("Eggs 🥚", "1 pack", "/pn/eggs/pvid/1", "₹89", mrp="₹104")])
     bot.tg.send = lambda chat_id, text, buttons=None, markup=None, entities=None: bot.tg.sent.append(
         (chat_id, text, entities)
     )
-    bot._offer(NEW, product, "1:0:0")
+    bot._offer(NEW, product, 1, "1:0:0")
 
     _, text, entities = bot.tg.sent[-1]
-    assert text == "Eggs 🥚\nSize: 1 pack  ·  ₹89 ₹104"
+    assert text == "Eggs 🥚\n1 pack ₹89 ₹104"
     # the egg emoji is two UTF-16 units, so the offset is one more than the str index
     assert entities == [{"type": "strikethrough", "offset": text.index("₹104") + 1, "length": 4}]
 
@@ -161,7 +161,7 @@ class FakeShop:
         self.unit = 60  # what the shop charges for any item
         self.gone: set[str] = set()  # product names out of stock
         self.why = "out of stock"  # what stock says of the gone ones
-        self.limits: dict[str, int] = {}  # product name -> the most one order may have
+        self.limits: dict[str, int] = {}  # product label -> the most one order may have
         self.cart: dict = {}
         self.orders = 0
         self.placed_to: list[str] = []
@@ -177,7 +177,7 @@ class FakeShop:
             raise self.fail
 
     def stock(self, product):
-        return self.why if product.name in self.gone else self.limits.get(product.name, 9)
+        return self.why if product.name in self.gone else self.limits.get(product.label(), 9)
 
     def fill(self, items):
         self.cart = dict(items)
@@ -200,8 +200,15 @@ class FakeShop:
     def confirm(self, placed):
         return self.orders == placed
 
-    def search(self, query):
+    def search(self, query, limit=4):
         return [Product(f"{query.title()} {n}", "1 pc", f"https://shop.example/{query}/{n}", "₹60") for n in (1, 2)]
+
+    def price(self, product):
+        return ""
+
+
+def one(product):
+    return Choice(product.name, [product])
 
 
 @pytest.fixture
@@ -210,7 +217,7 @@ def shop(bot, monkeypatch):
     hh = bot.accounts.connect(NEW, "Asha", ADDRESS.id, str(ADDRESS), session)
     bot.accounts.allow(NEW)
     for item in ("bread", "milk"):
-        hh.catalog().learn(item, Product(item.title(), "1 pc", f"https://shop.example/{item}", "₹60"))
+        hh.catalog().learn(item, one(Product(item.title(), "1 pc", f"https://shop.example/{item}", "₹60")))
     fake = FakeShop()
     monkeypatch.setattr(botmod, "Zepto", lambda _: fake)
     monkeypatch.setattr(botmod.orders, "Zepto", lambda _: fake)
@@ -530,16 +537,16 @@ def test_a_stale_or_unreadable_saved_state_is_dropped(bot):
 
 def test_basket_lists_prices_and_total_with_order_now(bot, shop):
     hh, _ = shop
-    hh.catalog().learn("bread", Product("Bread", "400 g", "https://shop.example/bread", "₹45"))
-    hh.catalog().learn("milk", Product("Milk", "1 pc", "https://shop.example/milk/2"))  # no price seen
+    hh.catalog().learn("bread", one(Product("Harvest Gold", "400 g", "https://shop.example/bread", "₹45")))
+    hh.catalog().learn("milk", one(Product("Milk", "1 pc", "https://shop.example/milk/2")))  # no price seen
     hh.ledger().set_basket([("bread", 2), ("milk", 1)])
     bot._on_message(message("/basket"))
     assert said(bot, "🧺 Your basket") == botmod._order_now(hh)
     text = next(t for _, t, _ in bot.tg.sent if t.startswith("🧺 Your basket"))
     assert text.splitlines() == [
         "🧺 Your basket",
-        "• Bread (400 g) ×2  ₹90",
-        "• Milk (1 pc) ×1",
+        "• Bread ×2: Harvest Gold 400 g ×2 · ₹90",
+        "• Milk ×1: Milk 1 pc ×1",
         "",
         "Total ₹90 + 1 without a price",
     ]
@@ -553,10 +560,10 @@ def test_an_empty_basket_has_no_button(bot, shop):
 
 def test_basket_shows_what_the_minimum_needs(bot, shop):
     hh, _ = shop
-    hh.catalog().learn("bread", Product("Bread", "400 g", "https://shop.example/bread", "₹45"))
+    hh.catalog().learn("bread", one(Product("Harvest Gold", "400 g", "https://shop.example/bread", "₹45")))
     hh.ledger().set_basket([("bread", 1)])
     bot._on_message(message("/basket"))
-    said(bot, "🧺 Your basket\n• Bread (400 g) ×1  ₹45\n\nTotal ₹45 (orders start at ₹100)")
+    said(bot, "🧺 Your basket\n• Bread ×1: Harvest Gold 400 g ×1 · ₹45\n\nTotal ₹45 (orders start at ₹100)")
 
 
 def test_basket_waits_for_an_order_in_progress(bot, shop):
@@ -641,12 +648,12 @@ def test_a_skipped_item_says_why(bot, shop):
 def test_the_shops_limit_per_order_is_ordered_and_told(bot, shop):
     """24 Oct, 14:29 UTC: 3 of an item the shop sells 2 at a time blocked the whole order."""
     hh, fake = shop
-    fake.limits = {"Bread": 2}
+    fake.limits = {"Bread (1 pc)": 2}
     bot._on_message(message("3 bread, milk"))
     said(bot, "⏳ I'll order this")
     tap(bot, hh)
-    sent(bot, "✅ Ordered", having="Bread (1 pc) ×2  (the most the shop allows, of 3)")
-    assert placed(hh) == [[["bread", 2], ["milk", 1]]]
+    sent(bot, "✅ Ordered", having="Bread ×3: Bread 1 pc ×2 · ₹120  (2 packs of 3 packs: all the shop allows)")
+    assert placed(hh) == [[["bread", 3], ["milk", 1]]]
 
 
 def test_with_ordering_off_every_message_fills_the_shop_cart(bot, shop):
@@ -713,7 +720,7 @@ def test_changes_set_or_remove_basket_items(bot, shop):
     reads(bot, change=[("bread", 0), ("milk", 3), ("eggs", 1)])
     bot._on_message(message("no bread, 3 milk, 1 eggs"))
     said(bot, '"eggs" isn\'t in the basket.')
-    sent(bot, "🧺 Your basket", having="Milk (1 pc) ×3")
+    sent(bot, "🧺 Your basket", having="Milk ×3: Milk 1 pc ×3")
     assert hh.ledger().basket() == [("milk", 3)]
 
 
@@ -856,3 +863,105 @@ def test_settings_apply_to_the_rest_of_the_message(bot, shop):
     reads(bot, settings=[("ordering", "off")], add=[("bread", 2)])
     bot._on_message(message("ordering off, 2 bread"))
     said(bot, "🛒 Cart ready (₹120)")
+
+
+AMUL = [
+    Product("Amul Cow Milk", s, f"https://shop.example/amul/{s}", p, family="amul")
+    for s, p in (("500 ml", "₹36"), ("1 l", "₹70"))
+]
+DAIRY = Product("Mother Dairy Cow Milk", "1 l", "https://shop.example/dairy", "₹68", family="dairy")
+
+
+def press(bot, start, label):
+    """Taps the button labelled label on the message starting with start."""
+    data = dict(said(bot, start))[label]
+    bot._on_button({"id": "q", "from": {"id": NEW}, "data": data, "message": {"chat": {"id": NEW}, "message_id": 1}})
+
+
+def test_an_amount_is_made_up_from_the_sizes_on_sale(bot, shop):
+    """28 Oct, 13:53 UTC: "2 litre cow milk" became 2 packs, of which the shop allowed 1."""
+    hh, fake = shop
+    fake.search = lambda query, limit=4: [AMUL[1], Product("Amul Taaza", "1 l", "https://shop.example/taaza"), AMUL[0]]
+    fake.limits = {AMUL[1].label(): 1}
+    reads(bot, add=[("cow milk", "2 l")])
+    bot.tg.edit_text = lambda *_: None
+    bot._on_message(message("2 litre cow milk"))
+    assert said(bot, "Amul Cow Milk\n500 ml ₹36 · 1 l ₹70") == [("✅ Pick", f"{next(iter(bot.picking))}:0:0")]
+    bot._pick(hh, f"{next(iter(bot.picking))}:0:0")
+    sent(bot, "⏳ I'll order this", having="• Cow milk 2 l: Amul Cow Milk 1 l ×2 · ₹140")
+    tap(bot, hh)
+    sent(bot, "✅ Ordered", having="Cow milk 2 l: Amul Cow Milk 500 ml ×2 + 1 l ×1")
+    assert fake.cart == {AMUL[0]: 2, AMUL[1]: 1}
+    assert placed(hh) == [[["cow milk", "2 l"]]]
+
+
+def test_sizes_new_to_the_household_are_used_without_asking(bot, shop):
+    hh, fake = shop
+    hh.catalog().learn("cow milk", Choice("Amul Cow Milk", [AMUL[1]]))
+    hh.catalog().learn("cow milk", one(DAIRY))
+    hh.catalog().learn("cow milk", Choice("Amul Cow Milk", [AMUL[1]]))
+    fake.search = lambda query, limit=4: [*AMUL, DAIRY]
+    fake.limits = {AMUL[1].label(): 1}
+    reads(bot, add=[("cow milk", "2 l")])
+    bot._on_message(message("2 litre cow milk"))
+    said(bot, "⏳ I'll order this")
+    tap(bot, hh)
+    sent(bot, "✅ Ordered", having="Cow milk 2 l: Amul Cow Milk 1 l ×1 + 500 ml ×2")
+
+
+def test_a_count_picks_its_usual_pack_on_the_card(bot, shop):
+    hh, fake = shop
+    fake.search = lambda query, limit=4: AMUL
+    reads(bot, add=[("cow milk", 2)])
+    bot.tg.edit_text = lambda *_: None
+    bot._on_message(message("2 cow milk"))
+    buttons = said(bot, "Amul Cow Milk")
+    pid = next(iter(bot.picking))
+    assert buttons == [("✅ 500 ml", f"{pid}:0:0.0"), ("✅ 1 l", f"{pid}:0:0.1")]
+    bot._pick(hh, f"{pid}:0:0.1")
+    sent(bot, "⏳ I'll order this", having="• Cow milk ×2: Amul Cow Milk 1 l ×2 · ₹140")
+
+
+@pytest.mark.parametrize("answer", ["Yes", "No"])
+def test_another_product_is_added_only_when_they_say_so(bot, shop, answer):
+    hh, fake = shop
+    hh.catalog().learn("cow milk", one(DAIRY))
+    hh.catalog().learn("cow milk", Choice("Amul Cow Milk", [AMUL[1]]))
+    fake.search = lambda query, limit=4: []
+    fake.limits = {AMUL[1].label(): 1}
+    reads(bot, add=[("cow milk", "2 l")])
+    bot._on_message(message("2 litre cow milk"))
+    said(bot, "⏳ I'll order this")
+    tap(bot, hh)
+    press(bot, "❓ Amul Cow Milk has only 1 l today. Add Mother Dairy Cow Milk 1 l ×1?", answer)
+    if answer == "Yes":
+        sent(bot, "✅ Ordered", having="Cow milk 2 l: Amul Cow Milk 1 l ×1 + Mother Dairy Cow Milk 1 l ×1")
+    else:
+        sent(bot, "✅ Ordered", having="Cow milk 2 l: Amul Cow Milk 1 l ×1 · ₹60  (1 l of 2 l: all the shop allows)")
+    assert fake.orders == 1
+
+
+def test_far_more_than_usual_is_asked_first(bot, shop):
+    hh, _ = shop
+    hh.catalog().learn("cow milk", Choice("Amul Cow Milk", [AMUL[1]]))
+    hh.ledger().finish(hh.ledger().begin([("cow milk", "2 l")], 140), "placed")
+    reads(bot, add=[("cow milk", "20 l"), ("bread", 1)])
+    bot._on_message(message("20 litre cow milk, bread"))
+    sent(bot, "🧺 Your basket", having="• Bread ×1")
+    press(bot, "❓ cow milk 20 l? You usually get 2 l.", "2 l")
+    sent(bot, "⏳ I'll order this", having="• Cow milk 2 l: Amul Cow Milk 1 l ×2")
+    assert hh.ledger().basket() == [("bread", 1), ("cow milk", "2 l")]
+
+
+def test_two_items_on_one_product_add_up_in_the_cart(bot, shop):
+    hh, fake = shop
+    hh.catalog().learn("cow milk", Choice("Amul Cow Milk", AMUL))
+    hh.catalog().learn("dahi milk", Choice("Amul Cow Milk", [dataclasses.replace(AMUL[0], price="₹35")]))
+    fake.search = lambda query, limit=4: []
+    bot.accounts.update(hh.id, min_order=50)
+    reads(bot, add=[("cow milk", "500 ml"), ("dahi milk", 1)])
+    bot._on_message(message("500 ml cow milk, dahi milk"))
+    said(bot, "⏳ I'll order this")
+    tap(bot, hh)
+    said(bot, "✅ Ordered")
+    assert {p.variant: n for p, n in fake.cart.items()} == {AMUL[0].variant: 2}
