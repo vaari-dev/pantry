@@ -59,27 +59,11 @@ QUANTITY = re.compile(
     r"|pack of (\d+)",
     re.I,
 )
-UNITS = {"gm": "g", "gms": "g", "ltr": "l", "ltrs": "l", "litre": "l", "litres": "l", "liter": "l", "liters": "l",
-         "pcs": "pc", "piece": "pc", "pieces": "pc", "unit": "pc", "units": "pc", "n": "pc",
-         "packs": "pack"}  # fmt: skip
-SCALE = {"kg": (1000, "g"), "l": (1000, "ml"), "dozen": (12, "pc")}
 FILLER_IN_SIZE = re.compile(r"\([^)]*\)|[^\w\s]|\d|\b(x|approx|each)\b", re.I)
 
 
 def squash(text: str) -> str:
     return " ".join(text.split()).lower()
-
-
-def quantities(text: str) -> set[tuple[float, str]]:
-    """ "2 x 500 ml", "1 l" and "1000ml" are all (1000, "ml")."""
-    found = set()
-    for times, number, unit, pack in QUANTITY.findall(text):
-        if pack:
-            found.add((float(pack), "pack"))
-            continue
-        factor, unit = SCALE.get(unit := UNITS.get(unit.lower(), unit.lower()), (1, unit))
-        found.add((round(int(times or 1) * float(number) * factor, 3), unit))
-    return found
 
 
 def is_size(line: str) -> bool:

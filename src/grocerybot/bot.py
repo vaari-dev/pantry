@@ -1,7 +1,7 @@
 """Telegram front end.
 
-One worker thread does all browser work, one job at a time (one Chrome). /setup asks its questions
-on its own thread; the polling thread hands it the person's answers through `replies`.
+One worker thread does all shop work, one job at a time, so orders never overlap. /setup asks its
+questions on its own thread; the polling thread hands it the person's answers through `replies`.
 """
 
 import math
@@ -19,10 +19,10 @@ import structlog
 from structlog.contextvars import bind_contextvars, bound_contextvars, clear_contextvars, get_contextvars
 
 from . import orders, store
-from .accounts import Accounts, Household, address_parts
+from .accounts import Accounts, Household
 from .catalog import Product, plan
 from .config import Config
-from .shop import Browser, ShopError
+from .shop import Address, ShopError, Zepto
 from .speech import Transcriber
 from .telegram import Telegram, TelegramError, strikethrough
 
@@ -61,7 +61,7 @@ NOT_SET_UP = "Connect your shop account to start ordering: it takes a minute. Or
 DEBUG_KEEP = timedelta(days=7)
 ALERT_REPEAT = timedelta(hours=6)
 ANSWER_WAIT = 600
-OTP_WAIT = 300  # Chrome waits on the login page meanwhile, holding up every order
+OTP_WAIT = 300
 HOLD = 180
 PICK_HOLD, PICK_WAIT = 60, 600  # an open pick delays a held order in PICK_HOLD steps, for up to PICK_WAIT
 STALE = timedelta(minutes=5)  # a restart this late past a hold asks before ordering
@@ -73,8 +73,6 @@ SHARE_PHONE = {
     "is_persistent": True,
 }
 NO_KEYBOARD = {"remove_keyboard": True}
-YES = "✅ Yes, deliver here"
-CONFIRM = {"keyboard": [[{"text": YES}], [{"text": "📍 Another saved address"}]], "resize_keyboard": True}
 HEARTBEAT = Path("/tmp/heartbeat")  # noqa: S108  read by the container healthcheck
 RESTARTING = "I'm restarting for an update and will be back in a minute"
 NOT_REACHED = "⏸ I restarted for an update before getting to your last request; please send it again."
@@ -98,11 +96,11 @@ def _items(items: list[tuple[str, int]]) -> str:
     return ", ".join(f"{k} ×{q}" for k, q in items)
 
 
-def _search(b: Browser, name: str) -> tuple[str, list[Product]]:
+def _search(z: Zepto, name: str) -> tuple[str, list[Product]]:
     """Speech garbles words ("hass avocado" → "harsh avocado"); the item itself usually comes last."""
     words = name.split()
     for n in range(min(len(words), 3)):
-        if options := b.search(query := " ".join(words[n:])):
+        if options := z.search(query := " ".join(words[n:])):
             return query, options
     return name, []
 
@@ -293,12 +291,7 @@ class Bot:
                 if f.stat().st_mtime < cutoff:
                     f.unlink(missing_ok=True)
 
-    def _health(self, admin: int) -> None:
-        try:
-            log.info("home exit ok", exit_ip=orders.exit_ip(self.cfg))
-        except ShopError as e:
-            log.error("home exit failed", error=e.logged)
-            return self.alert(admin, f"⚠️ Daily check failed: {e}. Orders will fail until this is fixed.")
+    def _health(self, _admin: int) -> None:
         for hh in self.accounts.all():
             with bound_contextvars(household_id=hh.id):
                 try:
@@ -457,8 +450,9 @@ class Bot:
             self._say(chat_id, note)
         found = []
         if p.to_pick:
-            with orders.browser(self.cfg, hh, images=True) as b:
-                found = [(name, qty, *_search(b, name)) for name, qty in p.to_pick]
+            with orders.shop(self.cfg, hh) as z:
+                z.deliver_to(hh.address_id)
+                found = [(name, qty, *_search(z, name)) for name, qty in p.to_pick]
         for name, _, query, options in found:
             if not options:
                 log.info("item not found")
@@ -733,7 +727,7 @@ class Bot:
     def _settings(self, chat_id: int, hh: Household) -> None:
         self._say(
             chat_id,
-            f"Delivery: {hh.address_label}, must include {hh.address_match!r} (/setup to change)\n"
+            f"Delivery: {hh.address} (/setup to change)\n"
             f"Daily limit: ₹{hh.daily_cap:g}, ₹{hh.ledger().spent_today():g} spent today (/limit 1500)\n"
             f"Smallest order: ₹{hh.min_order:g} (/minimum 99)\n"
             f"Placing orders: {'on' if hh.place_orders else 'off, cart only'} (/ordering on or off)",
@@ -779,6 +773,7 @@ class Bot:
     def _setup(self, uid: int, name: str) -> None:
         bind_contextvars(user_id=uid, chat_id=uid)  # a fresh thread; maybe started by the admin's tap
         log.info("setup started")
+        session = self.cfg.data_dir / f".login-{uid}.json"
         try:
             phone = self._ask(
                 uid,
@@ -790,35 +785,25 @@ class Bot:
             )
             if len(phone := re.sub(r"\D", "", phone)[-10:]) != 10:
                 raise SetupStopped("That doesn't look like a 10-digit mobile number")
-        except SetupStopped as e:
-            return self._stopped(uid, str(e))
-        finally:
-            self.replies.pop(uid, None)
-        busy = " right after the order in progress" if self.jobs.unfinished_tasks else ""
-        self._say(uid, f"Thanks! Asking the shop for a login code for ••••••{phone[-4:]}{busy}…", markup=NO_KEYBOARD)
-        self._queue(self._login, uid, name, phone)
-
-    def _login(self, uid: int, name: str, phone: str) -> None:
-        session = self.cfg.data_dir / f".login-{uid}.json"
-        self.replies[uid] = queue.Queue()
-        try:
-            with orders.login_browser(self.cfg, session) as b:
-                b.request_otp(phone)
-                log.info("login code requested")
-                otp = self._ask(
-                    uid, "📩 Step 2 of 3\n\nThe shop just texted you a login code. Send it here:", OTP_WAIT, secret=True
-                )
-                b.enter_otp(re.sub(r"\D", "", otp))
-                log.info("logged in")
-                self._say(uid, "✅ Logged in!\n\n📍 Step 3 of 3: where should orders go?")
-                label, match = self._choose_address(uid, b)
-            hh = self.accounts.connect(uid, name, label, match, session)
+            self._say(uid, f"Thanks! Asking the shop for a login code for ••••••{phone[-4:]}…", markup=NO_KEYBOARD)
+            login = orders.login()
+            login.request_otp(phone)
+            log.info("login code requested")
+            otp = self._ask(
+                uid, "📩 Step 2 of 3\n\nThe shop just texted you a login code. Send it here:", OTP_WAIT, secret=True
+            )
+            store.write(session, login.enter_otp(re.sub(r"\D", "", otp)))
+            log.info("logged in")
+            self._say(uid, "✅ Logged in!\n\n📍 Step 3 of 3: where should orders go?")
+            with orders.login_shop(self.cfg, session) as z:
+                address = self._choose_address(uid, z)
+            hh = self.accounts.connect(uid, name, address.id, str(address), session)
             log.info("household connected", household_id=hh.id)
             paid = "paid from your wallet or on delivery" if hh.place_orders else "carts filled for you (/ordering on)"
             self._say(
                 uid,
                 f"🎉 You're all set{', ' + name if name else ''}!\n\n{TRY}\n\n"
-                f"Orders go to {hh.address_label}, {paid}, up to ₹{hh.daily_cap:g} a day "
+                f"Orders go to {address.label}, {paid}, up to ₹{hh.daily_cap:g} a day "
                 "(/settings). Want family to order too? Send /invite.",
                 markup=NO_KEYBOARD,
             )
@@ -827,43 +812,23 @@ class Bot:
             self._stopped(uid, str(e))
         except Exception:
             log.exception("setup failed")
-            self._stopped(uid, "the shop's login page wasn't what I expected")
+            self._stopped(uid, "the shop's sign-in wasn't what I expected")
         finally:
             self.replies.pop(uid, None)
             session.unlink(missing_ok=True)
 
-    def _choose_address(self, uid: int, b) -> tuple[str, str]:
-        saved = b.saved_addresses()
+    def _choose_address(self, uid: int, z: Zepto) -> Address:
+        saved = z.addresses()
+        if not saved:
+            raise SetupStopped("Your shop account has no saved address; add one in the shop's app first")
+        listed = "\n\n".join(f"{n}. {a.label} · {a.line}" for n, a in enumerate(saved, 1))
+        keyboard = {"keyboard": [[{"text": f"{n}. {a}"[:48]}] for n, a in enumerate(saved, 1)], "resize_keyboard": True}
         for _ in range(3):
-            if address := (self._pick_saved(uid, b, saved) if saved else self._name_address(uid, b)):
-                return address_parts(address)
+            answer = self._ask(
+                uid, f"Your saved addresses:\n\n{listed}\n\nWhich one should orders go to?", markup=keyboard
+            )
+            if (m := re.match(r"\s*(\d+)", answer)) and 1 <= (n := int(m[1])) <= len(saved):
+                log.info("address picked", option=n, saved=len(saved))
+                return z.deliver_to(saved[n - 1].id)
+            log.info("address answer not understood")
         raise SetupStopped("We couldn't settle on an address")
-
-    def _pick_saved(self, uid: int, b, saved: list[str]) -> str:
-        listed = "\n\n".join(f"{n}. {' · '.join(a.splitlines())}" for n, a in enumerate(saved, 1))
-        buttons = [f"{n}. {' · '.join(a.splitlines()[:2])}"[:48] for n, a in enumerate(saved, 1)]
-        keyboard = {"keyboard": [[{"text": t}] for t in buttons], "resize_keyboard": True}
-        answer = self._ask(uid, f"Your saved addresses:\n\n{listed}\n\nWhich one should orders go to?", markup=keyboard)
-        if (m := re.match(r"\s*(\d+)", answer)) and 1 <= (n := int(m[1])) <= len(saved):
-            log.info("address picked", option=n, saved=len(saved))
-            return b.pick_address(n - 1)
-        log.info("address answer not understood")
-        return ""
-
-    def _name_address(self, uid: int, b) -> str:
-        """When the shop's address list can't be read: confirm the current one or type a name."""
-        if address := b.delivery_address():
-            answer = self._ask(uid, f"Your shop account delivers to:\n\n{address}\n\nOrder there?", markup=CONFIRM)
-            if answer == YES:
-                return address
-        name = self._ask(
-            uid,
-            "Which of your saved addresses? Send its name as the shop's app shows it, e.g. Home",
-            markup=NO_KEYBOARD,
-        )
-        try:
-            b.choose_address(name)
-        except ShopError as e:
-            log.info("address not chosen", error=e.logged)
-            self._say(uid, f"Hmm, {e}.")
-        return ""

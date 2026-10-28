@@ -7,11 +7,10 @@ dependencies = ["structlog>=25"]
 
 [project.optional-dependencies]
 runtime = [
-  "playwright==1.64.1",
   "faster-whisper==1.2.1",
   "av>=13,<14",  # faster-whisper passes an option that av 14 removed
 ]
-dev = ["pytest>=8", "ruff>=0.8", "playwright==1.64.1"]  # tests/browser drive Chromium
+dev = ["pytest>=8", "ruff>=0.8"]
 
 [build-system]
 requires = ["setuptools>=75"]

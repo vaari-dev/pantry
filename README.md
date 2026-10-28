@@ -8,22 +8,24 @@ on delivery when that falls short.
 Telegram ⇄ bot (OCI box, Docker)
             ├─ Whisper: voice → text
             ├─ catalog: words → your products, per account
-            └─ real Chrome on a virtual screen → Tailscale → home exit node → shop
+            └─ Zepto's official MCP server (HTTPS, JSON): search, cart, bill, order, history
 ```
 
-The shop refuses headless browsers and data-centre IPs, hence real Chrome leaving through home.
+The bot signs in to the shop as its MCP clients do (OAuth: phone, then the texted code) and keeps
+each account's tokens, renewing them before they lapse. No browser.
 
 ## Use
 
 New people message the bot; the admin taps *Let them in*. `/setup` (private chat) asks for the
 phone number, the code the shop texts, and one of the account's saved addresses; the bot deletes
-the number and code from the chat. Family joins through an owner's `/invite` link.
+the number and code from the chat, and keeps only the login tokens. Family joins through an owner's `/invite` link.
 
-Every cart is checked before it is placed: only the expected items, the account's address, paid
-fully from the wallet or fully on delivery, within the daily limit. Lists under the
+The bot owns the shop cart: it sets it to exactly the basket, then reads the shop's bill and checks
+it before ordering: only the expected items, the account's address, paid fully from the wallet or
+fully on delivery, within the daily limit. Lists under the
 smallest order wait in the basket; a cart that reaches it is placed 3 minutes later, or at once with
-*Order now*. Each attempt is recorded before *Place Order*, so an interrupted order is reported,
-never retried.
+*Order now*. Each attempt is recorded before the order call, and confirmed by a new order in the
+shop's history, so an interrupted order is reported, never retried.
 
 | | |
 |---|---|
@@ -41,8 +43,7 @@ never retried.
    variables `SHOP_URL`, `TELEGRAM_ADMIN_ID`, `TS_EXIT_NODE` (its Tailscale IP), `SSH_HOST`,
    `SSH_USER`, `SSH_KNOWN_HOSTS`, optional `DEPLOY_DIR`;
    secrets `TELEGRAM_BOT_TOKEN`, `TS_AUTHKEY`, `SSH_PRIVATE_KEY`.
-3. Push to `main`. *Actions → Operate* runs `check`, `logs`, `apimap` or `remove` (deletes the bot and its data).
-   `apimap` prints the shop's API calls seen so far, without values.
+3. Push to `main`. *Actions → Operate* runs `check`, `logs` or `remove` (deletes the bot and its data).
 
 Logs are JSON lines in Loki: `{service_name="grocery-bot"}`. They never hold message text.
 

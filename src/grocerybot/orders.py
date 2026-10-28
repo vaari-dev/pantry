@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 
 import structlog
@@ -7,7 +6,7 @@ import structlog
 from .accounts import Household
 from .catalog import combine, rupees
 from .config import Config
-from .shop import Browser, Rules, ShopError
+from .shop import Login, Rules, ShopError, Zepto
 
 log = structlog.get_logger(__name__)
 
@@ -22,7 +21,7 @@ class Outcome:
     item_total: float = 0
     waiting: bool = False
     held: bool = False
-    unconfirmed: bool = False  # tapped Place Order, but the shop did not confirm it
+    unconfirmed: bool = False  # asked the shop to place it, but it did not confirm it
     over_limit: bool = False
     cod: bool = False
     estimated: bool = False  # item_total from catalog prices: the shop was not opened
@@ -40,26 +39,26 @@ class Outcome:
         return "blocked" if self.problems else "cart ready"
 
 
-def browser(cfg: Config, hh: Household, images: bool = False) -> Browser:
-    return Browser(cfg.shop_url, hh.state_file, cfg.proxy, hh.debug_dir, images=images, record=cfg.api_map)
+def shop(cfg: Config, hh: Household) -> Zepto:
+    return Zepto(cfg.shop_url, hh.state_file)
 
 
-def login_browser(cfg: Config, state_file: Path) -> Browser:
-    return Browser(cfg.shop_url, state_file, cfg.proxy, cfg.debug_dir, fresh=True)
+def login() -> Login:
+    return Login()
+
+
+def login_shop(cfg: Config, session: Path) -> Zepto:
+    return Zepto(cfg.shop_url, session)
 
 
 def rules(hh: Household) -> Rules:
-    return Rules(hh.address_label, hh.address_match, hh.daily_cap - hh.ledger().spent_today())
-
-
-def exit_ip(cfg: Config) -> str:
-    with Browser(cfg.shop_url, None, cfg.proxy, cfg.debug_dir) as b:
-        return b.public_ip()
+    return Rules(hh.address_id, hh.daily_cap - hh.ledger().spent_today())
 
 
 def check(cfg: Config, hh: Household) -> None:
-    with browser(cfg, hh) as b:
-        b.check_session(rules(hh))
+    """Also renews the login before it lapses."""
+    with shop(cfg, hh) as z:
+        z.deliver_to(hh.address_id)
 
 
 def priced(hh: Household) -> tuple[list[tuple[str, int, float | None]], float, int]:
@@ -73,11 +72,11 @@ def priced(hh: Household) -> tuple[list[tuple[str, int, float | None]], float, i
 
 
 def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool = False) -> Outcome:
-    """hold: price the basket from the catalog and leave it there; the shop is opened only to place
+    """hold: price the basket from the catalog and leave it there; the shop is used only to place
     an order (or, with ordering off, to fill its cart). New items join the basket first, so a failure
     loses nothing.
 
-    The attempt is written to the ledger before Place Order is tapped, so a crash can never lead
+    The attempt is written to the ledger before the order call, so a crash can never lead
     to a silent second order: an unfinished attempt is reported, not retried."""
     catalog, ledger = hh.catalog(), hh.ledger()
     out, limits = Outcome(), rules(hh)
@@ -99,19 +98,21 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
             out.held = not out.waiting
         return out
 
-    with browser(cfg, hh) as b:
-        b.check_session(limits)
-        b.empty_cart()
-        expected, added = {}, []
+    with shop(cfg, hh) as z:
+        z.deliver_to(limits.address_id)
+        expected, added, capped = {}, [], {}
         for key, qty in items:
             why = None
             for n, product in enumerate(catalog.options(key)):
-                if (skipped := b.add(product, qty)) is None:
-                    expected[product] = qty
+                if isinstance(allowed := z.stock(product), int):
+                    expected[product] = min(qty, allowed)
+                    if allowed < qty:
+                        log.info("quantity capped", asked=qty, allowed=allowed)
+                        capped[product] = qty
                     added.append((key, product, n))
                     break
-                log.info("option skipped", item=key, option=n, reason=skipped)
-                why = why or skipped
+                log.info("option skipped", item=key, option=n, reason=allowed)
+                why = why or allowed
             else:
                 out.unavailable[key] = why or "no choice saved"
         kept = [(k, q) for k, q in items if k in out.unavailable]  # stay in the basket, whatever happens
@@ -119,45 +120,41 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
             out.problems.append("none of the items can be added right now")
             return out
 
-        cart = b.review_cart(expected, limits)
+        z.fill(expected)
+        cart = z.review(expected, limits)
         catalog.reprice({p.url: price for p, price in cart.prices.items()})
         placed_items = []
         for key, product, n in added:
-            qty = cart.capped.get(product, expected[product])
-            placed_items.append((key, qty))
-            note = f"  (the most the shop allows, of {expected[product]})" if product in cart.capped else ""
-            out.lines.append(f"{product.label()} ×{qty}" + ("  (backup choice)" if n else "") + note)
+            placed_items.append((key, expected[product]))
+            note = f"  (the most the shop allows, of {capped[product]})" if product in capped else ""
+            out.lines.append(f"{product.label()} ×{expected[product]}" + ("  (backup choice)" if n else "") + note)
         out.total, out.problems, out.item_total, out.cod = cart.total, cart.problems, cart.item_total, cart.cod
         out.over_limit = cart.total is not None and cart.total > limits.budget
         if cart.problems:
-            b.screenshot("cart")
             return out
         if cart.item_total < hh.min_order:
             out.waiting = True
             ledger.set_basket(items)
             return out
-        if cart.cod and not b.has_pay_button(cart.total):
-            out.problems.append(f"could not find the cart's Pay ₹{cart.total:g} button")
-            b.screenshot("cart")
-            return out
         if not hh.place_orders:
             return out
 
-        attempt, started = ledger.begin(placed_items, cart.total), datetime.now()
+        before = z.latest_order()
+        attempt = ledger.begin(placed_items, cart.total)
         ledger.set_basket(kept)  # never ordered twice, even if the outcome is unclear
         log.info("attempt recorded", total=cart.total, cod=cart.cod)
+        stopped = None
         try:
-            if stopped := (b.place_cod(cart.total) if cart.cod else b.place()):
-                log.info("payment stopped", reason=stopped)
-                b.screenshot("payment")
-            out.placed = b.confirm(cart.total, started)
-        except Exception as e:  # past the tap the order may have gone through: unconfirmed, never "not ordered"
+            z.place(limits, cart.cod)
+        except Exception as e:  # the order may have gone through all the same: the history tells
             log.warning("placing interrupted", exc_info=True)
-            stopped = str(e) if isinstance(e, ShopError) else "the shop stopped responding while placing it"
+            stopped = str(e) if isinstance(e, ShopError) else "the shop stopped answering while placing it"
+        try:
+            out.placed = z.confirm(before)
+        except Exception:
+            log.warning("order history not read", exc_info=True)
         out.unconfirmed = not out.placed
         if stopped and out.unconfirmed:
             out.problems.append(stopped)
         ledger.finish(attempt, "placed" if out.placed else "unknown")
-        if out.unconfirmed:
-            b.screenshot("unconfirmed")
         return out

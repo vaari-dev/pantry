@@ -4,8 +4,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-TAILSCALE_PROXY = "socks5://127.0.0.1:1055"
-
 
 def _required(name: str) -> str:
     value = os.environ.get(name, "").strip()
@@ -21,16 +19,11 @@ class Config:
     admin_id: int  # lets new people in, gets the bot's own alerts
     whisper_model: str
     data_dir: Path
-    proxy: str | None  # exits through the home connection
     health_hour: int
 
     @property
     def debug_dir(self) -> Path:
         return self.data_dir / "debug"
-
-    @property
-    def api_map(self) -> Path:
-        return self.data_dir / "apimap.json"
 
 
 def load() -> Config:
@@ -40,7 +33,5 @@ def load() -> Config:
         admin_id=int(_required("TELEGRAM_ADMIN_ID")),
         whisper_model=os.environ.get("WHISPER_MODEL", "small"),
         data_dir=Path(os.environ.get("DATA_DIR", "/data")),
-        # served by docker/entrypoint.sh
-        proxy=TAILSCALE_PROXY if os.environ.get("TS_EXIT_NODE") else None,
         health_hour=int(os.environ.get("HEALTH_CHECK_HOUR", "9")),
     )
