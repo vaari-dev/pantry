@@ -66,13 +66,23 @@ def bot(tmp_path, monkeypatch):
     monkeypatch.setattr(botmod, "Login", FakeLogin)
     monkeypatch.setattr(botmod, "Zepto", lambda _: FakeAddresses())
     monkeypatch.setattr(botmod.signal, "signal", lambda *_: None)  # run() must not take pytest's SIGTERM
-    cfg = Config("token", ADMIN, "small", tmp_path, 9)
+    cfg = Config("token", ADMIN, "small", tmp_path, 9, "key")
     b = botmod.Bot(cfg)
     b.tg = FakeTelegram()
+    b.read = read_list
     botmod.threading.Thread(target=b._worker, daemon=True).start()
     yield b
     for timer in b.holds.values():
         timer.cancel()
+
+
+def read_list(text, *_):
+    """What Claude makes of a plain list: "2 bread, milk"."""
+    items = []
+    for part in filter(None, (p.strip() for p in text.split(","))):
+        qty, _, name = part.partition(" ")
+        items.append((name, int(qty)) if qty.isdigit() else (part, 1))
+    return Request(add=items)
 
 
 def message(text="", uid=NEW, **extra):
@@ -447,15 +457,6 @@ def test_a_pick_while_the_options_are_still_coming_in(bot, shop):
     pid = next(iter(bot.picking))
     bot._pick(hh, f"{pid}:1:1")
     sent(bot, "⏳ I'll order this", having="Total ₹120")
-
-
-def test_search_drops_leading_words_when_nothing_matches():
-    class Shop:
-        def search(self, query):
-            return [query] if query == "avocado" else []
-
-    assert botmod._search(Shop(), "harsh avocado") == ("avocado", ["avocado"])
-    assert botmod._search(Shop(), "eggs") == ("eggs", [])
 
 
 def restarted(bot):

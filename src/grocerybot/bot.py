@@ -98,15 +98,6 @@ def _items(items: list[tuple[str, int]]) -> str:
     return ", ".join(f"{k} ×{q}" for k, q in items)
 
 
-def _search(z: Zepto, name: str) -> tuple[str, list[Product]]:
-    """Speech garbles words ("hass avocado" → "harsh avocado"); the item itself usually comes last."""
-    words = name.split()
-    for n in range(min(len(words), 3)):
-        if options := z.search(query := " ".join(words[n:])):
-            return query, options
-    return name, []
-
-
 def _basket(hh: Household) -> str:
     """'' when empty."""
     rows, total, unpriced = orders.priced(hh)
@@ -521,15 +512,12 @@ class Bot:
         if p.to_pick:
             with Zepto(hh.state_file) as z:
                 z.deliver_to(hh.address_id)
-                found = [(name, qty, *_search(z, name)) for name, qty in p.to_pick]
-        for name, _, query, options in found:
+                found = [(name, qty, z.search(name)) for name, qty in p.to_pick]
+        for name, _, options in found:
             if not options:
                 log.info("item not found")
                 self._say(chat_id, f'Couldn\'t find "{name}" in the shop; leaving it out.')
-            elif query != name:
-                log.info("item found by part of its name", words=len(name.split()), used=len(query.split()))
-                self._say(chat_id, f'Nothing for "{name}", so here is "{query}".')
-        asks = {n: (name, qty, options, []) for n, (name, qty, _, options) in enumerate(found) if options}
+        asks = {n: (name, qty, options, []) for n, (name, qty, options) in enumerate(found) if options}
         if not asks:
             if not p.ready:
                 return self._say(chat_id, "I didn't catch any items.")

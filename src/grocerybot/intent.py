@@ -1,5 +1,4 @@
-"""A message, typed or spoken -> what it asks the bot to do. Claude reads it; without Claude, or when
-it fails, the message is read as a plain list of items."""
+"""A message, typed or spoken -> what it asks the bot to do, as Claude reads it."""
 
 import json
 import re
@@ -8,7 +7,7 @@ from dataclasses import dataclass, field
 
 import structlog
 
-from .catalog import normalize, split_spoken
+from .catalog import normalize
 
 log = structlog.get_logger(__name__)
 
@@ -19,8 +18,8 @@ transcribed from a voice note, often in Hinglish (Hindi in Latin script mixed wi
 Return what the message asks for.
 
 - add: items to order. said: the words naming the item, copied exactly from the message. \
-name: the household's word for it when one of their words means the same item, else a short \
-search term for the shop (English where that is usual: anda -> eggs). qty: how many packs, 1 if \
+name: the household's word for it, copied exactly, when one of their words means the same item; \
+else a short search term for the shop (English where that is usual: anda -> eggs). qty: how many packs, 1 if \
 not said. Sizes and weights are not quantities: "1 kg aloo", "a dozen eggs", "aadha litre doodh" \
 are each 1. In Hindi "do" before an item is 2 ("do anda"), elsewhere it means "give".
 - change: items already in the basket to set to a new quantity; 0 removes ("no bread", \
@@ -122,14 +121,6 @@ class Reader:
         self._key, self._client = api_key, None
 
     def __call__(self, text: str, vocabulary: list[str], basket: list[str]) -> Request:
-        if self._key:
-            try:
-                return self._claude(text, vocabulary, basket)
-            except Exception as e:
-                log.warning("message not read by claude", error=type(e).__name__)
-        return Request(add=split_spoken(text))
-
-    def _claude(self, text: str, vocabulary: list[str], basket: list[str]) -> Request:
         if self._client is None:
             import anthropic
 
