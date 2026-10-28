@@ -4,9 +4,9 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from grocerybot import shop, store
-from grocerybot.catalog import Product
-from grocerybot.shop import Login, Rules, ShopError, Zepto
+from pantry import shop, store
+from pantry.catalog import Product
+from pantry.shop import Login, Rules, ShopError, Zepto
 
 HOME, OTHER = "addr-home", "addr-other"
 MILK = Product("Amul Taaza Toned Fresh Milk | Pouch", "500 ml", "https://shop.example/pn/milk/pvid/pv-milk", "₹30")

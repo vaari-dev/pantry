@@ -1,7 +1,7 @@
 import pytest
 
-from grocerybot.catalog import Product
-from grocerybot.fill import Offer, cheapest
+from pantry.catalog import Product
+from pantry.fill import Offer, cheapest
 
 LITRE, HALF, FIVE, THREE_QUARTERS = (Product("Milk", s, f"/m/pvid/{s}") for s in ("1 l", "500 ml", "5 l", "750 ml"))
 

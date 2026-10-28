@@ -84,7 +84,10 @@ class Telegram:
             f.write(r.read())
         return Path(out)
 
-    def setup(self, commands: dict[str, str], description: str, short: str) -> str:
+    def setup(self, name: str, commands: dict[str, str], description: str, short: str) -> str:
+        if self.call("getMyName")["name"] != name:  # setMyName is rate limited; a refusal must not stop the bot
+            with contextlib.suppress(TelegramError):
+                self.call("setMyName", name=name)
         self.call("setMyCommands", commands=[{"command": c, "description": d} for c, d in commands.items()])
         self.call("setMyDescription", description=description)
         self.call("setMyShortDescription", short_description=short)

@@ -42,6 +42,7 @@ COMMANDS = {
     "leave": "Stop ordering with this account",
     "help": "How to order",
 }
+NAME = "Pantry"
 SHORT = "Groceries from a voice note."
 DESCRIPTION = (
     f"🛒 {SHORT}\n\n"
@@ -193,7 +194,7 @@ class Bot:
         self.username = ""
 
     def run(self) -> None:
-        self.username = self.tg.setup(COMMANDS, DESCRIPTION, SHORT)
+        self.username = self.tg.setup(NAME, COMMANDS, DESCRIPTION, SHORT)
         log.info("bot started", bot_username=self.username, households=len(self.accounts.all()))
         self._resume()
         threading.Thread(target=self._worker, daemon=True).start()

@@ -1,5 +1,5 @@
-"""python -m grocerybot            run the bot
-python -m grocerybot check      self-check; fails only if the shop is unreachable
+"""python -m pantry            run the bot
+python -m pantry check      self-check; fails only if the shop is unreachable
 """
 
 import os

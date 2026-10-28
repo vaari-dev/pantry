@@ -1,8 +1,8 @@
-name: grocery-bot
+name: pantry
 
 services:
-  grocery-bot:  # Loki service_name
-    image: ${APP_IMAGE:-grocery-bot:local}
+  pantry:  # Loki service_name
+    image: ${APP_IMAGE:-pantry:local}
     build: .
     restart: unless-stopped
     env_file:
