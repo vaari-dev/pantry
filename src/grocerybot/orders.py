@@ -22,7 +22,7 @@ class Outcome:
     unconfirmed: bool = False  # the order call was made, but no new order seen
     over_limit: bool = False
     cod: bool = False
-    estimated: bool = False  # item_total from catalog prices: the shop was not opened
+    estimated: bool = False  # item_total from catalog prices
 
     @property
     def result(self) -> str:
@@ -125,18 +125,20 @@ def order(hh: Household, items: list[tuple[str, int]], hold: bool = False) -> Ou
         if not hh.place_orders:
             return out
 
-        before = z.latest_order()
         attempt = ledger.begin(placed_items, cart.total)
         ledger.set_basket(kept)  # never ordered twice, even if the outcome is unclear
         log.info("attempt recorded", total=cart.total, cod=cart.cod)
         stopped = placed = None
         try:
             placed = z.place(limits, cart.cod)
-        except Exception as e:  # it may have gone through all the same: the history tells
+        except ShopError as e:  # it may have gone through all the same
+            log.warning("placing interrupted", error=e.logged)
+            stopped = str(e)
+        except Exception:
             log.warning("placing interrupted", exc_info=True)
-            stopped = str(e) if isinstance(e, ShopError) else "the shop stopped answering while placing it"
+            stopped = "the shop stopped answering while placing it"
         try:
-            out.placed = z.confirm(before, placed)
+            out.placed = z.confirm(placed)
         except Exception:
             log.warning("order history not read", exc_info=True)
         out.unconfirmed = not out.placed

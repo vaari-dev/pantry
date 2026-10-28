@@ -3,6 +3,7 @@
 import base64
 import fcntl
 import hashlib
+import http.client
 import json
 import re
 import secrets
@@ -100,7 +101,7 @@ def _request(url: str, body: bytes | None, headers: dict) -> tuple[int, dict, by
             return r.status, dict(r.headers), r.read()
     except urllib.error.HTTPError as e:
         return e.code, dict(e.headers), e.read()
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
         log.info("shop unreachable", host=urlsplit(url).netloc, error=type(e).__name__)
         raise ShopError(NOT_ANSWERING) from e
 
@@ -280,7 +281,7 @@ class Zepto:
         )
         if status >= 300 or not reply.keys() >= TOKENS:
             log.info("login not renewed", status=status)
-            raise ShopError(LOGIN_EXPIRED)
+            raise ShopError(LOGIN_EXPIRED if status in (400, 401) else NOT_ANSWERING)
         self._login = _tokens(reply, self._login["client_id"])
         store.write(self.login_file, self._login)  # the old refresh token no longer works
         log.info("login renewed")
@@ -407,9 +408,6 @@ class Zepto:
             result.problems.append(over)
         return result
 
-    def latest_order(self) -> dict:
-        return next(iter(self.tool("list_order_history", limit=1, pageNumber=1).get("orders") or []), {})
-
     def place(self, rules: Rules, cod: bool) -> str | None:
         """The one irreversible call; the new order's id, if the reply has it."""
         reply = self.tool(
@@ -426,16 +424,16 @@ class Zepto:
         )
         return summary.get("orderId")
 
-    def confirm(self, before: dict, placed: str | None) -> bool:
-        """The history lists a new order a few seconds late. Without the placed id, any new order counts."""
-        for attempt in range(3):
+    def confirm(self, placed: str | None) -> bool:
+        """By the placed order's id in the history, which lists it a few seconds late."""
+        for attempt in range(3 if placed else 0):
             if attempt:
                 time.sleep(5)
             try:
-                o = self.latest_order()
+                o = next(iter(self.tool("list_order_history", limit=1, pageNumber=1).get("orders") or []), {})
             except ShopError:
                 continue
-            if o and (o.get("id") == placed if placed else o.get("id") != before.get("id")):
+            if o.get("id") == placed:
                 log.info("order found", status=o.get("formattedStatus"), total=o.get("grandTotalAmount"))
                 return True
         log.info("no new order in the history")

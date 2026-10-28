@@ -11,14 +11,14 @@ Telegram ⇄ bot (OCI box, Docker)
             └─ Zepto's official MCP server (HTTPS, JSON): search, cart, bill, order, history
 ```
 
-The bot signs in to the shop as its MCP clients do (OAuth: phone, then the texted code) and keeps
-each account's tokens, renewing them before they lapse. No browser.
+The bot signs in as Zepto's MCP clients do (OAuth: phone, then the texted code) and keeps each
+account's tokens, renewing them before they lapse.
 
 ## Use
 
 New people message the bot; the admin taps *Let them in*. `/setup` (private chat) asks for the
 phone number, the code the shop texts, and one of the account's saved addresses; the bot deletes
-the number and code from the chat, and keeps only the login tokens. Family joins through an owner's `/invite` link.
+the number and code from the chat. Family joins through an owner's `/invite` link.
 
 The bot owns the shop cart: it sets it to exactly the basket, then reads the shop's bill and checks
 it before ordering: only the expected items, the account's address, paid fully from the wallet or

@@ -175,14 +175,11 @@ class FakeShop:
         problems = ["over today's limit"] if total > rules.budget else []
         return Cart(total, total, problems=problems, prices=prices)
 
-    def latest_order(self):
-        return self.orders
-
     def place(self, rules, cod):
         self.orders += 1
         return self.orders
 
-    def confirm(self, before, placed):
+    def confirm(self, placed):
         return self.orders == placed
 
     def search(self, query):
@@ -342,6 +339,25 @@ def test_over_the_limit_says_how_to_go_on(bot, shop):
     said(bot, "❌ Not ordered")
     assert next(t for _, t, _ in bot.tg.sent if t.startswith("❌")).endswith(botmod.KEPT_LIMIT)
     assert hh.ledger().basket() == [("bread", 2)]
+
+
+def test_a_start_asks_accounts_from_the_chrome_bot_to_set_up_again_and_drops_its_files(bot, shop):
+    hh, _ = shop
+    (session := bot.cfg.data_dir / "old.json").write_text("{}")
+    bot.accounts.allow(ADMIN)
+    old = bot.accounts.connect(ADMIN, "Admin", "", "", session)  # households.json from before had no address_id
+    for left in (
+        hh.dir / "debug" / "x.png",
+        bot.cfg.data_dir / "tailscale" / "state",
+        bot.cfg.data_dir / "apimap.json",
+    ):
+        left.parent.mkdir(parents=True, exist_ok=True)
+        left.write_text("x")
+    bot._resume()
+    assert [t for c, t, _ in bot.tg.sent if t == botmod.RECONNECT] == [botmod.RECONNECT]
+    said(bot, "🔌", chat=old.owner)
+    assert not [*bot.cfg.data_dir.glob("**/debug")] and not (bot.cfg.data_dir / "tailscale").exists()
+    assert not (bot.cfg.data_dir / "apimap.json").exists()
 
 
 @pytest.mark.parametrize(("due", "ordered"), [(timedelta(minutes=1), False), (timedelta(0), True)])

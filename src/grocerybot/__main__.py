@@ -24,7 +24,7 @@ def main() -> None:
             orders.check(hh)
             print(f"ok: account {hh.id}")
         except ShopError as e:
-            print(f"not ready: account {hh.id}: {e}")
+            print(f"not ready: account {hh.id}: {e.logged}")
         except Exception as e:
             print(f"not ready: account {hh.id}: {type(e).__name__}")
 

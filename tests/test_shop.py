@@ -271,6 +271,15 @@ def test_a_login_renewed_by_the_other_process_is_used_not_renewed_again(login_fi
     assert store.read(login_file, {})["refresh_token"] == zepto.refresh == "refresh-3"
 
 
+def test_a_server_error_on_renewal_is_not_an_expired_login(login_file, zepto, monkeypatch):
+    store.write(login_file, {**store.read(login_file, {}), "expires_at": time.time()})
+    auth = zepto.auth
+    monkeypatch.setattr(zepto, "auth", lambda p, *a: (503, {}, b"") if p == "/token" else auth(p, *a))
+    with pytest.raises(ShopError, match="not answering"), Zepto(login_file):
+        pass
+    assert store.read(login_file, {})["refresh_token"] == "refresh-2"
+
+
 def test_a_refused_token_is_renewed_once_then_the_login_has_expired(login_file, zepto):
     with Zepto(login_file) as z:
         zepto.expired = True
@@ -379,13 +388,12 @@ def test_a_refusal_says_what_the_shop_said(login_file, zepto):
 
 
 @pytest.mark.parametrize("cod", [False, True])
-def test_placing_is_confirmed_by_a_new_order_in_the_history(login_file, zepto, cod):
+def test_placing_is_confirmed_by_its_id_in_the_history(login_file, zepto, cod):
     with Zepto(login_file) as z:
         cart = order(z, {MILK: 1})
-        before = z.latest_order()
         placed = z.place(Rules(HOME, 1000), cod)
-        assert placed == zepto.orders[0] != before["id"]
-        assert z.confirm(before, placed)
+        assert placed == zepto.orders[0] != "old-order"
+        assert z.confirm(placed)
     assert [n for n, a in zepto.calls if a.get("confirmOrder")] == ["create_order" if cod else "create_wallet_order"]
     assert cart.cod is False
 
@@ -393,18 +401,16 @@ def test_placing_is_confirmed_by_a_new_order_in_the_history(login_file, zepto, c
 def test_a_failed_history_read_is_tried_again(login_file, zepto):
     with Zepto(login_file) as z:
         order(z, {MILK: 1})
-        before = z.latest_order()
         placed = z.place(Rules(HOME, 1000), cod=False)
         zepto.history_down, zepto.history_lag = 1, 0
-        assert z.confirm(before, placed)
+        assert z.confirm(placed)
 
 
-def test_no_new_order_is_not_confirmed(login_file, zepto):
+def test_only_the_placed_order_is_confirmed(login_file, zepto):
+    zepto.orders.insert(0, "placed-in-the-app")
     with Zepto(login_file) as z:
-        before = z.latest_order()
-        assert not z.confirm(before, None)
-        zepto.orders.insert(0, "placed-in-the-app")  # someone else's order is not ours
-        assert not z.confirm(before, "ours")
+        assert not z.confirm(None)
+        assert not z.confirm("ours")
 
 
 def test_reachable_needs_no_login(zepto):

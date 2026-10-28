@@ -8,6 +8,7 @@ import math
 import queue
 import re
 import secrets
+import shutil
 import signal
 import threading
 import time
@@ -57,8 +58,8 @@ TRY = 'Try it now 👉 send a voice note saying "bread aur do anda", or type "2 
 CONNECT = "🛒 Connect my shop account"
 # One-time: left open, it can hide the next keyboard (Share my phone number).
 CONNECT_BUTTON = {"keyboard": [[{"text": CONNECT}]], "resize_keyboard": True, "one_time_keyboard": True}
+RECONNECT = "🔌 I now order through Zepto's own connection for assistants. Send /setup once to reconnect your account."
 NOT_SET_UP = "Connect your shop account to start ordering: it takes a minute. Or open an invite link from family."
-DEBUG_KEEP = timedelta(days=7)
 ALERT_REPEAT = timedelta(hours=6)
 ANSWER_WAIT = 600
 OTP_WAIT = 300
@@ -225,8 +226,13 @@ class Bot:
                 log.exception("bot state not saved")
 
     def _resume(self) -> None:
-        """What a restart left behind: orders cut off mid-placing, and held baskets."""
+        """What a restart left behind: orders cut off mid-placing, held baskets, logins to redo."""
+        for left in [*self.cfg.data_dir.glob("**/debug"), self.cfg.data_dir / "tailscale"]:  # from the Chrome bot
+            shutil.rmtree(left, ignore_errors=True)
+        (self.cfg.data_dir / "apimap.json").unlink(missing_ok=True)
         for hh in self.accounts.all():
+            if not hh.address_id:
+                self.alert(hh.owner, RECONNECT)
             for o in hh.ledger().interrupted():
                 log.warning("interrupted order found", household_id=hh.id, total=o["total"], at=o["at"])
                 self.alert(
@@ -286,10 +292,6 @@ class Bot:
             run_at = now.replace(hour=self.cfg.health_hour, minute=0, second=0, microsecond=0)
             time.sleep(((run_at if run_at > now else run_at + timedelta(days=1)) - now).total_seconds())
             self._queue(self._health, self.cfg.admin_id)
-            cutoff = (datetime.now() - DEBUG_KEEP).timestamp()
-            for f in self.cfg.data_dir.glob("**/debug/*-*.*"):
-                if f.stat().st_mtime < cutoff:
-                    f.unlink(missing_ok=True)
 
     def _health(self, _admin: int) -> None:
         for hh in self.accounts.all():
