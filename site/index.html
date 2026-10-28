@@ -1,0 +1,721 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Pantry · Groceries from a voice note</title>
+<meta name="description" content="Say “bread aur do anda” on Telegram. Pantry fills your Zepto cart, checks the bill line by line, and orders. No app, no browsing, no upsells.">
+<meta property="og:title" content="Pantry · Say it. It’s ordered.">
+<meta property="og:description" content="A voice note on Telegram becomes a checked, capped Zepto order that is never retried blind.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://vaari-dev.github.io/pantry/og.png">
+<link rel="canonical" href="https://vaari-dev.github.io/pantry/">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#fbf8f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0c130f" media="(prefers-color-scheme: dark)">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #fbf8f1;
+  --bg-2: #f3eee2;
+  --card: #ffffff;
+  --ink: #15231b;
+  --muted: #56655b;
+  --line: #e4ddcd;
+  --leaf: #1f6b43;
+  --leaf-ink: #ffffff;
+  --leaf-soft: #e1efe5;
+  --saffron: #c9730a;
+  --saffron-soft: #fcebd2;
+  --danger: #b4321f;
+  --chat: #dfe9dc;
+  --bubble-in: #ffffff;
+  --bubble-out: #d9f5c5;
+  --shadow: 0 1px 2px rgb(21 35 27 / .06), 0 12px 40px -12px rgb(21 35 27 / .18);
+  --radius: 20px;
+  --max: 1120px;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+
+  @media (prefers-color-scheme: dark) {
+    --bg: #0c130f;
+    --bg-2: #111a15;
+    --card: #152019;
+    --ink: #ebf2ec;
+    --muted: #9fb2a5;
+    --line: #24342b;
+    --leaf: #5fd08a;
+    --leaf-ink: #08130c;
+    --leaf-soft: #17321f;
+    --saffron: #f5b35a;
+    --saffron-soft: #33260f;
+    --danger: #ff8a75;
+    --chat: #0f1a14;
+    --bubble-in: #1b2a21;
+    --bubble-out: #24502f;
+    --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 18px 50px -16px rgb(0 0 0 / .7);
+  }
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 80px; accent-color: var(--leaf); }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 17px/1.6 var(--sans); -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+}
+::selection { background: var(--leaf); color: var(--leaf-ink); }
+a { color: inherit; }
+img, svg { display: block; max-width: 100%; }
+h1, h2, h3 { line-height: 1.08; letter-spacing: -0.025em; margin: 0; text-wrap: balance; }
+p { margin: 0; text-wrap: pretty; }
+code, kbd { font-family: var(--mono); font-size: .88em; }
+kbd { background: var(--bg-2); border: 1px solid var(--line); border-radius: 6px; padding: .05em .4em; white-space: nowrap; }
+:focus-visible { outline: 3px solid var(--saffron); outline-offset: 3px; border-radius: 6px; }
+
+.wrap { width: min(var(--max), 100% - 40px); margin-inline: auto; }
+.skip { position: absolute; left: -9999px; }
+.skip:focus { left: 16px; top: 16px; z-index: 10; background: var(--card); padding: 8px 14px; }
+
+/* Nav */
+header.nav {
+  position: sticky; top: 0; z-index: 5;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: saturate(1.4) blur(14px); -webkit-backdrop-filter: saturate(1.4) blur(14px);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+.nav .wrap { display: flex; align-items: center; gap: 28px; height: 64px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 750; letter-spacing: -0.02em; text-decoration: none; font-size: 18px; }
+.brand img { width: 28px; height: 28px; }
+.nav ul { display: flex; gap: 22px; list-style: none; margin: 0 0 0 auto; padding: 0; font-size: 15px; }
+.nav ul a { text-decoration: none; color: var(--muted); }
+.nav ul a:hover { color: var(--ink); }
+@media (max-width: 860px) { .nav ul { display: none; } .nav .btn { margin-left: auto; } }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 650;
+  border-radius: 999px; padding: 14px 24px; line-height: 1; white-space: nowrap;
+  transition: translate .15s ease, box-shadow .15s ease, background-color .15s ease;
+}
+.btn.primary { background: var(--leaf); color: var(--leaf-ink); box-shadow: 0 8px 24px -8px color-mix(in srgb, var(--leaf) 70%, transparent); }
+.btn.primary:hover { translate: 0 -1px; box-shadow: 0 12px 28px -8px color-mix(in srgb, var(--leaf) 80%, transparent); }
+.btn.ghost { color: var(--ink); border: 1px solid var(--line); background: var(--card); }
+.btn.ghost:hover { border-color: var(--muted); }
+.btn.small { padding: 10px 16px; font-size: 15px; }
+.btn svg { width: 18px; height: 18px; }
+
+/* Hero */
+.hero { position: relative; overflow: clip; padding: 72px 0 96px; }
+.hero::before {
+  content: ""; position: absolute; inset: -20% -10% auto; height: 120%; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(40% 50% at 78% 30%, color-mix(in srgb, var(--leaf) 22%, transparent), transparent 70%),
+    radial-gradient(30% 40% at 12% 10%, color-mix(in srgb, var(--saffron) 18%, transparent), transparent 70%);
+}
+.hero .wrap { display: grid; grid-template-columns: 1.1fr .9fr; gap: 56px; align-items: center; }
+@media (max-width: 920px) { .hero .wrap { grid-template-columns: 1fr; } }
+.eyebrow {
+  display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--leaf);
+  background: var(--leaf-soft); padding: 6px 12px; border-radius: 999px; margin-bottom: 22px;
+}
+.eyebrow i { width: 8px; height: 8px; border-radius: 50%; background: var(--leaf); font-style: normal; }
+.hero h1 { font-size: clamp(56px, 9vw, 104px); font-weight: 820; letter-spacing: -0.045em; line-height: .95; }
+.hero h1 span { color: var(--leaf); }
+.lead { font-size: clamp(18px, 2vw, 21px); color: var(--muted); margin: 26px 0 34px; max-width: 34em; }
+.lead q { color: var(--ink); font-weight: 600; quotes: "“" "”"; }
+.ctas { display: flex; flex-wrap: wrap; gap: 12px; }
+.fine { margin-top: 18px; font-size: 14px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.fine span::before { content: "✓ "; color: var(--leaf); font-weight: 700; }
+
+/* Phone */
+.phone-stage { position: relative; justify-self: center; width: min(360px, 100%); }
+.phone {
+  position: relative; border-radius: 44px; padding: 12px; background: #0d0f0e;
+  box-shadow: var(--shadow), inset 0 0 0 2px #2a2e2c; aspect-ratio: 9 / 18.5;
+}
+.screen { height: 100%; border-radius: 34px; overflow: hidden; background: var(--chat); display: flex; flex-direction: column; }
+.tg-bar { display: flex; align-items: center; gap: 10px; padding: 34px 16px 12px; background: var(--card); border-bottom: 1px solid var(--line); }
+.tg-bar .av { width: 36px; height: 36px; border-radius: 50%; background: var(--leaf); display: grid; place-items: center; }
+.tg-bar .av svg { width: 20px; height: 20px; }
+.tg-bar b { display: block; font-size: 15px; line-height: 1.2; }
+.tg-bar small { color: var(--muted); font-size: 12px; }
+.chat { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: 8px; padding: 14px 12px; font-size: 13.5px; line-height: 1.45; }
+.msg { max-width: 86%; padding: 8px 11px; border-radius: 14px; background: var(--bubble-in); box-shadow: 0 1px 1px rgb(0 0 0 / .08); white-space: pre-line; }
+.msg.out { align-self: flex-end; background: var(--bubble-out); border-bottom-right-radius: 4px; }
+.msg.in { border-bottom-left-radius: 4px; }
+.voice { display: flex; align-items: center; gap: 9px; white-space: normal; }
+.voice .play { width: 30px; height: 30px; border-radius: 50%; background: var(--leaf); flex: none; display: grid; place-items: center; }
+.voice .play::after { content: ""; border-left: 9px solid var(--leaf-ink); border-block: 6px solid transparent; margin-left: 3px; }
+.wave { display: flex; align-items: center; gap: 2px; height: 22px; }
+.wave i { width: 3px; border-radius: 2px; background: color-mix(in srgb, var(--ink) 55%, transparent); }
+.voice small { color: var(--muted); font-size: 11px; }
+.kb { display: block; margin-top: 8px; text-align: center; font-weight: 600; font-size: 13px; padding: 7px; border-radius: 10px; background: color-mix(in srgb, var(--leaf) 16%, transparent); color: var(--leaf); }
+.chat .tap { align-self: flex-end; font-size: 11px; color: var(--muted); }
+.float { position: absolute; font-size: 34px; filter: drop-shadow(0 8px 12px rgb(0 0 0 / .15)); user-select: none; }
+.f1 { top: 8%; left: -12%; } .f2 { top: 38%; right: -14%; } .f3 { bottom: 12%; left: -10%; } .f4 { bottom: -4%; right: 2%; }
+@media (prefers-reduced-motion: no-preference) {
+  .chat > * { animation: pop .5s cubic-bezier(.2,.9,.3,1.2) backwards; }
+  .chat > :nth-child(1) { animation-delay: .4s; }
+  .chat > :nth-child(2) { animation-delay: 1.3s; }
+  .chat > :nth-child(3) { animation-delay: 2.3s; }
+  .chat > :nth-child(4) { animation-delay: 3.1s; }
+  .chat > :nth-child(5) { animation-delay: 4.3s; }
+  .chat > :nth-child(6) { animation-delay: 4.9s; }
+  .chat > :nth-child(7) { animation-delay: 5.8s; }
+  .float { animation: bob 6s ease-in-out infinite; }
+  .f2 { animation-delay: -2s; } .f3 { animation-delay: -4s; } .f4 { animation-delay: -1s; }
+  @keyframes pop { from { opacity: 0; translate: 0 10px; scale: .96; } }
+  @keyframes bob { 50% { translate: 0 -10px; rotate: 6deg; } }
+}
+
+/* Sections */
+section { padding: 104px 0; }
+section.alt { background: var(--bg-2); border-block: 1px solid var(--line); }
+.head .kicker, .kicker { font: 600 13px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--saffron); margin-bottom: 16px; }
+.head { max-width: 760px; margin-bottom: 56px; }
+.head h2 { font-size: clamp(36px, 5vw, 58px); font-weight: 800; }
+.head p { color: var(--muted); font-size: 19px; margin-top: 18px; }
+.grid { display: grid; gap: 20px; }
+.g3 { grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); }
+.g2 { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
+@media (max-width: 460px) { .g2 { grid-template-columns: 1fr; } }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 28px; }
+.card h3 { font-weight: 700; font-size: 21px; margin-bottom: 10px; letter-spacing: -0.015em; }
+.card p { color: var(--muted); }
+.card .ic { font-size: 26px; width: 52px; height: 52px; display: grid; place-items: center; border-radius: 14px; background: var(--leaf-soft); margin-bottom: 18px; }
+.step { position: relative; padding-top: 34px; }
+.step .n { position: absolute; top: -18px; left: 28px; font: 800 15px/36px var(--sans); width: 36px; text-align: center; border-radius: 50%; background: var(--ink); color: var(--bg); }
+.step .say { margin-top: 18px; padding: 12px 14px; border-radius: 12px; background: var(--bg-2); font-size: 15px; color: var(--ink); }
+
+@media (prefers-reduced-motion: no-preference) {
+  @supports ((animation-timeline: view()) and (animation-range: entry)) {
+    .reveal { animation: rise auto linear backwards; animation-timeline: view(); animation-range: entry 0% entry 70%; }
+    @keyframes rise { from { opacity: 0; translate: 0 32px; } }
+  }
+}
+
+/* Safety gate */
+.gate { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: start; }
+@media (max-width: 920px) { .gate { grid-template-columns: 1fr; } }
+.checks { list-style: none; margin: 0; padding: 8px; counter-reset: c; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+.checks li { counter-increment: c; display: grid; grid-template-columns: 34px 1fr; gap: 14px; align-items: start; padding: 16px 18px; border-radius: 14px; }
+.checks li + li { border-top: 1px dashed var(--line); }
+.checks li::before { content: "✓"; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--leaf-soft); color: var(--leaf); font-weight: 800; }
+.checks b { display: block; font-size: 17px; font-weight: 700; }
+.checks span { color: var(--muted); font-size: 15px; }
+.verdicts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+.verdict { border-radius: 16px; padding: 16px 18px; font-size: 15px; }
+.verdict b { display: block; font-size: 16px; margin-bottom: 2px; }
+.verdict.ok { background: var(--leaf-soft); }
+.verdict.no { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.side h3 { font-size: 26px; margin-bottom: 18px; }
+.guards { display: grid; gap: 14px; }
+.guard { display: grid; grid-template-columns: auto 1fr; gap: 16px; padding: 20px; border-radius: 16px; background: var(--card); border: 1px solid var(--line); }
+.guard .ic { font-size: 22px; }
+.guard > div > b { display: block; margin-bottom: 2px; font-weight: 700; }
+.guard p { color: var(--muted); font-size: 15.5px; }
+.quote { -webkit-box-decoration-break: clone; box-decoration-break: clone; font-family: var(--mono); font-size: 13.5px; background: var(--bg-2); border-radius: 8px; padding: 2px 6px; color: var(--ink); }
+
+/* Reliability timeline */
+.timeline { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; margin: 8px 0 28px; }
+@media (max-width: 860px) { .timeline { grid-template-columns: 1fr 1fr; row-gap: 28px; } }
+.tl { position: relative; padding: 0 18px 0 0; }
+.tl .dot { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; font-size: 20px; background: var(--card); border: 2px solid var(--leaf); position: relative; z-index: 1; }
+.tl:not(:last-child)::after { content: ""; position: absolute; top: 22px; left: 46px; right: 0; height: 2px; background: repeating-linear-gradient(90deg, var(--leaf) 0 8px, transparent 8px 14px); }
+.tl h3 { font-size: 18px; margin: 16px 0 6px; }
+.tl p { color: var(--muted); font-size: 15px; }
+.crash { display: flex; gap: 18px; align-items: flex-start; padding: 22px 24px; border-radius: var(--radius); background: var(--saffron-soft); border: 1px solid color-mix(in srgb, var(--saffron) 35%, transparent); margin-bottom: 44px; }
+.crash .ic { font-size: 28px; }
+.crash p { color: var(--ink); }
+.crash .tgmsg { display: inline-block; margin-top: 10px; background: var(--card); border-radius: 12px; padding: 8px 12px; font-size: 14.5px; box-shadow: 0 1px 1px rgb(0 0 0 / .08); }
+
+/* Security */
+.layers { display: grid; gap: 14px; }
+.layer { display: grid; grid-template-columns: 180px 1fr; gap: 24px; padding: 24px 28px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); }
+@media (max-width: 720px) { .layer { grid-template-columns: 1fr; gap: 6px; } }
+.layer h3 { font-size: 17px; color: var(--leaf); font-weight: 750; }
+.layer ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.layer li { padding-left: 24px; position: relative; }
+.layer li::before { content: ""; position: absolute; left: 2px; top: .62em; width: 9px; height: 9px; border-radius: 3px; background: var(--leaf); rotate: 45deg; }
+.layer li b { font-weight: 650; }
+.layer li span { color: var(--muted); }
+
+/* Privacy */
+.log { margin-top: 20px; background: #0e1612; color: #cfe3d4; border-radius: 16px; padding: 18px 20px; font: 13px/1.6 var(--mono); overflow-x: auto; white-space: pre; border: 1px solid #22322a; }
+.log .k { color: #7fd6a0; } .log .s { color: #f5c27a; } .log .c { color: #6c8577; }
+.table { width: 100%; border-collapse: collapse; font-size: 15.5px; }
+.table th, .table td { text-align: left; padding: 14px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.table th { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+.table td:first-child { font-weight: 650; width: 34%; }
+.table td span { color: var(--muted); }
+.never { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.never span { padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); font-size: 14.5px; }
+.never span::before { content: "✕ "; color: var(--danger); font-weight: 800; }
+.never.says span::before { content: none; }
+
+/* Architecture */
+.arch { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 28px; box-shadow: var(--shadow); }
+.arch svg { width: 100%; height: auto; }
+.arch text { font-family: var(--sans); fill: var(--ink); }
+.arch .muted { fill: var(--muted); }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-top: 28px; }
+@media (max-width: 760px) { .stats { grid-template-columns: 1fr 1fr; } }
+.stat b { display: block; font-size: 40px; font-weight: 820; letter-spacing: -0.04em; color: var(--leaf); line-height: 1.1; }
+.stat span { color: var(--muted); font-size: 15px; }
+
+/* Commands */
+.cmds { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin-top: 8px; }
+.cmd { display: flex; gap: 12px; align-items: baseline; padding: 14px 16px; border-radius: 14px; background: var(--card); border: 1px solid var(--line); font-size: 15px; }
+.cmd code { color: var(--leaf); font-weight: 700; }
+.cmd span { color: var(--muted); }
+
+/* FAQ */
+.faq { display: grid; gap: 10px; max-width: 860px; }
+.faq details { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 0 24px; }
+.faq summary { cursor: pointer; list-style: none; padding: 20px 0; font-weight: 650; font-size: 18px; display: flex; justify-content: space-between; gap: 16px; }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: "+"; font-weight: 400; font-size: 26px; line-height: 1; color: var(--muted); transition: rotate .2s; }
+.faq details[open] summary::after { rotate: 45deg; }
+.faq details p { padding: 0 0 22px; color: var(--muted); }
+
+/* Final CTA */
+.final { text-align: center; padding: 120px 0; position: relative; overflow: clip; }
+.final::before { content: ""; position: absolute; inset: 0; z-index: -1; background: radial-gradient(50% 60% at 50% 100%, color-mix(in srgb, var(--leaf) 24%, transparent), transparent 70%); }
+.final h2 { font-size: clamp(40px, 6.4vw, 76px); font-weight: 820; letter-spacing: -0.04em; max-width: 14ch; margin-inline: auto; }
+.final .lead { margin-inline: auto; }
+.path { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; max-width: 900px; margin: 44px auto 0; text-align: left; }
+@media (max-width: 760px) { .path { grid-template-columns: 1fr; } }
+.path div { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 20px; font-size: 15.5px; color: var(--muted); }
+.path b { display: block; color: var(--ink); font-size: 16px; margin-bottom: 4px; }
+.path i { font-style: normal; color: var(--saffron); font: 700 13px var(--mono); }
+
+footer { border-top: 1px solid var(--line); padding: 36px 0 48px; color: var(--muted); font-size: 14.5px; }
+footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
+footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <nav class="wrap" aria-label="Main">
+    <a class="brand" href="#top"><img src="favicon.svg" alt="" width="28" height="28">Pantry</a>
+    <ul>
+      <li><a href="#how">How it works</a></li>
+      <li><a href="#safety">Safety</a></li>
+      <li><a href="#reliability">Reliability</a></li>
+      <li><a href="#security">Security</a></li>
+      <li><a href="#privacy">Privacy</a></li>
+      <li><a href="#faq">FAQ</a></li>
+    </ul>
+    <a class="btn primary small" href="https://t.me/joey_butler_bot">Start on Telegram</a>
+  </nav>
+</header>
+
+<main id="main">
+<!-- Hero -->
+<div class="hero" id="top">
+  <div class="wrap">
+    <div>
+      <p class="eyebrow"><i></i>A Telegram bot for Zepto · English and Hinglish</p>
+      <h1>Say it.<br><span>It’s ordered.</span></h1>
+      <p class="lead">Send a voice note, <q>bread aur do anda</q>, and Pantry fills your Zepto cart, checks the bill line by line, and places the order. No app to open. No browsing. No upsells.</p>
+      <div class="ctas">
+        <a class="btn primary" href="https://t.me/joey_butler_bot">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.9 4.3 18.7 19.4c-.2 1-.9 1.3-1.8.8l-4.8-3.6-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.9 8.9-8c.4-.3-.1-.5-.6-.2L6.4 13.1l-4.7-1.5c-1-.3-1-1 .2-1.5L20.5 3c.9-.3 1.6.2 1.4 1.3z"/></svg>
+          Start on Telegram
+        </a>
+        <a class="btn ghost" href="#safety">See what it checks</a>
+      </div>
+      <p class="fine"><span>Free to use</span><span>Pays from your Zepto wallet or in cash</span><span>Ready in a minute</span></p>
+    </div>
+
+    <div class="phone-stage" aria-label="A sample chat: a voice note becomes an order">
+      <span class="float f1" aria-hidden="true">🥚</span>
+      <span class="float f2" aria-hidden="true">🍞</span>
+      <span class="float f3" aria-hidden="true">🥛</span>
+      <span class="float f4" aria-hidden="true">🍌</span>
+      <div class="phone">
+        <div class="screen">
+          <div class="tg-bar">
+            <span class="av" aria-hidden="true"><svg viewBox="14 12 38 40"><path d="M14 24h36l-4 24a4 4 0 0 1-4 3H22a4 4 0 0 1-4-3z" fill="#fff"/><path d="M24 24c0-6 3.6-10 8-10s8 4 8 10" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round"/></svg></span>
+            <div><b>Pantry</b><small>bot</small></div>
+          </div>
+          <div class="chat" role="log">
+            <div class="msg out voice" aria-label="Voice note, 3 seconds">
+              <span class="play"></span>
+              <span class="wave" aria-hidden="true"><i style="height:30%"></i><i style="height:60%"></i><i style="height:90%"></i><i style="height:50%"></i><i style="height:75%"></i><i style="height:40%"></i><i style="height:95%"></i><i style="height:65%"></i><i style="height:35%"></i><i style="height:80%"></i><i style="height:55%"></i><i style="height:25%"></i><i style="height:70%"></i><i style="height:45%"></i><i style="height:85%"></i><i style="height:30%"></i></span>
+              <small>0:03</small>
+            </div>
+            <div class="msg in">🎙️ Heard: “bread aur do anda”</div>
+            <div class="msg in">Adding bread ×1, egg ×2 …</div>
+            <div class="msg in">⏳ I’ll order this in 3 minutes; send more to add, or tap Order now.
+
+🧺 Your basket
+• Bread ×1: White Bread 400 g ×1 · ₹45
+• Egg ×2: Farm Eggs 6 pcs ×2 · ₹144
+
+Total ₹189<span class="kb">🛒 Order now</span></div>
+            <span class="tap">tapped Order now</span>
+            <div class="msg in">Placing the order …</div>
+            <div class="msg in">✅ Ordered, ₹189 from the wallet:
+Bread ×1: White Bread 400 g ×1 · ₹45
+Egg ×2: Farm Eggs 6 pcs ×2 · ₹144</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- How it works -->
+<section id="how" class="alt">
+  <div class="wrap">
+    <div class="head reveal">
+      <p class="kicker">How it works</p>
+      <h2>Three steps. You do the first one.</h2>
+      <p>Talk the way you talk at home. The bot learns your brands once, then gets out of the way.</p>
+    </div>
+    <div class="grid g3">
+      <article class="card step reveal">
+        <span class="n">1</span>
+        <h3>Say it</h3>
+        <p>A voice note or a quick text, in English, Hinglish or a mix. Numbers too: <em>do anda</em> is two eggs, <em>teen kela</em> three bananas.</p>
+        <p>Changed your mind? Say that too: “bread hata do”, “make it 3 milk”.</p>
+        <p class="say">🎙️ “ek doodh, dhania aur aloo”</p>
+      </article>
+      <article class="card step reveal">
+        <span class="n">2</span>
+        <h3>Pick once</h3>
+        <p>Something new? You see the shop’s options with photos, sizes and prices. Tap ✅ Pick and it’s remembered; next time it just goes in. No catalogue to scroll.</p>
+        <p class="say">✅ Pick · Toned Milk (500 ml) · ₹27</p>
+      </article>
+      <article class="card step reveal">
+        <span class="n">3</span>
+        <h3>It’s ordered</h3>
+        <p>Once the basket reaches your minimum order (₹100 to start), the bot waits three minutes for anything you forgot, then orders. Or tap <b>Order now</b>, or just say “abhi”. Smaller lists wait in the basket, so a few items don’t cost a delivery fee.</p>
+        <p class="say">✅ Ordered, ₹189 from the wallet</p>
+      </article>
+    </div>
+
+    <div class="grid g3" style="margin-top:20px">
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true">👨‍👩‍👧</div>
+        <h3>One account, whole family</h3>
+        <p><kbd>/invite</kbd> makes a link that works once, for 24 hours. Everyone orders into the same basket and wallet; only the owner changes the settings.</p>
+      </article>
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true">🔁</div>
+        <h3>Knows your usual</h3>
+        <p><kbd>/usual</kbd> lists what is due, from the rhythm of your own orders: bought three times or more, and its usual gap has passed.</p>
+      </article>
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true">⚖️</div>
+        <h3>Amounts, not just packs</h3>
+        <p>“2 litre milk”, “aadha kilo paneer”: it buys the cheapest mix of the sizes on sale, and says so when the sizes can’t match exactly.</p>
+      </article>
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true">📍</div>
+        <h3>Another address, once</h3>
+        <p>“Office pe bhej do” sends this order to another address saved in your Zepto app. The next one goes home as usual.</p>
+      </article>
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true">🚫</div>
+        <h3>No upsells</h3>
+        <p>Sponsored results are dropped from every search, and nothing reaches the cart that you didn’t ask for. Not a “frequently bought together” in sight.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- Safety -->
+<section id="safety">
+  <div class="wrap">
+    <div class="head reveal">
+      <p class="kicker">Safety</p>
+      <h2>Nothing is ordered until Zepto’s own bill is right.</h2>
+      <p>Before every order the bot sets the cart to exactly your basket, asks Zepto for the bill, and reads it back. One wrong line and it stops.</p>
+    </div>
+    <div class="gate">
+      <div class="reveal">
+        <ol class="checks" aria-label="Checks on every bill">
+          <li><div><b>Every item you asked for</b><span>Each one is on the bill, matched by Zepto’s product id, not by name.</span></div></li>
+          <li><div><b>At the quantity you asked for</b><span>“2 in the cart, expected 3” stops the order.</span></div></li>
+          <li><div><b>Nothing it didn’t add</b><span>A stray item in the cart blocks the order. The cart belongs to your basket.</span></div></li>
+          <li><div><b>Your saved address</b><span>The bill must be for your address, or the saved one you named for this order.</span></div></li>
+          <li><div><b>Deliverable right now</b><span>If Zepto can’t deliver there, nothing is placed.</span></div></li>
+          <li><div><b>Within today’s limit</b><span>₹1,000 a day unless the owner says otherwise. Orders whose outcome is unclear count too.</span></div></li>
+          <li><div><b>A total it can read</b><span>No clear amount to pay, no order.</span></div></li>
+        </ol>
+        <div class="verdicts">
+          <div class="verdict ok"><b>All seven pass</b>The order is placed: fully from the Zepto wallet, or fully cash on delivery. Never a card, never UPI.</div>
+          <div class="verdict no"><b>Any one fails</b>❌ Not ordered. You’re told why; the basket is kept.</div>
+        </div>
+      </div>
+      <div class="side reveal">
+        <h3>And before the bill, more guards</h3>
+        <div class="guards">
+          <div class="guard"><span class="ic" aria-hidden="true">👂</span><div><b>A mishearing can’t run up the bill</b><p>Far more than you usually buy? It asks first: <span class="quote">❓ egg ×20? You usually get ×2.</span> And never more than 12 packs of one size.</p></div></div>
+          <div class="guard"><span class="ic" aria-hidden="true">⏳</span><div><b>Three minutes to change your mind</b><p>The basket and its total are shown before anything is ordered. Send more to add, or <kbd>/clear</kbd> to stop. Only “now” or “abhi” skips the wait.</p></div></div>
+          <div class="guard"><span class="ic" aria-hidden="true">🔘</span><div><b>Old buttons go dead</b><p>Only the latest <b>Order now</b> works, so an old message can’t cut a newer wait short.</p></div></div>
+          <div class="guard"><span class="ic" aria-hidden="true">📦</span><div><b>Honest about stock</b><p>Sold out? If you have another saved pick, it asks before swapping; if not, that item stays in the basket with the reason. Zepto caps a quantity? You’re told.</p></div></div>
+          <div class="guard"><span class="ic" aria-hidden="true">🛒</span><div><b>Cart-only mode</b><p><kbd>/ordering off</kbd> fills the cart and stops. You check out in the Zepto app. Either way, the cart is the bot’s: each order replaces what was in it.</p></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Reliability -->
+<section id="reliability" class="alt">
+  <div class="wrap">
+    <div class="head reveal">
+      <p class="kicker">Reliability</p>
+      <h2>Never twice. Never silently.</h2>
+      <p>Paying is the one step that can’t be undone, so it is the one step built never to repeat. An order counts only when Zepto’s own history shows it.</p>
+    </div>
+    <div class="timeline reveal" role="list">
+      <div class="tl" role="listitem"><div class="dot" aria-hidden="true">📝</div><h3>1 · Write it down</h3><p>The attempt is recorded before the order call, and the basket cleared.</p></div>
+      <div class="tl" role="listitem"><div class="dot" aria-hidden="true">📤</div><h3>2 · Place it</h3><p>One call to Zepto, wallet or cash on delivery as the bill said.</p></div>
+      <div class="tl" role="listitem"><div class="dot" aria-hidden="true">🔎</div><h3>3 · Find it</h3><p>The returned order id must appear in Zepto’s order history.</p></div>
+      <div class="tl" role="listitem"><div class="dot" aria-hidden="true">✅</div><h3>4 · Tell you</h3><p>Only then: ✅ Ordered, with the amount and how it was paid.</p></div>
+    </div>
+    <div class="crash reveal">
+      <span class="ic" aria-hidden="true">⚡</span>
+      <div>
+        <p><b>Power cut between steps 1 and 3?</b> On restart the bot finds the unfinished attempt and tells the owner. It does not try again, because the first try may have gone through.</p>
+        <span class="tgmsg">⚠️ An order (₹189, 2026-10-28T08:42:10) was interrupted while being placed. Check the shop’s app; it was NOT retried.</span>
+      </div>
+    </div>
+    <div class="grid g3">
+      <article class="card reveal"><div class="ic" aria-hidden="true">🧵</div><h3>One order at a time</h3><p>A single worker runs every order in turn. Two family members tapping at once can’t produce two carts.</p></article>
+      <article class="card reveal"><div class="ic" aria-hidden="true">🔄</div><h3>Updates wait for you</h3><p>A restart lets the order in progress finish, with up to ten minutes’ grace; anything still queued, you’re asked to resend. A held basket resumes on its timer; more than five minutes late, it asks instead of ordering.</p></article>
+      <article class="card reveal"><div class="ic" aria-hidden="true">🩺</div><h3>Checked every morning</h3><p>At 9:00 the bot checks each account and renews its login days before it lapses. If something is off, the owner hears first.</p></article>
+      <article class="card reveal"><div class="ic" aria-hidden="true">💾</div><h3>Crash-safe files</h3><p>Every write lands whole or not at all: a new file, then an atomic swap. No half-written basket.</p></article>
+      <article class="card reveal"><div class="ic" aria-hidden="true">🧪</div><h3>Tested before it ships</h3><p>Every change passes lint, the test suite, a workflow check and a secret scan. Deploys run one at a time, are never cancelled halfway, and finish with a self-check.</p></article>
+      <article class="card reveal"><div class="ic" aria-hidden="true">🗣️</div><h3>Errors in plain words</h3><p>“The shop can’t deliver there right now.” Never a stack trace. If unsure, it says so: “Nothing was ordered unless you got a ✅.”</p></article>
+    </div>
+  </div>
+</section>
+
+<!-- Security -->
+<section id="security">
+  <div class="wrap">
+    <div class="head reveal">
+      <p class="kicker">Security</p>
+      <h2>Through the front door. Locked behind you.</h2>
+      <p>Pantry talks to Zepto only through Zepto’s official connection for assistants. No scraping, no headless browser, no password to hand over.</p>
+    </div>
+    <div class="layers">
+      <div class="layer reveal"><h3>Signing in</h3><ul>
+        <li><b>Zepto’s own OAuth sign-in</b> <span>with PKCE: your phone, then the code Zepto texts you. The bot never sees a password, because there isn’t one.</span></li>
+        <li><b>Your number and code vanish</b> <span>from the chat as soon as they are read; the bot repeats only the last four digits back.</span></li>
+        <li><b>Logins renew themselves</b> <span>days before they lapse. If Zepto ever refuses, the owner is told and sends <kbd>/setup</kbd>.</span></li>
+      </ul></div>
+      <div class="layer reveal"><h3>Who can order</h3><ul>
+        <li><b>Invite-only.</b> <span>Strangers who message the bot wait until the admin lets them in.</span></li>
+        <li><b>Family links work once, for 24 hours.</b> <span>Members can be removed at any time.</span></li>
+        <li><b>Only the owner</b> <span>changes the home address, the daily limit, the minimum order or the login. Anyone in the family can name another saved address for one order.</span></li>
+        <li><b>An owner who leaves takes the login with them.</b> <span>The next member inherits the account, not the keys.</span></li>
+      </ul></div>
+      <div class="layer reveal"><h3>The server</h3><ul>
+        <li><b>Nothing to knock on.</b> <span>The bot fetches its messages from Telegram and listens on no port, so nothing on the internet can call into it.</span></li>
+        <li><b>A locked-down container:</b> <span>runs as an unprivileged user, every Linux capability dropped, privilege escalation off.</span></li>
+        <li><b>Login tokens in owner-only files</b> <span>(mode 600), on one server, in one volume.</span></li>
+      </ul></div>
+      <div class="layer reveal"><h3>The code</h3><ul>
+        <li><b>Docker’s build actions are pinned</b> <span>to exact commits, not moving tags.</span></li>
+        <li><b>Secrets live in a GitHub deployment environment,</b> <span>written to the server owner-only, never into the image.</span></li>
+        <li><b>Every change is scanned</b> <span>for +91 phone numbers, bot tokens and login files; a hit fails the build.</span></li>
+      </ul></div>
+    </div>
+  </div>
+</section>
+
+<!-- Privacy -->
+<section id="privacy" class="alt">
+  <div class="wrap">
+    <div class="head reveal">
+      <p class="kicker">Privacy</p>
+      <h2>Your recording never leaves the server.</h2>
+      <p>Speech becomes text on the bot’s own machine, with Whisper running offline, and the recording is deleted the moment it’s transcribed. To understand what you asked for, the text, typed or transcribed, goes to Anthropic’s Claude with your item names and basket. Nothing else does.</p>
+    </div>
+    <div class="grid g2">
+      <div class="reveal">
+        <h3 style="font-size:24px;margin-bottom:8px">Logs record events, not conversations</h3>
+        <p style="color:var(--muted)">The bot logs what happened, not what you said: no message text, no tokens, no addresses. Item names appear only when something goes wrong. A real line, ids changed:</p>
+<pre class="log" aria-label="Example log line"><span class="c">// one order, as the logs see it</span>
+{<span class="k">"msg"</span>: <span class="s">"order finished"</span>,
+ <span class="k">"result"</span>: <span class="s">"placed"</span>, <span class="k">"items"</span>: 2,
+ <span class="k">"unavailable"</span>: {}, <span class="k">"problems"</span>: [],
+ <span class="k">"item_total"</span>: 159.0, <span class="k">"total"</span>: 159.0, <span class="k">"cod"</span>: false,
+ <span class="k">"household_id"</span>: <span class="s">"5e1a90c2"</span>, <span class="k">"user_id"</span>: 1234567,
+ <span class="k">"ts"</span>: <span class="s">"2026-10-25T03:45:14Z"</span>}</pre>
+        <div class="never">
+          <span>No analytics</span><span>No ads</span><span>No trackers</span><span>No cookies</span><span>No data sold</span>
+        </div>
+        <p style="color:var(--muted);margin-top:18px;font-size:15px">This page practises it too: no fonts, scripts or images from anyone else.</p>
+      </div>
+      <div class="card reveal" style="padding:8px 8px 4px">
+        <table class="table">
+          <caption class="skip">What the bot keeps</caption>
+          <thead><tr><th scope="col">What it keeps</th><th scope="col">Why</th></tr></thead>
+          <tbody>
+            <tr><td>Zepto login tokens</td><td><span>To order for you. Never your phone number or code.</span></td></tr>
+            <tr><td>The address you chose</td><td><span>So every bill can be checked against it.</span></td></tr>
+            <tr><td>Your picks</td><td><span>So “bread” means <em>your</em> bread.</span></td></tr>
+            <tr><td>Basket and orders</td><td><span>The daily limit, <kbd>/usual</kbd>, and never ordering twice.</span></td></tr>
+            <tr><td>Members’ first names</td><td><span>So messages can say who did what.</span></td></tr>
+          </tbody>
+        </table>
+        <p style="padding:16px;color:var(--muted);font-size:15px"><b style="color:var(--ink)">Leave, and it’s gone.</b> <kbd>/leave</kbd>: the last one out deletes the account’s login, picks and history. Telegram carries your messages, Claude reads their text, and Zepto sees your orders. In a family group, the bot reads every text message there and stays quiet when there’s nothing to order.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Under the hood -->
+<section id="inside">
+  <div class="wrap">
+    <div class="head reveal">
+      <p class="kicker">Under the hood</p>
+      <h2>Small on purpose.</h2>
+      <p>Plain Python on one server: the standard library for every network call but Claude’s. Fewer parts, fewer ways to fail.</p>
+    </div>
+    <figure class="arch reveal" style="margin:0">
+      <svg viewBox="0 0 960 300" role="img" aria-labelledby="arch-t">
+        <title id="arch-t">Telegram talks to the bot on its server; the bot asks Claude to read the words and orders through Zepto’s official connection</title>
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="var(--leaf)"/></marker>
+        </defs>
+        <g>
+          <rect x="10" y="90" width="190" height="120" rx="18" fill="var(--bg-2)" stroke="var(--line)"/>
+          <text x="105" y="140" text-anchor="middle" font-size="30">💬</text>
+          <text x="105" y="175" text-anchor="middle" font-size="17" font-weight="700">Telegram</text>
+          <text x="105" y="196" text-anchor="middle" font-size="13" class="muted">your family’s chats</text>
+        </g>
+        <g>
+          <rect x="290" y="20" width="380" height="260" rx="22" fill="var(--leaf-soft)" stroke="var(--leaf)" stroke-width="1.5"/>
+          <text x="480" y="54" text-anchor="middle" font-size="17" font-weight="750">Pantry · one server</text>
+          <rect x="315" y="74" width="160" height="88" rx="14" fill="var(--card)" stroke="var(--line)"/>
+          <text x="395" y="108" text-anchor="middle" font-size="22">🎙️</text>
+          <text x="395" y="134" text-anchor="middle" font-size="14" font-weight="700">Whisper, offline</text>
+          <text x="395" y="151" text-anchor="middle" font-size="12" class="muted">voice → words</text>
+          <rect x="485" y="74" width="160" height="88" rx="14" fill="var(--card)" stroke="var(--line)"/>
+          <text x="565" y="108" text-anchor="middle" font-size="22">📒</text>
+          <text x="565" y="134" text-anchor="middle" font-size="14" font-weight="700">Your picks</text>
+          <text x="565" y="151" text-anchor="middle" font-size="12" class="muted">items → your products</text>
+          <rect x="315" y="174" width="160" height="88" rx="14" fill="var(--card)" stroke="var(--line)"/>
+          <text x="395" y="208" text-anchor="middle" font-size="22">🧾</text>
+          <text x="395" y="234" text-anchor="middle" font-size="14" font-weight="700">Bill check</text>
+          <text x="395" y="251" text-anchor="middle" font-size="12" class="muted">seven rules, or stop</text>
+          <rect x="485" y="174" width="160" height="88" rx="14" fill="var(--card)" stroke="var(--line)"/>
+          <text x="565" y="208" text-anchor="middle" font-size="22">📝</text>
+          <text x="565" y="234" text-anchor="middle" font-size="14" font-weight="700">Ledger</text>
+          <text x="565" y="251" text-anchor="middle" font-size="12" class="muted">written before paying</text>
+        </g>
+        <g>
+          <rect x="760" y="20" width="190" height="110" rx="18" fill="var(--bg-2)" stroke="var(--line)"/>
+          <text x="855" y="60" text-anchor="middle" font-size="26">✳️</text>
+          <text x="855" y="92" text-anchor="middle" font-size="17" font-weight="700">Claude</text>
+          <text x="855" y="112" text-anchor="middle" font-size="13" class="muted">reads the words · text only</text>
+        </g>
+        <g>
+          <rect x="760" y="170" width="190" height="110" rx="18" fill="var(--bg-2)" stroke="var(--line)"/>
+          <text x="855" y="210" text-anchor="middle" font-size="26">🛍️</text>
+          <text x="855" y="242" text-anchor="middle" font-size="17" font-weight="700">Zepto</text>
+          <text x="855" y="262" text-anchor="middle" font-size="13" class="muted">official MCP · OAuth</text>
+        </g>
+        <path d="M206 150 H284" stroke="var(--leaf)" stroke-width="2.5" marker-end="url(#ar)" marker-start="url(#ar)"/>
+        <path d="M676 75 H754" stroke="var(--leaf)" stroke-width="2.5" marker-end="url(#ar)" marker-start="url(#ar)"/>
+        <path d="M676 225 H754" stroke="var(--leaf)" stroke-width="2.5" marker-end="url(#ar)" marker-start="url(#ar)"/>
+        <text x="245" y="138" text-anchor="middle" font-size="11" class="muted">polls out</text>
+        <text x="715" y="65" text-anchor="middle" font-size="11" class="muted">HTTPS</text>
+        <text x="715" y="215" text-anchor="middle" font-size="11" class="muted">HTTPS</text>
+      </svg>
+    </figure>
+    <div class="stats">
+      <div class="stat reveal"><b>~2,800</b><span>lines of Python</span></div>
+      <div class="stat reveal"><b>0</b><span>ports listening</span></div>
+      <div class="stat reveal"><b>7</b><span>checks on every bill</span></div>
+      <div class="stat reveal"><b>0</b><span>automatic retries of an order</span></div>
+    </div>
+
+    <h3 style="font-size:24px;margin:72px 0 18px" class="reveal">Everything it understands</h3>
+    <div class="cmds reveal">
+      <div class="cmd"><code>🎙️ / text</code><span>order it</span></div>
+      <div class="cmd"><code>/basket</code><span>what is waiting</span></div>
+      <div class="cmd"><code>/clear</code><span>empty the basket</span></div>
+      <div class="cmd"><code>/usual</code><span>what is due now</span></div>
+      <div class="cmd"><code>/settings</code><span>address, limits, on/off</span></div>
+      <div class="cmd"><code>/limit 1500</code><span>daily spending cap</span></div>
+      <div class="cmd"><code>/minimum 99</code><span>smallest order</span></div>
+      <div class="cmd"><code>/ordering off</code><span>fill the cart only</span></div>
+      <div class="cmd"><code>/invite</code><span>add one person</span></div>
+      <div class="cmd"><code>/members</code><span>who orders here</span></div>
+      <div class="cmd"><code>/setup</code><span>connect or reconnect</span></div>
+      <div class="cmd"><code>/leave</code><span>go; last out deletes all</span></div>
+    </div>
+    <p class="reveal" style="color:var(--muted);margin:22px 0 10px">Or just say it:</p>
+    <div class="never says reveal">
+      <span>“bread hata do”</span><span>“make it 3 milk”</span><span>“basket mein kya hai?”</span><span>“sab cancel karo”</span><span>“abhi bhej do”</span><span>“office pe bhej do”</span><span>“limit 2000 kar do”</span>
+    </div>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section id="faq" class="alt">
+  <div class="wrap">
+    <div class="head reveal">
+      <p class="kicker">Questions</p>
+      <h2>Fair questions, straight answers.</h2>
+    </div>
+    <div class="faq">
+      <details><summary>Does it cost anything?</summary><p>No fee from Pantry. You pay what Zepto’s bill says, from your Zepto wallet or in cash at the door.</p></details>
+      <details><summary>Which shops does it work with?</summary><p>Zepto, through its official connection for assistants. You need a Zepto account with a delivery address saved in the app.</p></details>
+      <details><summary>What if it mishears me?</summary><p>It replies with exactly what it heard and shows the basket with prices before ordering. You have three minutes to add more or send <kbd>/clear</kbd>, and an amount far above your usual is asked about first.</p></details>
+      <details><summary>Can it spend more than I want?</summary><p>It is built not to. The owner sets a daily limit (₹1,000 to start), and an order whose bill would cross it is refused. It pays only from the Zepto wallet or by cash on delivery, never a card or UPI.</p></details>
+      <details><summary>What if an item is out of stock?</summary><p>If you have another saved pick for it, the bot asks before swapping. If not, that item stays in the basket and you’re told why; the rest is ordered.</p></details>
+      <details><summary>Could it ever order the same thing twice?</summary><p>It is built not to. Every attempt is written down before the order call and confirmed by its id in Zepto’s history. An attempt that can’t be confirmed is reported to you and never retried.</p></details>
+      <details><summary>Will it touch my Zepto app’s cart?</summary><p>Yes. The cart is the bot’s while it orders: it is set to exactly your basket, and whatever was in it before is removed. Keep the app’s cart for the bot, or order from the app between bot orders.</p></details>
+      <details><summary>I want to try it without it ordering.</summary><p>Send <kbd>/ordering off</kbd>. The bot fills your Zepto cart and checks the bill, then stops; you finish in the app. <kbd>/ordering on</kbd> when you’re ready.</p></details>
+      <details><summary>Does an AI read my messages?</summary><p>Yes. Claude, by Anthropic, reads the text of each message to work out the items, edits and settings in it. Your recording never leaves the server, and the bot’s own code checks every item against your basket and Zepto’s bill before anything is ordered.</p></details>
+      <details><summary>Can my family use it?</summary><p>Yes, that’s the point. <kbd>/invite</kbd> gives you a link to forward to one person. They order from your account and wallet, within your limits. They don’t need <kbd>/setup</kbd>; sending it gives them an account of their own.</p></details>
+      <details><summary>How do I delete my data?</summary><p><kbd>/leave</kbd>. If you’re the last one on the account, its login, picks and order history are deleted from the server.</p></details>
+      <details><summary>Why “Pantry”?</summary><p>Because it keeps yours stocked. Say what’s running low, and it’s on its way.</p></details>
+    </div>
+  </div>
+</section>
+
+<!-- Final CTA -->
+<section class="final" id="start">
+  <div class="wrap">
+    <h2 class="reveal">Your next grocery run is one voice note away.</h2>
+    <p class="lead reveal">Connecting takes a minute. Ordering takes a sentence.</p>
+    <div class="ctas reveal" style="justify-content:center">
+      <a class="btn primary" href="https://t.me/joey_butler_bot">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.9 4.3 18.7 19.4c-.2 1-.9 1.3-1.8.8l-4.8-3.6-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.9 8.9-8c.4-.3-.1-.5-.6-.2L6.4 13.1l-4.7-1.5c-1-.3-1-1 .2-1.5L20.5 3c.9-.3 1.6.2 1.4 1.3z"/></svg>
+        Message @joey_butler_bot
+      </a>
+    </div>
+    <div class="path">
+      <div class="reveal"><i>01</i><b>Say hello</b>The admin gets a tap-to-approve request, and the bot tells you when you’re in.</div>
+      <div class="reveal"><i>02</i><b><kbd>/setup</kbd></b>Your Zepto number, the code Zepto texts you, and one of your saved addresses.</div>
+      <div class="reveal"><i>03</i><b>Speak</b>“bread aur do anda”. That’s the whole interface.</div>
+    </div>
+    <p class="fine reveal" style="justify-content:center;margin-top:28px">Got an invite link from family? Open it and skip straight to step 3.</p>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Pantry · groceries by voice · made for families in India</span>
+    <span><a href="https://github.com/vaari-dev/pantry">Source on GitHub</a> · Not affiliated with Zepto</span>
+  </div>
+</footer>
+</body>
+</html>

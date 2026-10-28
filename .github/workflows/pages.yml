@@ -1,0 +1,34 @@
+name: Pages
+
+# Publishes site/ as it is: no build step. Needs Settings → Pages → Source: GitHub Actions.
+on:
+  push:
+    branches: [main]
+    paths: ['site/**', .github/workflows/pages.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    timeout-minutes: 10
+    runs-on: ubuntu-24.04-arm
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v5

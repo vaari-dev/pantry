@@ -2,7 +2,7 @@
 
 Order groceries by Telegram voice note or text, like *"bread aur do anda"*. Each family connects
 its own shop account; the bot fills the cart, checks it, and pays from the shop's wallet, or cash
-on delivery when that falls short.
+on delivery when that falls short. Site: [vaari-dev.github.io/pantry](https://vaari-dev.github.io/pantry/), from `site/`.
 
 ```
 Telegram ⇄ bot (OCI box, Docker)
