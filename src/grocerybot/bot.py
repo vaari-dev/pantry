@@ -146,6 +146,7 @@ class Picking:
     started: float = field(default_factory=time.time)
     when: str = "hold"
     address: tuple[str, ...] = ()  # (id, label) of a saved address said with the items
+    numbered: int = 0  # asks and checks so far: a number is never used twice
 
     def to_json(self) -> dict:
         asks = {n: [name, qty, [c.to_json() for c in cs], ids] for n, (name, qty, cs, ids) in self.asks.items()}
@@ -159,7 +160,7 @@ class Picking:
         checks = {int(n): Check(*c) for n, c in d.get("checks", {}).items()}
         picked = [tuple(i) for i in d.get("ready", []) + d["picked"]]  # "ready": saved before 28 Oct
         changed = [tuple(i) for i in d.get("changed", [])]
-        d = {k: v for k, v in d.items() if k != "ready"}
+        d = {"numbered": max([*asks, *checks], default=-1) + 1} | {k: v for k, v in d.items() if k != "ready"}
         return cls(**{**d, "asks": asks, "checks": checks, "picked": picked, "changed": changed})
 
 
@@ -564,17 +565,26 @@ class Bot:
     ) -> None:
         """Joins the chat's open picking, if any."""
         with self.lock:
-            mine = ((k, v) for k, v in self.picking.items() if (v.chat_id, v.household) == (chat_id, hh.id))
-            pid, picking = next(mine, None) or (secrets.token_hex(4), Picking(chat_id, hh.id, {}))
-            first = max([*picking.asks, *picking.checks], default=-1) + 1
-            new_asks = dict(enumerate(asks, first))
-            new_checks = dict(enumerate(checks, first + len(asks)))
+            mine = [(k, v) for k, v in self.picking.items() if (v.chat_id, v.household) == (chat_id, hh.id)]
+            stale = [self.picking.pop(k) for k, v in mine if time.time() - v.started >= PICK_WAIT]
+            pid, picking = next(((k, v) for k, v in mine if k in self.picking), None) or (
+                secrets.token_hex(4),
+                Picking(chat_id, hh.id, {}),
+            )
+            new_asks = dict(enumerate(asks, picking.numbered))
+            new_checks = dict(enumerate(checks, picking.numbered + len(asks)))
+            picking.numbered += len(asks) + len(checks)
             picking.asks |= new_asks
             picking.checks |= new_checks
             picking.when = "now" if "now" in (picking.when, when) else when
             picking.address = address or picking.address
             picking.started = time.time()
             self.picking[pid] = picking
+        for old in stale:  # left open too long, it no longer holds new items back
+            hh.ledger().set_basket(combine(hh.ledger().basket(), old.picked))
+            for ids in [*(a[3] for a in old.asks.values()), *(c.ids for c in old.checks.values())]:
+                for mid in filter(None, ids):
+                    self.tg.remove_buttons(chat_id, mid)
         for n, (name, qty, choices, ids) in new_asks.items():  # taps answer (pop) items while these go out
             ids.append(self._say(chat_id, f'Which "{name}" ({shown(qty)})?', [("Skip this item", f"{pid}:{n}:x")]))
             ids += [self._offer(chat_id, choice, qty, f"{pid}:{n}:{i}") for i, choice in enumerate(choices)]
@@ -915,9 +925,12 @@ class Bot:
             return self._say(chat_id, f"For example: {command} {example}")
         self.accounts.update(hh.id, **{key: value})
         if key == "place_orders" and value and not hh.place_orders:  # what cart-only use left isn't ordered
-            hh.ledger().set_basket([])
+            self._queue(self._drop_basket, chat_id, hh)
         log.info("setting changed", setting=key)
         self._settings(chat_id, self.accounts.get(hh.id))
+
+    def _drop_basket(self, _chat_id: int, hh: Household) -> None:
+        hh.ledger().set_basket([])
 
     def _ask(self, uid: int, question: str, wait: int = ANSWER_WAIT, markup=None, secret=False) -> str:
         """Their next message; secret ones (phone number, OTP) are deleted from the chat."""

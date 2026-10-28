@@ -130,8 +130,8 @@ def grounded(reply: dict, text: str) -> Request:
         asked = measure(f"{a['value']} {a['unit']}") if qty and a["value"] > 0 and said(a["said"]) else None
         if not asked or not UNIT_WORDS[asked[1]].search(normalize(a["said"])):
             return qty
-        quoted = measure(a["said"])
-        return qty if quoted and quoted != asked else amount(*asked)
+        quoted = measure(a["said"])  # "do 500 ml doodh" said as 1 l in all is 2 x 500 ml too
+        return qty if quoted and asked[0] not in (quoted[0], quoted[0] * qty) else amount(*asked)
 
     def items(key: str, least: int) -> list[tuple[str, Qty]]:
         return [

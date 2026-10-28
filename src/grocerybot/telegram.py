@@ -60,7 +60,8 @@ class Telegram:
         )["message_id"]
 
     def edit_text(self, chat_id: int, message_id: int, text: str) -> None:
-        self.call("editMessageText", chat_id=chat_id, message_id=message_id, text=text)
+        with contextlib.suppress(TelegramError):
+            self.call("editMessageText", chat_id=chat_id, message_id=message_id, text=text)
 
     def remove_buttons(self, chat_id: int, message_id: int) -> None:
         with contextlib.suppress(TelegramError):

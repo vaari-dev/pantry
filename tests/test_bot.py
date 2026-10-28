@@ -1075,6 +1075,7 @@ def test_an_unanswered_cart_only_question_is_dropped_when_ordering_goes_on(bot, 
     assert hh.ledger().basket() == [("cow milk", "2 l"), ("bread", 2)]  # still asking
     bot._on_message(message("/ordering on", uid=NEW))
     said(bot, "Delivery:")
+    idle(bot)
     assert hh.ledger().basket() == []
 
 
@@ -1126,3 +1127,35 @@ def test_an_old_question_cannot_answer_a_new_one(bot, shop):
     assert fake.orders == 0
     bot._on_button(tap_more | {"message": {"chat": {"id": NEW}, "message_id": second}})
     said(bot, "✅ Ordered")
+
+
+def test_a_pick_left_open_too_long_holds_nothing_back(bot, shop, monkeypatch):
+    hh, _ = shop
+    bot.tg.edit_text = lambda *_: None
+    reads(bot, add=[("jam", 1)])
+    bot._on_message(message("jam"))
+    said(bot, "Jam 1")
+    [(old, picking)] = bot.picking.items()
+    picking.started -= botmod.PICK_WAIT
+    reads(bot, add=[("tea", 1)])
+    bot._on_message(message("tea"))
+    said(bot, "Tea 1")
+    [(pid, _)] = bot.picking.items()
+    assert pid != old
+    bot._pick(hh, f"{pid}:0:0")
+    sent(bot, "🧺 Your basket", having="• Tea ×1")
+
+
+def test_a_stale_tap_never_answers_a_later_item(bot, shop):
+    hh, _ = shop
+    bot.tg.edit_text = lambda *_: None
+    reads(bot, add=[("jam", 1), ("egg", 1)])
+    bot._on_message(message("jam, egg"))
+    said(bot, "Egg 1")
+    [(pid, _)] = bot.picking.items()
+    bot._pick(hh, f"{pid}:1:0")
+    reads(bot, add=[("tea", 1)])
+    bot._on_message(message("tea"))
+    said(bot, "Tea 1")
+    bot._pick(hh, f"{pid}:1:1")  # the egg card again
+    assert [name for name, *_ in bot.picking[pid].asks.values()] == ["jam", "tea"]

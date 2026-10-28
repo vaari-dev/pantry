@@ -13,7 +13,8 @@ MAX_CHOICES = 3
 
 QUANTITY = re.compile(
     r"(?<![\w.])(?:(\d+)\s*x\s*)?(\d+(?:\.\d+)?)\s*"
-    r"(kg|gms?|g|mg|ml|ltrs?|litres?|liters?|l|pcs?|pieces?|units?|packs?|dozen|n)(?![a-z])(?:\s*x\s*(\d+)\b)?"
+    r"(kgs?|kilos?|kilograms?|grams?|gms?|g|mg|ml|ltrs?|litres?|liters?|l|pcs?|pieces?|units?|packs?|dozen|n)(?![a-z])"
+    r"(?:\s*x\s*(\d+)\b)?"
     r"|pack of (\d+)",
     re.I,
 )

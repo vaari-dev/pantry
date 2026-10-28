@@ -100,9 +100,14 @@ def test_an_amount_counts_when_the_message_says_it_with_its_unit():
             item("atta", "atta", 1, ("5 kg", 10, "kg")),  # not the amount said
             item("rice", "rice", 1, ("bada", 5, "kg")),  # no unit said
             item("oil", "oil", 1, ("1 litre", 1, "kg")),  # a weight for a volume
+            item("chawal", "rice", 1, ("2 kilo", 5, "kg")),  # not the amount said
+            item("dahi", "dahi", 2, ("500 ml", 1, "l")),  # two packs of 500 ml, said in all
         ]
     }
-    text = "2 litre cow milk, aadha kilo paneer, 2 litre doodh, 5 kg atta, bada rice, 1 litre oil"
+    text = (
+        "2 litre cow milk, aadha kilo paneer, 2 litre doodh, 5 kg atta, bada rice, 1 litre oil, 2 kilo chawal, "
+        "do 500 ml dahi"
+    )
     assert grounded(reply, text).add == [
         ("cow milk", "2 l"),
         ("paneer", "500 g"),
@@ -110,4 +115,6 @@ def test_an_amount_counts_when_the_message_says_it_with_its_unit():
         ("atta", 1),
         ("rice", 1),
         ("oil", 1),
+        ("rice", 1),
+        ("dahi", "1 l"),
     ]
