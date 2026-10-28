@@ -10,10 +10,10 @@ from grocerybot import bot as botmod
 from grocerybot.catalog import Product
 from grocerybot.config import Config
 from grocerybot.ledger import Ledger
-from grocerybot.shop import Cart, ShopError
+from grocerybot.shop import Address, Cart, ShopError
 
 ADMIN, NEW = 1, 42
-ADDRESS = "Home\nT6/503, MG Road"
+ADDRESS = Address("addr-home", "Home", "T6/503, MG Road")
 
 
 class FakeTelegram:
@@ -35,33 +35,35 @@ class FakeTelegram:
         self.unbuttoned.add((chat_id, message_id))
 
 
-class FakeShop:
-    def __init__(self, session):
-        self.session = session
-
+class FakeLogin:
     def request_otp(self, phone):
         assert phone == "9876543210"
 
     def enter_otp(self, code):
         assert code == "123456"
+        return {"client_id": "c", "access_token": "a", "refresh_token": "r", "expires_at": time.time() + 604800}
 
-    def saved_addresses(self):
-        return [ADDRESS]
 
-    def pick_address(self, n):
+class FakeAddresses:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_): ...
+
+    def addresses(self):
+        return [ADDRESS, Address("addr-work", "Work", "Tower 3")]
+
+    def deliver_to(self, address_id):
+        assert address_id == ADDRESS.id
         return ADDRESS
 
 
 @pytest.fixture
 def bot(tmp_path, monkeypatch):
-    @contextlib.contextmanager
-    def login_browser(cfg, session):
-        yield FakeShop(session)
-        session.write_text("{}")
-
-    monkeypatch.setattr(botmod.orders, "login_browser", login_browser)
+    monkeypatch.setattr(botmod, "Login", FakeLogin)
+    monkeypatch.setattr(botmod, "Zepto", lambda _: FakeAddresses())
     monkeypatch.setattr(botmod.signal, "signal", lambda *_: None)  # run() must not take pytest's SIGTERM
-    cfg = Config("https://shop.example", "token", ADMIN, "small", tmp_path, None, 9)
+    cfg = Config("token", ADMIN, "small", tmp_path, 9)
     b = botmod.Bot(cfg)
     b.tg = FakeTelegram()
     botmod.threading.Thread(target=b._worker, daemon=True).start()
@@ -113,7 +115,7 @@ def test_setup_before_access_starts_once_let_in_and_connects(bot):
 
     assert said(bot, "🎉 You're all set") == botmod.NO_KEYBOARD
     hh = bot.accounts.household_of(NEW)
-    assert (hh.owner, hh.address_label, hh.address_match, hh.state_file.exists()) == (NEW, "Home", "T6/503", True)
+    assert (hh.owner, hh.address_id, hh.address, hh.state_file.exists()) == (NEW, ADDRESS.id, str(ADDRESS), True)
 
 
 def test_let_in_without_setup_offers_the_connect_button(bot):
@@ -137,7 +139,7 @@ def test_offer_crosses_out_the_original_price(bot):
     assert entities == [{"type": "strikethrough", "offset": text.index("₹104") + 1, "length": 4}]
 
 
-class FakeBrowser:
+class FakeShop:
     """The shop, as orders.order sees it: every item costs ₹60, so two reach the ₹100 minimum."""
 
     def __init__(self):
@@ -145,8 +147,10 @@ class FakeBrowser:
         self.opened = 0
         self.unit = 60  # what the shop charges for any item
         self.gone: set[str] = set()  # product names out of stock
-        self.why = "out of stock"  # what add says of the gone ones
+        self.why = "out of stock"  # what stock says of the gone ones
         self.limits: dict[str, int] = {}  # product name -> the most one order may have
+        self.cart: dict = {}
+        self.orders = 0
 
     def __enter__(self):
         self.opened += 1
@@ -154,28 +158,29 @@ class FakeBrowser:
 
     def __exit__(self, *_): ...
 
-    def check_session(self, rules):
+    def deliver_to(self, address_id):
         if self.fail:
             raise self.fail
 
-    def empty_cart(self): ...
+    def stock(self, product):
+        return self.why if product.name in self.gone else self.limits.get(product.name, 9)
 
-    def add(self, product, qty):
-        return self.why if product.name in self.gone else None
+    def fill(self, items):
+        self.cart = dict(items)
 
-    def review_cart(self, expected, rules):
-        capped = {p: self.limits[p.name] for p, q in expected.items() if q > self.limits.get(p.name, q)}
-        total = self.unit * sum({**expected, **capped}.values())
+    def review(self, expected, rules):
+        assert expected == self.cart
+        total = self.unit * sum(expected.values())
         prices = dict.fromkeys(expected, f"₹{self.unit}")
         problems = ["over today's limit"] if total > rules.budget else []
-        return Cart(total, total, problems=problems, prices=prices, capped=capped)
+        return Cart(total, total, problems=problems, prices=prices)
 
-    def place(self): ...
+    def place(self, rules, cod):
+        self.orders += 1
+        return self.orders
 
-    def confirm(self, total, since):
-        return True
-
-    def screenshot(self, tag): ...
+    def confirm(self, placed):
+        return self.orders == placed
 
     def search(self, query):
         return [Product(f"{query.title()} {n}", "1 pc", f"https://shop.example/{query}/{n}", "₹60") for n in (1, 2)]
@@ -184,13 +189,14 @@ class FakeBrowser:
 @pytest.fixture
 def shop(bot, monkeypatch):
     (session := bot.cfg.data_dir / "state.json").write_text("{}")
-    hh = bot.accounts.connect(NEW, "Asha", "Home", "T6/503", session)
+    hh = bot.accounts.connect(NEW, "Asha", ADDRESS.id, str(ADDRESS), session)
     bot.accounts.allow(NEW)
     for item in ("bread", "milk"):
         hh.catalog().learn(item, Product(item.title(), "1 pc", f"https://shop.example/{item}", "₹60"))
-    browser = FakeBrowser()
-    monkeypatch.setattr(botmod.orders, "browser", lambda *_, **__: browser)
-    return hh, browser
+    fake = FakeShop()
+    monkeypatch.setattr(botmod, "Zepto", lambda _: fake)
+    monkeypatch.setattr(botmod.orders, "Zepto", lambda _: fake)
+    return hh, fake
 
 
 def tap(bot, hh, offer=None, uid=NEW, household=None):
@@ -311,16 +317,16 @@ def test_more_items_restart_the_wait_and_clear_ends_it(bot, shop):
 
 @pytest.mark.parametrize("fail", [ShopError("the shop logged us out"), RuntimeError("timeout")])
 def test_a_failure_keeps_new_items_and_offers_order_now(bot, shop, fail):
-    hh, browser = shop
+    hh, fake = shop
     bot._on_message(message("2 bread"))
     bot._on_message(message("milk"))
     said(bot, "⏳ I'll order this")
-    browser.fail = fail
+    fake.fail = fail
     tap(bot, hh)
     assert said(bot, "❌") == botmod._order_now(hh)
     assert hh.ledger().basket() == [("bread", 2), ("milk", 1)]
     assert not bot.holds
-    browser.fail = None
+    fake.fail = None
     tap(bot, hh)
     said(bot, "✅ Ordered")
     assert placed(hh) == [[["bread", 2], ["milk", 1]]]
@@ -333,6 +339,25 @@ def test_over_the_limit_says_how_to_go_on(bot, shop):
     said(bot, "❌ Not ordered")
     assert next(t for _, t, _ in bot.tg.sent if t.startswith("❌")).endswith(botmod.KEPT_LIMIT)
     assert hh.ledger().basket() == [("bread", 2)]
+
+
+def test_a_start_asks_accounts_from_the_chrome_bot_to_set_up_again_and_drops_its_files(bot, shop):
+    hh, _ = shop
+    (session := bot.cfg.data_dir / "old.json").write_text("{}")
+    bot.accounts.allow(ADMIN)
+    old = bot.accounts.connect(ADMIN, "Admin", "", "", session)  # households.json from before had no address_id
+    for left in (
+        hh.dir / "debug" / "x.png",
+        bot.cfg.data_dir / "tailscale" / "state",
+        bot.cfg.data_dir / "apimap.json",
+    ):
+        left.parent.mkdir(parents=True, exist_ok=True)
+        left.write_text("x")
+    bot._resume()
+    assert [t for c, t, _ in bot.tg.sent if t == botmod.RECONNECT] == [botmod.RECONNECT]
+    said(bot, "🔌", chat=old.owner)
+    assert not [*bot.cfg.data_dir.glob("**/debug")] and not (bot.cfg.data_dir / "tailscale").exists()
+    assert not (bot.cfg.data_dir / "apimap.json").exists()
 
 
 @pytest.mark.parametrize(("due", "ordered"), [(timedelta(minutes=1), False), (timedelta(0), True)])
@@ -542,14 +567,14 @@ def test_ledger_edits_from_two_threads_both_land(tmp_path):
     assert len(ledger._orders()) == 20
 
 
-@pytest.mark.parametrize("error", [ShopError("the shop's page stopped responding"), RuntimeError("boom")])
+@pytest.mark.parametrize("error", [ShopError("the shop is not answering"), RuntimeError("boom")])
 def test_a_failure_after_place_order_is_unconfirmed_never_not_ordered(bot, shop, error):
-    hh, browser = shop
+    hh, fake = shop
 
-    def place():
+    def place(rules, cod):
         raise error
 
-    browser.place = place
+    fake.place = place
     bot._on_message(message("2 bread"))
     said(bot, "⏳ I'll order this")
     tap(bot, hh)
@@ -559,19 +584,19 @@ def test_a_failure_after_place_order_is_unconfirmed_never_not_ordered(bot, shop,
 
 
 def test_the_shop_is_opened_once_per_order_not_per_message(bot, shop):
-    hh, browser = shop
+    hh, fake = shop
     bot._on_message(message("bread"))
     bot._on_message(message("milk"))
     sent(bot, "⏳ I'll order this", having="Total ₹120")
-    assert browser.opened == 0
+    assert fake.opened == 0
     tap(bot, hh)
     said(bot, "✅ Ordered")
-    assert browser.opened == 1
+    assert fake.opened == 1
 
 
 def test_the_shops_lower_total_waits_and_corrects_the_prices(bot, shop):
-    hh, browser = shop
-    browser.unit = 45
+    hh, fake = shop
+    fake.unit = 45
     bot._on_message(message("bread, milk"))
     sent(bot, "⏳ I'll order this", having="Total ₹120")
     tap(bot, hh)
@@ -582,8 +607,8 @@ def test_the_shops_lower_total_waits_and_corrects_the_prices(bot, shop):
 
 
 def test_an_item_unavailable_at_order_time_stays_in_the_basket(bot, shop):
-    hh, browser = shop
-    browser.gone = {"Milk"}
+    hh, fake = shop
+    fake.gone = {"Milk"}
     bot._on_message(message("2 bread, milk"))
     said(bot, "⏳ I'll order this")
     tap(bot, hh)
@@ -593,18 +618,18 @@ def test_an_item_unavailable_at_order_time_stays_in_the_basket(bot, shop):
 
 
 def test_a_skipped_item_says_why(bot, shop):
-    hh, browser = shop
-    browser.gone, browser.why = {"Milk"}, "the size you picked isn't sold any more"
+    hh, fake = shop
+    fake.gone, fake.why = {"Milk"}, "the shop no longer sells this"
     bot._on_message(message("2 bread, milk"))
     said(bot, "⏳ I'll order this")
     tap(bot, hh)
-    sent(bot, "✅ Ordered", having="Couldn't add milk (the size you picked isn't sold any more)")
+    sent(bot, "✅ Ordered", having="Couldn't add milk (the shop no longer sells this)")
 
 
 def test_the_shops_limit_per_order_is_ordered_and_told(bot, shop):
     """24 Oct, 14:29 UTC: 3 of an item the shop sells 2 at a time blocked the whole order."""
-    hh, browser = shop
-    browser.limits = {"Bread": 2}
+    hh, fake = shop
+    fake.limits = {"Bread": 2}
     bot._on_message(message("3 bread, milk"))
     said(bot, "⏳ I'll order this")
     tap(bot, hh)
@@ -613,8 +638,27 @@ def test_the_shops_limit_per_order_is_ordered_and_told(bot, shop):
 
 
 def test_with_ordering_off_every_message_fills_the_shop_cart(bot, shop):
-    hh, browser = shop
+    hh, fake = shop
     bot.accounts.update(hh.id, place_orders=False)
     bot._on_message(message("2 bread"))
     said(bot, "🛒 Cart ready (₹120)")
-    assert browser.opened == 1
+    assert fake.opened == 1
+
+
+def test_one_accounts_failed_check_does_not_skip_the_others(bot, shop, monkeypatch):
+    hh, _ = shop
+    (session := bot.cfg.data_dir / "other.json").write_text("{}")
+    bot.accounts.allow(ADMIN)
+    other = bot.accounts.connect(ADMIN, "Admin", ADDRESS.id, str(ADDRESS), session)
+    checked = []
+
+    def check(household):
+        checked.append(household.id)
+        if household.id == hh.id:
+            raise KeyError("id")
+        raise ShopError("the shop login has expired")
+
+    monkeypatch.setattr(botmod.orders, "check", check)
+    bot._health(ADMIN)
+    assert sorted(checked) == sorted([hh.id, other.id])
+    said(bot, "⚠️ Daily check of your shop account failed", chat=ADMIN)

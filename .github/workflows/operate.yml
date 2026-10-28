@@ -9,9 +9,8 @@ on:
         description: What to do
         type: choice
         options:
-          - check            # home exit, each account's login and address
+          - check            # the shop, each account's login and address
           - logs             # the bot's recent log lines and health
-          - apimap           # the shop's API calls seen so far, without values
           - remove           # stop the bot and delete everything on the box, data included
       confirm:
         description: Type the action name again to confirm "remove"

@@ -5,7 +5,6 @@
 #   deploy IMAGE  pull IMAGE and (re)start
 #   check         self-check inside the running bot
 #   logs          the bot's recent log lines and health
-#   apimap        the shop's API calls seen so far, without values
 #   remove        stop and delete everything, volume included
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -14,7 +13,7 @@ compose() { docker compose --env-file .image "$@"; }
 in_bot() { compose exec -T grocery-bot "$@"; }
 
 wait_healthy() {
-  for _ in $(seq 72); do  # the bot first waits for the exit node to carry traffic
+  for _ in $(seq 72); do
     [ "$(docker inspect -f '{{.State.Health.Status}}' "$(compose ps -q grocery-bot)" 2>/dev/null)" = healthy ] && return
     sleep 5
   done
@@ -34,14 +33,11 @@ case "${1:?command}" in
     docker image prune -f --filter "label=org.opencontainers.image.source=https://github.com/vaari-dev/grocery-bot" >/dev/null
     ;;
   check)
-    in_bot xvfb-run -a python -m grocerybot check
+    in_bot python -m grocerybot check
     ;;
   logs)
     docker inspect -f 'health: {{.State.Health.Status}}, started {{.State.StartedAt}}' "$(compose ps -q grocery-bot)"
     compose logs --no-log-prefix --tail 200 grocery-bot
-    ;;
-  apimap)
-    in_bot python -m grocerybot apimap
     ;;
   remove)
     compose down --volumes --rmi all --remove-orphans

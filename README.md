@@ -8,10 +8,11 @@ on delivery when that falls short.
 Telegram ⇄ bot (OCI box, Docker)
             ├─ Whisper: voice → text
             ├─ catalog: words → your products, per account
-            └─ real Chrome on a virtual screen → Tailscale → home exit node → shop
+            └─ Zepto's official MCP server (HTTPS, JSON): search, cart, bill, order, history
 ```
 
-The shop refuses headless browsers and data-centre IPs, hence real Chrome leaving through home.
+The bot signs in as Zepto's MCP clients do (OAuth: phone, then the texted code) and keeps each
+account's tokens, renewing them before they lapse.
 
 ## Use
 
@@ -19,11 +20,11 @@ New people message the bot; the admin taps *Let them in*. `/setup` (private chat
 phone number, the code the shop texts, and one of the account's saved addresses; the bot deletes
 the number and code from the chat. Family joins through an owner's `/invite` link.
 
-Every cart is checked before it is placed: only the expected items, the account's address, paid
-fully from the wallet or fully on delivery, within the daily limit. Lists under the
-smallest order wait in the basket; a cart that reaches it is placed 3 minutes later, or at once with
-*Order now*. Each attempt is recorded before *Place Order*, so an interrupted order is reported,
-never retried.
+The bot sets the shop cart to exactly the basket, then checks the shop's bill before ordering: only
+the expected items, the account's address, paid fully from the wallet or fully on delivery, within
+the daily limit. Lists under the smallest order wait in the basket; a basket that reaches it is
+placed 3 minutes later, or at once with *Order now*. Each attempt is recorded before the order call
+and confirmed by its id in the shop's history, so an interrupted order is reported, never retried.
 
 | | |
 |---|---|
@@ -35,14 +36,9 @@ never retried.
 
 ## Deploy
 
-1. On a device at home: `sudo tailscale set --advertise-exit-node`, approve it, and create a
-   reusable auth key.
-2. GitHub environment `oracle-cloud`:
-   variables `SHOP_URL`, `TELEGRAM_ADMIN_ID`, `TS_EXIT_NODE` (its Tailscale IP), `SSH_HOST`,
-   `SSH_USER`, `SSH_KNOWN_HOSTS`, optional `DEPLOY_DIR`;
-   secrets `TELEGRAM_BOT_TOKEN`, `TS_AUTHKEY`, `SSH_PRIVATE_KEY`.
-3. Push to `main`. *Actions → Operate* runs `check`, `logs`, `apimap` or `remove` (deletes the bot and its data).
-   `apimap` prints the shop's API calls seen so far, without values.
+1. GitHub environment `oracle-cloud`: variables `TELEGRAM_ADMIN_ID`, `SSH_HOST`, `SSH_USER`,
+   `SSH_KNOWN_HOSTS`, optional `DEPLOY_DIR`; secrets `TELEGRAM_BOT_TOKEN`, `SSH_PRIVATE_KEY`.
+2. Push to `main`. *Actions → Operate* runs `check`, `logs` or `remove` (deletes the bot and its data).
 
 Logs are JSON lines in Loki: `{service_name="grocery-bot"}`. They never hold message text.
 

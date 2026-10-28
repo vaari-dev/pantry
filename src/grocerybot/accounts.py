@@ -1,13 +1,12 @@
 """Households: one shop account each, shared by the Telegram users in it.
 
 households.json:
-  {"households": {"<id>": {"owner": uid, "address_label", "address_match", "daily_cap", "min_order", "place_orders"}},
+  {"households": {"<id>": {"owner": uid, "address_id", "address", "daily_cap", "min_order", "place_orders"}},
    "users": {"<uid>": {"name": "Asha", "household": "<id>" | null}},
    "invites": {"<code>": {"household": "<id>", "expires": "<iso time>"}}}
 """
 
 import os
-import re
 import secrets
 import shutil
 from dataclasses import dataclass
@@ -21,7 +20,7 @@ from .ledger import Ledger
 INVITE_VALID = timedelta(hours=24)
 INVITE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 EMPTY = {"households": {}, "users": {}, "invites": {}}
-DEFAULTS = {"address_label": "", "address_match": "", "daily_cap": 1000.0, "min_order": 100.0, "place_orders": True}
+DEFAULTS = {"address_id": "", "address": "", "daily_cap": 1000.0, "min_order": 100.0, "place_orders": True}
 
 
 @dataclass(frozen=True)
@@ -30,8 +29,8 @@ class Household:
     dir: Path
     owner: int
     members: tuple[int, ...]
-    address_label: str  # name of the saved address on the shop
-    address_match: str  # text that must appear in that address
+    address_id: str  # the shop's saved address that orders go to
+    address: str  # that address, as the shop words it
     daily_cap: float
     min_order: float  # the shop charges a delivery fee below this
     place_orders: bool
@@ -40,24 +39,11 @@ class Household:
     def state_file(self) -> Path:
         return self.dir / "session.json"
 
-    @property
-    def debug_dir(self) -> Path:
-        return self.dir / "debug"
-
     def catalog(self) -> Catalog:
         return Catalog(self.dir / "catalog.json")
 
     def ledger(self) -> Ledger:
         return Ledger(self.dir / "ledger.json")
-
-
-def address_parts(text: str) -> tuple[str, str]:
-    """'Home\\nT6/503, MG Road' -> ('Home', 'T6/503'): what the address starts with, and must contain."""
-    lines = [line.strip() for line in text.splitlines() if line.strip()] or [""]
-    if len(lines) == 1:
-        lines = re.split(r"\s+-\s+|,\s*", lines[0], maxsplit=1)
-    label, rest = lines[0], " ".join(lines[1:])
-    return label, rest.split(",")[0].strip() or label
 
 
 class Accounts:
@@ -99,7 +85,7 @@ class Accounts:
         with self._edit() as data:
             data["users"].setdefault(str(uid), {"name": "", "household": None})
 
-    def connect(self, uid: int, name: str, address_label: str, address_match: str, session: Path) -> Household:
+    def connect(self, uid: int, name: str, address_id: str, address: str, session: Path) -> Household:
         """Install a shop login: into the household uid owns (keeping its picks and history), else a new one."""
         with self._edit() as data:
             user = data["users"].setdefault(str(uid), {"name": name, "household": None})
@@ -109,7 +95,7 @@ class Accounts:
                 _leave(self.root, data, uid)
                 hid = user["household"] = secrets.token_hex(4)
                 data["households"][hid] = {**DEFAULTS, "owner": uid}
-            data["households"][hid].update(address_label=address_label, address_match=address_match)
+            data["households"][hid].update(address_id=address_id, address=address)
             (self.root / hid).mkdir(parents=True, exist_ok=True)
             os.replace(session, self.root / hid / "session.json")
         return self._household(data, hid)
