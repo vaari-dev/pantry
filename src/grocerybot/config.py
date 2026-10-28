@@ -14,7 +14,6 @@ def _required(name: str) -> str:
 
 @dataclass(frozen=True)
 class Config:
-    shop_url: str
     telegram_token: str
     admin_id: int  # lets new people in, gets the bot's own alerts
     whisper_model: str
@@ -24,7 +23,6 @@ class Config:
 
 def load() -> Config:
     return Config(
-        shop_url=_required("SHOP_URL"),
         telegram_token=_required("TELEGRAM_BOT_TOKEN"),
         admin_id=int(_required("TELEGRAM_ADMIN_ID")),
         whisper_model=os.environ.get("WHISPER_MODEL", "small"),

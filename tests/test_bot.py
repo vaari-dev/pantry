@@ -60,10 +60,10 @@ class FakeAddresses:
 
 @pytest.fixture
 def bot(tmp_path, monkeypatch):
-    monkeypatch.setattr(botmod.orders, "login", FakeLogin)
-    monkeypatch.setattr(botmod.orders, "shop", lambda *_: FakeAddresses())
+    monkeypatch.setattr(botmod, "Login", FakeLogin)
+    monkeypatch.setattr(botmod, "Zepto", lambda _: FakeAddresses())
     monkeypatch.setattr(botmod.signal, "signal", lambda *_: None)  # run() must not take pytest's SIGTERM
-    cfg = Config("https://shop.example", "token", ADMIN, "small", tmp_path, 9)
+    cfg = Config("token", ADMIN, "small", tmp_path, 9)
     b = botmod.Bot(cfg)
     b.tg = FakeTelegram()
     botmod.threading.Thread(target=b._worker, daemon=True).start()
@@ -197,7 +197,8 @@ def shop(bot, monkeypatch):
     for item in ("bread", "milk"):
         hh.catalog().learn(item, Product(item.title(), "1 pc", f"https://shop.example/{item}", "₹60"))
     fake = FakeShop()
-    monkeypatch.setattr(botmod.orders, "shop", lambda *_: fake)
+    monkeypatch.setattr(botmod, "Zepto", lambda _: fake)
+    monkeypatch.setattr(botmod.orders, "Zepto", lambda _: fake)
     return hh, fake
 
 
@@ -635,7 +636,7 @@ def test_one_accounts_failed_check_does_not_skip_the_others(bot, shop, monkeypat
     other = bot.accounts.connect(ADMIN, "Admin", ADDRESS.id, str(ADDRESS), session)
     checked = []
 
-    def check(cfg, household):
+    def check(household):
         checked.append(household.id)
         if household.id == hh.id:
             raise KeyError("id")

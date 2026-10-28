@@ -12,9 +12,7 @@ services:
       TZ: Asia/Kolkata  # daily cap, health check
     volumes:
       - data:/data
-    shm_size: 1gb       # Chrome
     mem_limit: 3g
-    # Not read_only: Chrome needs a writable root.
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]

@@ -250,21 +250,21 @@ def test_a_changed_sign_in_page_says_so(zepto, monkeypatch):
 def test_without_a_login_the_account_is_not_connected(tmp_path, zepto, saved):
     if saved is not None:
         store.write(tmp_path / "session.json", saved)
-    with pytest.raises(ShopError, match="not connected"), Zepto("https://shop.example", tmp_path / "session.json"):
+    with pytest.raises(ShopError, match="not connected"), Zepto(tmp_path / "session.json"):
         pass
 
 
 def test_a_login_near_its_end_is_renewed_and_kept(login_file, zepto):
     store.write(login_file, {**store.read(login_file, {}), "expires_at": time.time() + 3600})
-    with Zepto("https://shop.example", login_file) as z:
+    with Zepto(login_file) as z:
         z.deliver_to(HOME)
     assert store.read(login_file, {})["refresh_token"] == zepto.refresh == "refresh-3"
 
 
 def test_a_login_renewed_by_the_other_process_is_used_not_renewed_again(login_file, zepto):
     """`check` runs beside the bot: the refresh token both read works only once."""
-    with Zepto("https://shop.example", login_file) as z:
-        with Zepto("https://shop.example", login_file) as other:
+    with Zepto(login_file) as z:
+        with Zepto(login_file) as other:
             zepto.expired = True
             other.deliver_to(HOME)  # renews
         z.deliver_to(HOME)  # its token is the old one now
@@ -272,7 +272,7 @@ def test_a_login_renewed_by_the_other_process_is_used_not_renewed_again(login_fi
 
 
 def test_a_refused_token_is_renewed_once_then_the_login_has_expired(login_file, zepto):
-    with Zepto("https://shop.example", login_file) as z:
+    with Zepto(login_file) as z:
         zepto.expired = True
         z.deliver_to(HOME)  # renewed, and retried
         zepto.expired, zepto.refresh = True, "revoked"
@@ -281,12 +281,12 @@ def test_a_refused_token_is_renewed_once_then_the_login_has_expired(login_file, 
 
 
 def test_search_skips_ads_and_sold_out_items_and_reads_sizes_and_prices(login_file, zepto):
-    with Zepto("https://shop.example", login_file) as z:
+    with Zepto(login_file) as z:
         found = z.search("milk")
     assert found == [
-        Product("Amul Taaza | Pouch", "500 ml", "https://shop.example/pn/amul-taaza-pouch/pvid/pv-milk", "₹30",
+        Product("Amul Taaza | Pouch", "500 ml", "https://www.zepto.com/pn/amul-taaza-pouch/pvid/pv-milk", "₹30",
                 "https://cdn.example/tr:f-jpg/milk.jpeg"),
-        Product("Kajal", "0.35 g", "https://shop.example/pn/kajal/pvid/pv-kajal", "₹132.50", "", "₹220"),
+        Product("Kajal", "0.35 g", "https://www.zepto.com/pn/kajal/pvid/pv-kajal", "₹132.50", "", "₹220"),
     ]  # fmt: skip
     assert found[0].variant == "pv-milk"
 
@@ -303,12 +303,12 @@ def test_search_skips_ads_and_sold_out_items_and_reads_sizes_and_prices(login_fi
 )
 def test_stock_is_what_one_order_may_have(login_file, zepto, change, stock):
     zepto.products["pv-eggs"].update(change)
-    with Zepto("https://shop.example", login_file) as z:
+    with Zepto(login_file) as z:
         assert z.stock(EGGS) == stock
 
 
 def test_a_product_the_shop_dropped(login_file, zepto):
-    with Zepto("https://shop.example", login_file) as z:
+    with Zepto(login_file) as z:
         assert z.stock(Product("Old", "", "https://shop.example/pn/old/pvid/pv-old")) == "the shop no longer sells this"
 
 
@@ -321,7 +321,7 @@ def order(z, items, budget=1000.0, address=HOME):
 
 def test_the_cart_becomes_exactly_the_basket(login_file, zepto):
     zepto.cart = {"pv-stranger": 3}  # put there in the app
-    with Zepto("https://shop.example", login_file) as z:
+    with Zepto(login_file) as z:
         z.deliver_to(HOME)
         cart = order(z, {MILK: 2, EGGS: 1})
     assert zepto.cart == {"pv-milk": 2, "pv-eggs": 1}
@@ -331,7 +331,7 @@ def test_the_cart_becomes_exactly_the_basket(login_file, zepto):
 @pytest.mark.parametrize("wallet", [0, 5_000])  # refused, or covering only part
 def test_a_wallet_too_small_pays_on_delivery(login_file, zepto, wallet):
     zepto.wallet = wallet
-    with Zepto("https://shop.example", login_file) as z:
+    with Zepto(login_file) as z:
         cart = order(z, {MILK: 1})
     assert (cart.problems, cart.total, cart.cod) == ([], 60, True)
 
@@ -345,18 +345,18 @@ def test_a_wallet_too_small_pays_on_delivery(login_file, zepto, wallet):
 )
 def test_the_bill_is_checked_before_ordering(login_file, zepto, setup, problem):
     setup(zepto)
-    with Zepto("https://shop.example", login_file) as z:
+    with Zepto(login_file) as z:
         assert order(z, {MILK: 1}).problems[0].startswith(problem)
 
 
 def test_the_wallet_bill_is_checked_too(login_file, zepto):
     zepto.wallet_extra = {"pv-stranger": 1}
-    with Zepto("https://shop.example", login_file) as z:
+    with Zepto(login_file) as z:
         assert order(z, {MILK: 1}).problems == ["an item the bot did not add is in the cart"]
 
 
 def test_a_cart_unlike_the_basket_is_a_problem(login_file, zepto, monkeypatch):
-    with Zepto("https://shop.example", login_file) as z:
+    with Zepto(login_file) as z:
         for p in (MILK, EGGS):
             z.stock(p)
         z.fill({MILK: 2, EGGS: 1})
@@ -371,7 +371,7 @@ def test_a_cart_unlike_the_basket_is_a_problem(login_file, zepto, monkeypatch):
 
 def test_a_refusal_says_what_the_shop_said(login_file, zepto):
     zepto.refusals["update_cart"] = "Store not selected. Please use select_store first."
-    with Zepto("https://shop.example", login_file) as z, pytest.raises(ShopError) as e:
+    with Zepto(login_file) as z, pytest.raises(ShopError) as e:
         z.stock(MILK)
         z.fill({MILK: 1})
     assert str(e.value) == "the shop said: Store not selected. Please use select_store first."
@@ -380,18 +380,18 @@ def test_a_refusal_says_what_the_shop_said(login_file, zepto):
 
 @pytest.mark.parametrize("cod", [False, True])
 def test_placing_is_confirmed_by_a_new_order_in_the_history(login_file, zepto, cod):
-    with Zepto("https://shop.example", login_file) as z:
+    with Zepto(login_file) as z:
         cart = order(z, {MILK: 1})
         before = z.latest_order()
         placed = z.place(Rules(HOME, 1000), cod)
-        assert placed == zepto.orders[0] != before
+        assert placed == zepto.orders[0] != before["id"]
         assert z.confirm(before, placed)
     assert [n for n, a in zepto.calls if a.get("confirmOrder")] == ["create_order" if cod else "create_wallet_order"]
     assert cart.cod is False
 
 
 def test_a_failed_history_read_is_tried_again(login_file, zepto):
-    with Zepto("https://shop.example", login_file) as z:
+    with Zepto(login_file) as z:
         order(z, {MILK: 1})
         before = z.latest_order()
         placed = z.place(Rules(HOME, 1000), cod=False)
@@ -400,7 +400,7 @@ def test_a_failed_history_read_is_tried_again(login_file, zepto):
 
 
 def test_no_new_order_is_not_confirmed(login_file, zepto):
-    with Zepto("https://shop.example", login_file) as z:
+    with Zepto(login_file) as z:
         before = z.latest_order()
         assert not z.confirm(before, None)
         zepto.orders.insert(0, "placed-in-the-app")  # someone else's order is not ours

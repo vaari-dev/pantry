@@ -22,7 +22,7 @@ from . import orders, store
 from .accounts import Accounts, Household
 from .catalog import Product, plan
 from .config import Config
-from .shop import Address, ShopError, Zepto
+from .shop import Address, Login, ShopError, Zepto
 from .speech import Transcriber
 from .telegram import Telegram, TelegramError, strikethrough
 
@@ -295,7 +295,7 @@ class Bot:
         for hh in self.accounts.all():
             with bound_contextvars(household_id=hh.id):
                 try:
-                    orders.check(self.cfg, hh)
+                    orders.check(hh)
                     log.info("health check ok")
                 except ShopError as e:
                     log.warning("health check failed", error=e.logged)
@@ -452,7 +452,7 @@ class Bot:
             self._say(chat_id, note)
         found = []
         if p.to_pick:
-            with orders.shop(self.cfg, hh.state_file) as z:
+            with Zepto(hh.state_file) as z:
                 z.deliver_to(hh.address_id)
                 found = [(name, qty, *_search(z, name)) for name, qty in p.to_pick]
         for name, _, query, options in found:
@@ -586,9 +586,9 @@ class Bot:
         else:
             self._say(chat_id, "Placing the order …")
         try:
-            out = orders.order(self.cfg, hh, items, hold=hold)
+            out = orders.order(hh, items, hold=hold)
         except Exception as e:
-            if hh.ledger().placing():  # stopped after Place Order, so it may have gone through
+            if hh.ledger().placing():  # stopped after the order call, so it may have gone through
                 raise
             if isinstance(e, ShopError):
                 log.warning("order stopped by the shop", error=e.logged)
@@ -788,7 +788,7 @@ class Bot:
             if len(phone := re.sub(r"\D", "", phone)[-10:]) != 10:
                 raise SetupStopped("That doesn't look like a 10-digit mobile number")
             self._say(uid, f"Thanks! Asking the shop for a login code for ••••••{phone[-4:]}…", markup=NO_KEYBOARD)
-            login = orders.login()
+            login = Login()
             login.request_otp(phone)
             log.info("login code requested")
             otp = self._ask(
@@ -797,7 +797,7 @@ class Bot:
             store.write(session, login.enter_otp(re.sub(r"\D", "", otp)))
             log.info("logged in")
             self._say(uid, "✅ Logged in!\n\n📍 Step 3 of 3: where should orders go?")
-            with orders.shop(self.cfg, session) as z:
+            with Zepto(session) as z:
                 address = self._choose_address(uid, z)
             hh = self.accounts.connect(uid, name, address.id, str(address), session)
             log.info("household connected", household_id=hh.id)

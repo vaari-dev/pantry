@@ -1,12 +1,10 @@
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import structlog
 
 from .accounts import Household
 from .catalog import combine, rupees
-from .config import Config
-from .shop import Login, Rules, ShopError, Zepto
+from .shop import Rules, ShopError, Zepto
 
 log = structlog.get_logger(__name__)
 
@@ -21,7 +19,7 @@ class Outcome:
     item_total: float = 0
     waiting: bool = False
     held: bool = False
-    unconfirmed: bool = False  # asked the shop to place it, but it did not confirm it
+    unconfirmed: bool = False  # the order call was made, but no new order seen
     over_limit: bool = False
     cod: bool = False
     estimated: bool = False  # item_total from catalog prices: the shop was not opened
@@ -39,21 +37,13 @@ class Outcome:
         return "blocked" if self.problems else "cart ready"
 
 
-def shop(cfg: Config, login_file: Path) -> Zepto:
-    return Zepto(cfg.shop_url, login_file)
-
-
-def login() -> Login:
-    return Login()
-
-
 def rules(hh: Household) -> Rules:
     return Rules(hh.address_id, hh.daily_cap - hh.ledger().spent_today())
 
 
-def check(cfg: Config, hh: Household) -> None:
+def check(hh: Household) -> None:
     """Also renews the login before it lapses."""
-    with shop(cfg, hh.state_file) as z:
+    with Zepto(hh.state_file) as z:
         z.deliver_to(hh.address_id)
 
 
@@ -67,7 +57,7 @@ def priced(hh: Household) -> tuple[list[tuple[str, int, float | None]], float, i
     return rows, sum(a or 0 for *_, a in rows), sum(a is None for *_, a in rows)
 
 
-def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool = False) -> Outcome:
+def order(hh: Household, items: list[tuple[str, int]], hold: bool = False) -> Outcome:
     """hold: price the basket from the catalog and leave it there; the shop is used only to place
     an order (or, with ordering off, to fill its cart). New items join the basket first, so a failure
     loses nothing.
@@ -94,7 +84,7 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
             out.held = not out.waiting
         return out
 
-    with shop(cfg, hh.state_file) as z:
+    with Zepto(hh.state_file) as z:
         z.deliver_to(limits.address_id)
         expected, added, capped = {}, [], {}
         for key, qty in items:
@@ -142,7 +132,7 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
         stopped = placed = None
         try:
             placed = z.place(limits, cart.cod)
-        except Exception as e:  # the order may have gone through all the same: the history tells
+        except Exception as e:  # it may have gone through all the same: the history tells
             log.warning("placing interrupted", exc_info=True)
             stopped = str(e) if isinstance(e, ShopError) else "the shop stopped answering while placing it"
         try:

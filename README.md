@@ -37,13 +37,9 @@ shop's history, so an interrupted order is reported, never retried.
 
 ## Deploy
 
-1. On a device at home: `sudo tailscale set --advertise-exit-node`, approve it, and create a
-   reusable auth key.
-2. GitHub environment `oracle-cloud`:
-   variables `SHOP_URL`, `TELEGRAM_ADMIN_ID`, `TS_EXIT_NODE` (its Tailscale IP), `SSH_HOST`,
-   `SSH_USER`, `SSH_KNOWN_HOSTS`, optional `DEPLOY_DIR`;
-   secrets `TELEGRAM_BOT_TOKEN`, `TS_AUTHKEY`, `SSH_PRIVATE_KEY`.
-3. Push to `main`. *Actions → Operate* runs `check`, `logs` or `remove` (deletes the bot and its data).
+1. GitHub environment `oracle-cloud`: variables `TELEGRAM_ADMIN_ID`, `SSH_HOST`, `SSH_USER`,
+   `SSH_KNOWN_HOSTS`, optional `DEPLOY_DIR`; secrets `TELEGRAM_BOT_TOKEN`, `SSH_PRIVATE_KEY`.
+2. Push to `main`. *Actions → Operate* runs `check`, `logs` or `remove` (deletes the bot and its data).
 
 Logs are JSON lines in Loki: `{service_name="grocery-bot"}`. They never hold message text.
 

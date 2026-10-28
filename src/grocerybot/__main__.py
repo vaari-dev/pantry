@@ -21,7 +21,7 @@ def main() -> None:
     print("ok: the shop is reachable")
     for hh in Accounts(cfg.data_dir, cfg.admin_id).all():
         try:
-            orders.check(cfg, hh)
+            orders.check(hh)
             print(f"ok: account {hh.id}")
         except ShopError as e:
             print(f"not ready: account {hh.id}: {e}")

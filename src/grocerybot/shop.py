@@ -1,7 +1,4 @@
-"""The shop, through Zepto's official MCP server: JSON tools over HTTP, no browser.
-
-Login is the shop's own OAuth sign-in (phone, then the code it texts), done with two of its page's
-calls. The account's tokens live in a file and are renewed before they lapse."""
+"""Zepto through its official MCP server. Sign-in is its OAuth page's own two calls: phone, then the texted code."""
 
 import base64
 import fcntl
@@ -21,6 +18,7 @@ import structlog
 from . import store
 from .catalog import Product
 
+SITE = "https://www.zepto.com"
 MCP = "https://mcp.zepto.co.in/mcp"
 RESOURCE = "https://mcp.zepto.co.in"
 AUTH = "https://auth.zepto.co.in"
@@ -88,10 +86,10 @@ def _size(pack: str) -> str:
     return m.group(1) if (m := PACK.match(pack := (pack or "").strip())) else pack
 
 
-def _url(base: str, name: str, variant: str) -> str:
+def _url(name: str, variant: str) -> str:
     """Like the shop's own product links, which end /pvid/<variant id>."""
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "item"
-    return f"{base.rstrip('/')}/pn/{slug}/pvid/{variant}"
+    return f"{SITE}/pn/{slug}/pvid/{variant}"
 
 
 def _request(url: str, body: bytes | None, headers: dict) -> tuple[int, dict, bytes]:
@@ -107,14 +105,14 @@ def _request(url: str, body: bytes | None, headers: dict) -> tuple[int, dict, by
         raise ShopError(NOT_ANSWERING) from e
 
 
-def _json(url: str, data: dict | None = None, form: bool = False, headers: dict | None = None) -> tuple[int, dict]:
+def _json(url: str, data: dict | None = None, form: bool = False) -> tuple[int, dict]:
     if data is None:
         body, kind = None, None
     elif form:
         body, kind = urlencode(data).encode(), "application/x-www-form-urlencoded"
     else:
         body, kind = json.dumps(data).encode(), "application/json"
-    status, _, raw = _request(url, body, {**({"content-type": kind} if kind else {}), **(headers or {})})
+    status, _, raw = _request(url, body, {"content-type": kind} if kind else {})
     try:
         return status, json.loads(raw or b"{}")
     except ValueError:
@@ -239,10 +237,11 @@ class Login:
 class Zepto:
     """One MCP session on one account. login_file holds its tokens; renewals are written back."""
 
-    def __init__(self, base_url: str, login_file: Path):
-        self.base, self.login_file = base_url, login_file
+    def __init__(self, login_file: Path):
+        self.login_file = login_file
         self._sid: str | None = None
         self._spid: dict[str, str] = {}  # variant -> its id in the selected store
+        self._price: dict[str, str] = {}  # variant -> price there; bills don't say
         self._n = 0
 
     def __enter__(self) -> "Zepto":
@@ -351,7 +350,7 @@ class Zepto:
                 Product(
                     p["name"],
                     _size(p.get("packSize")),
-                    _url(self.base, p["name"], p["productVariantId"]),
+                    _url(p["name"], p["productVariantId"]),
                     _rupees(price) if price else "",
                     (p.get("imageUrl") or "").replace("f-auto", "f-jpg"),  # Telegram can't show the shop's avif
                     _rupees(mrp) if price and mrp and mrp > price else "",
@@ -370,6 +369,8 @@ class Zepto:
         if not (p.get("isActive") and p.get("isInStock")):
             return "out of stock"
         self._spid[product.variant] = p["storeProductId"]
+        if p.get("sellingPrice"):
+            self._price[product.variant] = _rupees(p["sellingPrice"])
         return max(0, min(p.get("availableQuantity") or 0, p.get("maxAllowedQuantity") or 0)) or "out of stock"
 
     def fill(self, items: dict[Product, int]) -> None:
@@ -385,11 +386,7 @@ class Zepto:
         """The shop's bill, without ordering. Pays from the wallet if it covers it all, else cash on delivery."""
         bill, result = self.tool("create_order", confirmOrder=False, userAddressId=rules.address_id), Cart()
         result.problems = _problems(bill, expected, rules)
-        for row in bill.get("items") or []:
-            if (product := next((p for p in expected if p.variant == row.get("productVariantId")), None)) and row.get(
-                "price"
-            ):
-                result.prices[product] = _rupees(row["price"])
+        result.prices = {p: self._price[p.variant] for p in expected if p.variant in self._price}
         result.item_total = ((bill.get("subTotal") or 0) - (bill.get("discount") or 0)) / 100  # subTotal is at MRP
         result.total = bill["toPayAmount"] / 100 if isinstance(bill.get("toPayAmount"), int) else None
         wallet = self.tool("create_wallet_order", quiet=True, confirmOrder=False, userAddressId=rules.address_id)
@@ -410,9 +407,8 @@ class Zepto:
             result.problems.append(over)
         return result
 
-    def latest_order(self) -> str | None:
-        orders = self.tool("list_order_history", limit=1, pageNumber=1).get("orders") or []
-        return orders[0]["id"] if orders else None
+    def latest_order(self) -> dict:
+        return next(iter(self.tool("list_order_history", limit=1, pageNumber=1).get("orders") or []), {})
 
     def place(self, rules: Rules, cod: bool) -> str | None:
         """The one irreversible call; the new order's id, if the reply has it."""
@@ -430,18 +426,16 @@ class Zepto:
         )
         return summary.get("orderId")
 
-    def confirm(self, before: str | None, placed: str | None) -> bool:
-        """By the order history, which can lag a few seconds: newest is the placed order, or, without
-        its id, any order other than the one before placing."""
+    def confirm(self, before: dict, placed: str | None) -> bool:
+        """The history lists a new order a few seconds late. Without the placed id, any new order counts."""
         for attempt in range(3):
             if attempt:
                 time.sleep(5)
             try:
-                orders = self.tool("list_order_history", limit=1, pageNumber=1).get("orders") or []
+                o = self.latest_order()
             except ShopError:
                 continue
-            if orders and (orders[0].get("id") == placed if placed else orders[0].get("id") != before):
-                o = orders[0]
+            if o and (o.get("id") == placed if placed else o.get("id") != before.get("id")):
                 log.info("order found", status=o.get("formattedStatus"), total=o.get("grandTotalAmount"))
                 return True
         log.info("no new order in the history")
