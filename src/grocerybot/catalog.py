@@ -3,7 +3,6 @@
 catalog.json: {"egg": {"aliases": ["anda"], "max_qty": 3, "options": [{"name", "size", "url", "price"}, ...]}}
 """
 
-import difflib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,46 +12,6 @@ from . import store
 DEFAULT_MAX_QTY = 3
 MAX_OPTIONS = 3
 
-FILLER = frozenset(
-    """order please pls get buy bring some a an the me us i want need and also mujhe hume
-    humko chahiye lao le aao bhej dena dedo kar karo mangwa mangao ka ki ke packet packets pack packs""".split()
-)
-NUMBERS = {
-    "one": 1,
-    "two": 2,
-    "three": 3,
-    "four": 4,
-    "five": 5,
-    "six": 6,
-    "seven": 7,
-    "eight": 8,
-    "nine": 9,
-    "ten": 10,
-    "ek": 1,
-    "teen": 3,
-    "char": 4,
-    "chaar": 4,
-    "paanch": 5,
-    "panch": 5,
-    "chhe": 6,
-    "saat": 7,
-    "aath": 8,
-    "nau": 9,
-    "das": 10,
-}
-# How speech-to-text tends to spell Hindi words.
-SPELLINGS = {
-    "dudh": "doodh",
-    "dood": "doodh",
-    "anday": "anda",
-    "unda": "anda",
-    "aaloo": "aloo",
-    "dhaniya": "dhania",
-    "pyaj": "pyaz",
-    "tamater": "tamatar",
-    "bred": "bread",
-}
-SEPARATORS = re.compile(r"[,;\n&.!?]|\band\b|\baur\b|\bor\b|\bplus\b")
 QUANTITY = re.compile(
     r"(?<![\w.])(?:(\d+)\s*x\s*)?(\d+(?:\.\d+)?)\s*"
     r"(kg|gms?|g|mg|ml|ltrs?|litres?|liters?|l|pcs?|pieces?|units?|packs?|dozen|n)(?![a-z])"
@@ -97,42 +56,9 @@ def rupees(text: str) -> float | None:
         return None
 
 
-def singular(word: str) -> str:
-    """eggs -> egg, potatoes -> potato, berries -> berry; leaves chips/oats alone."""
-    if word.endswith(("ss", "chips", "oats")):
-        return word
-    for suffix, repl in (("ies", "y"), ("oes", "o"), ("ches", "ch"), ("shes", "sh"), ("s", "")):
-        if word.endswith(suffix) and len(word) > len(suffix) + 2:
-            return word[: -len(suffix)] + repl
-    return word
-
-
-def normalize(name: str) -> str:
-    words = re.sub(r"[^a-z0-9 ]+", " ", name.lower()).split()
-    return " ".join(singular(SPELLINGS.get(w, w)) for w in words)
-
-
-def split_spoken(text: str) -> list[tuple[str, int]]:
-    """'Order bread aur do anda, 3 milk please' -> [('bread', 1), ('anda', 2), ('milk', 3)]."""
-    out = []
-    for part in SEPARATORS.split(text.lower()):
-        words = part.split()
-        qty, name = 1, []
-        for i, w in enumerate(words):
-            nxt = words[i + 1] if i + 1 < len(words) else ""
-            if w.isdigit() or w in NUMBERS:
-                qty = int(w) if w.isdigit() else NUMBERS[w]
-            elif w == "do" and nxt and nxt not in FILLER:  # Hindi "two"
-                qty = 2
-            elif m := re.fullmatch(r"x(\d+)", w):
-                qty = int(m.group(1))
-            elif m := re.fullmatch(r"(?:do|du|doo)(anda|ande|anday|unda)", w):  # "duanda": glued "do anda"
-                qty, name = 2, [*name, m.group(1)]
-            elif w not in FILLER:
-                name.append(w)
-        if name:
-            out.append((" ".join(name), max(qty, 1)))
-    return out
+def normalize(text: str) -> str:
+    """ "Mummy's Home!" -> "mummy s home" """
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", text.lower()).split())
 
 
 class Catalog:
@@ -150,13 +76,7 @@ class Catalog:
         return index
 
     def lookup(self, name: str) -> str | None:
-        """Catalog key for a spoken name: exact (normalized), else a close spelling."""
-        index = self._index(self._load())
-        norm = normalize(name)
-        if norm in index:
-            return index[norm]
-        close = difflib.get_close_matches(norm, index, n=1, cutoff=0.82)
-        return index[close[0]] if close else None
+        return self._index(self._load()).get(normalize(name))
 
     def options(self, key: str) -> list[Product]:
         entry = self._load().get(key, {})

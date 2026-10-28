@@ -38,8 +38,8 @@ and confirmed by its id in the shop's history, so an interrupted order is report
 ## Deploy
 
 1. GitHub environment `oracle-cloud`: variables `TELEGRAM_ADMIN_ID`, `SSH_HOST`, `SSH_USER`,
-   `SSH_KNOWN_HOSTS`, optional `DEPLOY_DIR`; secrets `TELEGRAM_BOT_TOKEN`, `SSH_PRIVATE_KEY`, optional
-   `ANTHROPIC_API_KEY` (without it, messages are read as plain lists).
+   `SSH_KNOWN_HOSTS`, optional `DEPLOY_DIR`; secrets `TELEGRAM_BOT_TOKEN`, `SSH_PRIVATE_KEY`,
+   `ANTHROPIC_API_KEY`.
 2. Push to `main`. *Actions → Operate* runs `check`, `logs` or `remove` (deletes the bot and its data).
 
 Logs are JSON lines in Loki: `{service_name="grocery-bot"}`. They never hold message text.

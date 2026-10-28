@@ -1,7 +1,7 @@
 import pytest
 
 from grocerybot import store
-from grocerybot.catalog import Catalog, Product, combine, normalize, plan, split_spoken
+from grocerybot.catalog import Catalog, Product, combine, plan
 
 EGGS = Product("Urban White Eggs", "1 pack (10 pcs)", "/pn/eggs/pvid/1")
 BREAD = Product("Multigrain Bread", "1 pack (400 g)", "/pn/bread/pvid/2")
@@ -20,52 +20,21 @@ def catalog(tmp_path):
     return Catalog(tmp_path / "catalog.json")
 
 
-@pytest.mark.parametrize(
-    "text, expected",
-    [
-        ("Order bread aur do anda please", [("bread", 1), ("anda", 2)]),
-        ("bread or duanda, and one dudh.", [("bread", 1), ("anda", 2), ("dudh", 1)]),
-        ("mujhe teen kela aur doodh chahiye", [("kela", 3), ("doodh", 1)]),
-        ("2 milk, eggs x3", [("milk", 2), ("eggs", 3)]),
-        ("", []),
-    ],
-)
-def test_split_spoken(text, expected):
-    assert split_spoken(text) == expected
-
-
-@pytest.mark.parametrize(
-    "word, norm",
-    [
-        ("Eggs", "egg"),
-        ("potatoes", "potato"),
-        ("berries", "berry"),
-        ("chips", "chips"),
-        ("Dhaniya", "dhania"),
-        ("glass", "glass"),
-    ],
-)
-def test_normalize(word, norm):
-    assert normalize(word) == norm
-
-
-def test_lookup_aliases_plurals_and_misspellings(catalog):
-    assert catalog.lookup("anda") == "egg"
-    assert catalog.lookup("eggs") == "egg"
-    assert catalog.lookup("bred") == "bread"
-    assert catalog.lookup("dudh") == "milk"  # speech-to-text spelling of doodh
+def test_lookup_by_name_or_alias(catalog):
+    assert catalog.lookup("Anda") == "egg"
+    assert catalog.lookup("egg") == "egg"
     assert catalog.lookup("pomegranate") is None
 
 
 def test_plan_splits_ready_and_to_pick_and_caps(catalog):
-    p = plan(split_spoken("10 eggs, bread, doodh, anar"), catalog)
+    p = plan([("egg", 10), ("bread", 1), ("doodh", 1), ("anar", 1)], catalog)
     assert p.ready == [("egg", 3), ("bread", 1)]
     assert p.to_pick == [("milk", 1), ("anar", 1)]  # known word without a product is picked too
     assert p.notes == ["egg: asked for 10, capped at 3"]
 
 
 def test_plan_merges_repeats(catalog):
-    assert plan(split_spoken("anda, 2 eggs"), catalog).ready == [("egg", 3)]
+    assert plan([("anda", 1), ("egg", 2)], catalog).ready == [("egg", 3)]
 
 
 def test_learn_puts_pick_first_and_keeps_backups(catalog):

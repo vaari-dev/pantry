@@ -19,7 +19,7 @@ class Config:
     whisper_model: str
     data_dir: Path
     health_hour: int
-    anthropic_api_key: str = ""  # unset: messages are read as plain lists of items
+    anthropic_api_key: str
 
 
 def load() -> Config:
@@ -29,5 +29,5 @@ def load() -> Config:
         whisper_model=os.environ.get("WHISPER_MODEL", "small"),
         data_dir=Path(os.environ.get("DATA_DIR", "/data")),
         health_hour=int(os.environ.get("HEALTH_CHECK_HOUR", "9")),
-        anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", "").strip(),
+        anthropic_api_key=_required("ANTHROPIC_API_KEY"),
     )

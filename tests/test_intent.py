@@ -1,6 +1,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from grocerybot.intent import Reader, Request, grounded
 
 EMPTY = {
@@ -20,7 +22,7 @@ def item(said, name, qty=1):
 
 def test_only_what_the_message_says_counts():
     reply = EMPTY | {
-        "add": [item("do anda", "eggs", 2), item("jam", "jam"), item("bread", "bread", 0)],
+        "add": [item("do anda", "Egg", 2), item("jam", "jam"), item("bread", "bread", 0), item("bread", "!")],
         "change": [item("Doodh", "milk", 0)],
         "address": "office",
         "settings": [
@@ -28,8 +30,8 @@ def test_only_what_the_message_says_counts():
             {"said": "ordering off", "name": "ordering", "value": "off"},
         ],
     }
-    assert grounded(reply, "Do anday, bread, doodh nahi, limit 2000.") == Request(
-        add=[("eggs", 2)], change=[("milk", 0)], settings=[("limit", "2000")]
+    assert grounded(reply, "Do anda, bread, doodh nahi, limit 2000.") == Request(
+        add=[("egg", 2)], change=[("milk", 0)], settings=[("limit", "2000")]
     )
 
 
@@ -84,7 +86,6 @@ def test_claude_reads_with_the_households_words_and_basket():
     assert "eggs, bread" in content and "Basket: milk" in content and "<message>anda abhi</message>" in content
 
 
-def test_without_claude_a_message_is_a_list():
-    assert Reader("")("bread aur do anda", [], []) == Request(add=[("bread", 1), ("anda", 2)])
-    assert reader(FakeClient(error=TimeoutError()))("2 milk", [], []) == Request(add=[("milk", 2)])
-    assert reader(FakeClient(EMPTY, stop="refusal"))("2 milk", [], []) == Request(add=[("milk", 2)])
+def test_a_refusal_is_not_a_reading():
+    with pytest.raises(ValueError, match="refusal"):
+        reader(FakeClient(EMPTY, stop="refusal"))("2 milk", [], [])
