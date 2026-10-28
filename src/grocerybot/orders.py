@@ -139,14 +139,14 @@ def order(cfg: Config, hh: Household, items: list[tuple[str, int]], hold: bool =
         attempt = ledger.begin(placed_items, cart.total)
         ledger.set_basket(kept)  # never ordered twice, even if the outcome is unclear
         log.info("attempt recorded", total=cart.total, cod=cart.cod)
-        stopped = None
+        stopped = placed = None
         try:
-            z.place(limits, cart.cod)
+            placed = z.place(limits, cart.cod)
         except Exception as e:  # the order may have gone through all the same: the history tells
             log.warning("placing interrupted", exc_info=True)
             stopped = str(e) if isinstance(e, ShopError) else "the shop stopped answering while placing it"
         try:
-            out.placed = z.confirm(before)
+            out.placed = z.confirm(before, placed)
         except Exception:
             log.warning("order history not read", exc_info=True)
         out.unconfirmed = not out.placed

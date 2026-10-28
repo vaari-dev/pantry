@@ -14,7 +14,8 @@ EGGS = Product("Eggs", "6 pcs", "https://shop.example/pn/eggs/pvid/pv-eggs", "�
 
 
 class FakeZepto:
-    """Zepto's sign-in and MCP servers, in the shapes they answered with on 28 Oct 2026."""
+    """Zepto's sign-in and MCP servers, in the shapes they answered with on 28 Oct 2026: bills at MRP less
+    a discount, without item prices; the history showing a new order a read or two late."""
 
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []  # (tool, arguments)
@@ -25,13 +26,15 @@ class FakeZepto:
         self.access, self.refresh = "access-1", "refresh-1"
         self.expired = False
         self.products = {
-            "pv-milk": {"price": 3000, "available": 30, "max": 30, "active": True},
-            "pv-eggs": {"price": 6000, "available": 2, "max": 5, "active": True},
+            "pv-milk": {"price": 3000, "mrp": 3200, "available": 30, "max": 30, "active": True},
+            "pv-eggs": {"price": 6000, "mrp": 6000, "available": 2, "max": 5, "active": True},
         }
         self.refusals: dict[str, str] = {}  # tool -> what it says when refusing
         self.bill_address = None  # the address the bill says, if not the selected one
         self.wallet_extra: dict[str, int] = {}  # put only in the wallet order's bill
         self.history_down = 0  # order history reads that fail
+        self.history_lag = 1  # reads after an order that still miss it
+        self.lagging = 0
 
     def __call__(self, url, body, headers):
         parts = urlsplit(url)
@@ -140,22 +143,27 @@ class FakeZepto:
         return {"items": [], "isEmpty": not self.cart}
 
     def _bill(self, cod, confirmOrder=False, userAddressId=None, **_):
-        sub = sum(self.products.get(v, {"price": 500})["price"] * q for v, q in self.cart.items())
+        unknown = {"price": 500, "mrp": 500}
+        mrp = sum(self.products.get(v, unknown)["mrp"] * q for v, q in self.cart.items())
+        sub = sum(self.products.get(v, unknown)["price"] * q for v, q in self.cart.items())
         total = sub + (0 if sub >= 19900 else 3000)
         if not cod and not self.wallet:
             raise KeyError("wallet")
         if confirmOrder:
             self.orders.insert(0, f"order-{len(self.orders)}")
-            self.cart = {}
-            return {"orderId": self.orders[0], "status": "CREATED"}
+            self.cart, self.lagging = {}, self.history_lag
+            summary = {
+                "orderId": self.orders[0],
+                "status": "INITIATED",
+                "paymentMethod": "COD" if cod else "ZEPTO_CASH",
+            }
+            return {"isConfirmation": True, "success": True, "summary": summary}
         return {
             "isPreview": True,
-            "items": [
-                {"productVariantId": v, "quantity": q, "price": self.products.get(v, {"price": 500})["price"]}
-                for v, q in self.cart.items()
-            ],
+            "items": [{"productVariantId": v, "quantity": q, "price": None} for v, q in self.cart.items()],
             "toPayAmount": total if cod else max(0, total - self.wallet),  # the wallet may cover part
-            "subTotal": sub,
+            "subTotal": mrp,
+            "discount": mrp - sub,
             "deliveryFee": total - sub,
             "deliverable": True,
             "deliveryAddress": {"id": self.bill_address or userAddressId or self.address},
@@ -173,6 +181,9 @@ class FakeZepto:
         if self.history_down:
             self.history_down -= 1
             raise KeyError("history")
+        if self.lagging:
+            self.lagging -= 1
+            return {"orders": [{"id": o, "formattedStatus": "PLACED"} for o in self.orders[1:]]}
         return {"orders": [{"id": o, "formattedStatus": "PLACED", "grandTotalAmount": 1} for o in self.orders]}
 
 
@@ -315,7 +326,6 @@ def test_the_cart_becomes_exactly_the_basket(login_file, zepto):
         cart = order(z, {MILK: 2, EGGS: 1})
     assert zepto.cart == {"pv-milk": 2, "pv-eggs": 1}
     assert (cart.problems, cart.item_total, cart.total, cart.cod) == ([], 120, 150, False)
-    assert cart.prices == {MILK: "₹30", EGGS: "₹60"}
 
 
 @pytest.mark.parametrize("wallet", [0, 5_000])  # refused, or covering only part
@@ -373,8 +383,9 @@ def test_placing_is_confirmed_by_a_new_order_in_the_history(login_file, zepto, c
     with Zepto("https://shop.example", login_file) as z:
         cart = order(z, {MILK: 1})
         before = z.latest_order()
-        z.place(Rules(HOME, 1000), cod)
-        assert z.confirm(before)
+        placed = z.place(Rules(HOME, 1000), cod)
+        assert placed == zepto.orders[0] != before
+        assert z.confirm(before, placed)
     assert [n for n, a in zepto.calls if a.get("confirmOrder")] == ["create_order" if cod else "create_wallet_order"]
     assert cart.cod is False
 
@@ -383,14 +394,17 @@ def test_a_failed_history_read_is_tried_again(login_file, zepto):
     with Zepto("https://shop.example", login_file) as z:
         order(z, {MILK: 1})
         before = z.latest_order()
-        z.place(Rules(HOME, 1000), cod=False)
-        zepto.history_down = 2
-        assert z.confirm(before)
+        placed = z.place(Rules(HOME, 1000), cod=False)
+        zepto.history_down, zepto.history_lag = 1, 0
+        assert z.confirm(before, placed)
 
 
 def test_no_new_order_is_not_confirmed(login_file, zepto):
     with Zepto("https://shop.example", login_file) as z:
-        assert not z.confirm(z.latest_order())
+        before = z.latest_order()
+        assert not z.confirm(before, None)
+        zepto.orders.insert(0, "placed-in-the-app")  # someone else's order is not ours
+        assert not z.confirm(before, "ours")
 
 
 def test_reachable_needs_no_login(zepto):

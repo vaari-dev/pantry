@@ -180,9 +180,10 @@ class FakeShop:
 
     def place(self, rules, cod):
         self.orders += 1
+        return self.orders
 
-    def confirm(self, before):
-        return self.orders != before
+    def confirm(self, before, placed):
+        return self.orders == placed
 
     def search(self, query):
         return [Product(f"{query.title()} {n}", "1 pc", f"https://shop.example/{query}/{n}", "₹60") for n in (1, 2)]

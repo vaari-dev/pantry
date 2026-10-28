@@ -390,7 +390,7 @@ class Zepto:
                 "price"
             ):
                 result.prices[product] = _rupees(row["price"])
-        result.item_total = (bill.get("subTotal") or 0) / 100
+        result.item_total = ((bill.get("subTotal") or 0) - (bill.get("discount") or 0)) / 100  # subTotal is at MRP
         result.total = bill["toPayAmount"] / 100 if isinstance(bill.get("toPayAmount"), int) else None
         wallet = self.tool("create_wallet_order", quiet=True, confirmOrder=False, userAddressId=rules.address_id)
         result.cod = not (wallet and wallet.get("isPreview") and wallet.get("toPayAmount") == 0)
@@ -414,15 +414,25 @@ class Zepto:
         orders = self.tool("list_order_history", limit=1, pageNumber=1).get("orders") or []
         return orders[0]["id"] if orders else None
 
-    def place(self, rules: Rules, cod: bool) -> None:
-        """The one irreversible call."""
+    def place(self, rules: Rules, cod: bool) -> str | None:
+        """The one irreversible call; the new order's id, if the reply has it."""
         reply = self.tool(
             "create_order" if cod else "create_wallet_order", confirmOrder=True, userAddressId=rules.address_id
         )
-        log.info("order reply", keys=sorted(reply)[:30], status=reply.get("status"), preview=reply.get("isPreview"))
+        summary = reply.get("summary") or {}
+        log.info(
+            "order reply",
+            success=reply.get("success"),
+            status=summary.get("status"),
+            payment=summary.get("paymentMethod"),
+            wallet_used=summary.get("walletBalanceUsed"),
+            to_pay=summary.get("toPayAmount"),
+        )
+        return summary.get("orderId")
 
-    def confirm(self, before: str | None) -> bool:
-        """By the order history: a newest order other than the one before placing."""
+    def confirm(self, before: str | None, placed: str | None) -> bool:
+        """By the order history, which can lag a few seconds: newest is the placed order, or, without
+        its id, any order other than the one before placing."""
         for attempt in range(3):
             if attempt:
                 time.sleep(5)
@@ -430,7 +440,7 @@ class Zepto:
                 orders = self.tool("list_order_history", limit=1, pageNumber=1).get("orders") or []
             except ShopError:
                 continue
-            if orders and orders[0].get("id") != before:
+            if orders and (orders[0].get("id") == placed if placed else orders[0].get("id") != before):
                 o = orders[0]
                 log.info("order found", status=o.get("formattedStatus"), total=o.get("grandTotalAmount"))
                 return True
