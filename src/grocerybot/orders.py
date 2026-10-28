@@ -38,7 +38,8 @@ class Outcome:
 
 
 def rules(hh: Household) -> Rules:
-    return Rules(hh.address_id, hh.daily_cap - hh.ledger().spent_today())
+    address_id = (hh.ledger().address() or [hh.address_id])[0]
+    return Rules(address_id, hh.daily_cap - hh.ledger().spent_today())
 
 
 def check(hh: Household) -> None:
@@ -57,10 +58,10 @@ def priced(hh: Household) -> tuple[list[tuple[str, int, float | None]], float, i
     return rows, sum(a or 0 for *_, a in rows), sum(a is None for *_, a in rows)
 
 
-def order(hh: Household, items: list[tuple[str, int]], hold: bool = False) -> Outcome:
-    """hold: price the basket from the catalog and leave it there; the shop is used only to place
-    an order (or, with ordering off, to fill its cart). New items join the basket first, so a failure
-    loses nothing.
+def order(hh: Household, items: list[tuple[str, int]], when: str = "due") -> Outcome:
+    """when: "hold" prices the basket from the catalog and leaves it there; the shop is used only to
+    place an order (or, with ordering off, to fill its cart). "due" places it if it reaches the
+    minimum, "now" places it anyway. New items join the basket first, so a failure loses nothing.
 
     The attempt is written to the ledger before the order call, so a crash can never lead
     to a silent second order: an unfinished attempt is reported, not retried."""
@@ -73,7 +74,7 @@ def order(hh: Household, items: list[tuple[str, int]], hold: bool = False) -> Ou
         out.over_limit = True
         out.problems.append(f"today's limit of ₹{hh.daily_cap:g} is used up")
         return out
-    if hold and hh.place_orders:
+    if when == "hold" and hh.place_orders:
         out.estimated = True
         _, out.item_total, unpriced = priced(hh)
         if over := limits.over(out.item_total):
@@ -118,7 +119,7 @@ def order(hh: Household, items: list[tuple[str, int]], hold: bool = False) -> Ou
         out.over_limit = cart.total is not None and cart.total > limits.budget
         if cart.problems:
             return out
-        if cart.item_total < hh.min_order:
+        if cart.item_total < hh.min_order and when != "now":
             out.waiting = True
             ledger.set_basket(items)
             return out
@@ -127,6 +128,7 @@ def order(hh: Household, items: list[tuple[str, int]], hold: bool = False) -> Ou
 
         attempt = ledger.begin(placed_items, cart.total)
         ledger.set_basket(kept)  # never ordered twice, even if the outcome is unclear
+        ledger.set_address()
         log.info("attempt recorded", total=cart.total, cod=cart.cod)
         stopped = placed = None
         try:

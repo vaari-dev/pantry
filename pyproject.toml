@@ -7,6 +7,7 @@ dependencies = ["structlog>=25"]
 
 [project.optional-dependencies]
 runtime = [
+  "anthropic==1.13.0",
   "faster-whisper==1.2.1",
   "av>=13,<14",  # faster-whisper passes an option that av 14 removed
 ]

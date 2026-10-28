@@ -9,6 +9,7 @@ import pytest
 from grocerybot import bot as botmod
 from grocerybot.catalog import Product
 from grocerybot.config import Config
+from grocerybot.intent import Request
 from grocerybot.ledger import Ledger
 from grocerybot.shop import Address, Cart, ShopError
 
@@ -27,6 +28,8 @@ class FakeTelegram:
         return len(self.sent)
 
     def delete(self, *_): ...
+
+    def edit_text(self, *_): ...
 
     def answer(self, _, text=None):
         self.answers.append(text)
@@ -151,6 +154,7 @@ class FakeShop:
         self.limits: dict[str, int] = {}  # product name -> the most one order may have
         self.cart: dict = {}
         self.orders = 0
+        self.placed_to: list[str] = []
 
     def __enter__(self):
         self.opened += 1
@@ -177,7 +181,11 @@ class FakeShop:
 
     def place(self, rules, cod):
         self.orders += 1
+        self.placed_to.append(rules.address_id)
         return self.orders
+
+    def addresses(self):
+        return FakeAddresses().addresses()
 
     def confirm(self, placed):
         return self.orders == placed
@@ -504,7 +512,7 @@ def test_a_stop_ends_a_setup_waiting_for_an_answer(bot):
 
 def test_a_stop_hands_back_jobs_not_yet_started(bot, shop):
     with worker_paused(bot):
-        bot._queue(bot._handle_list, NEW, shop[0], "2 bread")
+        bot._queue(bot._handle, NEW, NEW, shop[0], "2 bread")
         bot.stopping.set()
     bot._drain()
     said(bot, "⏸ I restarted for an update")
@@ -597,12 +605,12 @@ def test_the_shop_is_opened_once_per_order_not_per_message(bot, shop):
     assert fake.opened == 1
 
 
-def test_the_shops_lower_total_waits_and_corrects_the_prices(bot, shop):
+def test_the_shops_lower_total_waits_and_corrects_the_prices(bot, shop, monkeypatch):
+    monkeypatch.setattr(botmod, "HOLD", 0.1)
     hh, fake = shop
     fake.unit = 45
     bot._on_message(message("bread, milk"))
     sent(bot, "⏳ I'll order this", having="Total ₹120")
-    tap(bot, hh)
     said(bot, "🧺 The shop's total is ₹90, below the ₹100 minimum")
     assert hh.ledger().basket() == [("bread", 1), ("milk", 1)]
     bot._on_message(message("/basket"))
@@ -665,3 +673,117 @@ def test_one_accounts_failed_check_does_not_skip_the_others(bot, shop, monkeypat
     bot._health(ADMIN)
     assert sorted(checked) == sorted([hh.id, other.id])
     said(bot, "⚠️ Daily check of your shop account failed", chat=ADMIN)
+
+
+def reads(bot, **request):
+    bot.read = lambda *_: Request(**request)
+
+
+def test_order_now_places_below_the_minimum(bot, shop):
+    hh, _ = shop
+    hh.ledger().set_basket([("bread", 1)])
+    bot._on_message(message("/basket"))
+    tap(bot, hh)
+    said(bot, "✅ Ordered, ₹60")
+    assert placed(hh) == [[["bread", 1]]]
+
+
+def test_said_now_orders_at_once(bot, shop):
+    hh, _ = shop
+    reads(bot, add=[("bread", 1)], now=True)
+    bot._on_message(message("bread abhi"))
+    said(bot, "✅ Ordered, ₹60")
+    assert placed(hh) == [[["bread", 1]]]
+
+
+def test_said_now_orders_once_the_new_item_is_picked(bot, shop):
+    hh, _ = shop
+    reads(bot, add=[("jam", 1)], now=True)
+    bot._on_message(message("jam now"))
+    said(bot, 'Which "jam"')
+    bot._on_button({"id": "q", "from": {"id": NEW}, "data": f"{next(iter(bot.picking))}:0:0"})
+    said(bot, "✅ Ordered")
+    assert placed(hh) == [[["jam", 1]]]
+
+
+def test_changes_set_or_remove_basket_items(bot, shop):
+    hh, _ = shop
+    hh.ledger().set_basket([("bread", 2), ("milk", 1)])
+    reads(bot, change=[("bread", 0), ("milk", 3), ("eggs", 1)])
+    bot._on_message(message("no bread, 3 milk, 1 eggs"))
+    said(bot, '"eggs" isn\'t in the basket.')
+    sent(bot, "🧺 Your basket", having="Milk (1 pc) ×3")
+    assert hh.ledger().basket() == [("milk", 3)]
+
+
+def test_removing_the_last_item_ends_the_wait(bot, shop):
+    hh, _ = shop
+    bot._on_message(message("2 bread"))
+    said(bot, "⏳ I'll order this")
+    reads(bot, change=[("bread", 0)])
+    bot._on_message(message("no bread"))
+    said(bot, "The basket is empty.")
+    assert (hh.ledger().hold(), bot.holds) == (None, {})
+
+
+def test_a_named_saved_address_takes_this_basket_only(bot, shop):
+    hh, fake = shop
+    reads(bot, add=[("bread", 2)], address="work")
+    bot._on_message(message("2 bread to work"))
+    sent(bot, "⏳ I'll order this", having="Delivering to Work")
+    tap(bot, hh)
+    said(bot, "✅ Ordered to Work")
+    assert (fake.placed_to, hh.ledger().address()) == (["addr-work"], None)
+
+
+@pytest.mark.parametrize("address", ["office", "home or work"])
+def test_an_unknown_or_unclear_address_changes_nothing(bot, shop, address):
+    hh, _ = shop
+    reads(bot, add=[("bread", 2)], address=address)
+    bot._on_message(message(f"2 bread to {address}"))
+    said(bot, "Which saved address: Home, Work?")
+    idle(bot)
+    assert (hh.ledger().basket(), hh.ledger().address()) == ([], None)
+
+
+def test_clear_drops_the_address(bot, shop):
+    hh, _ = shop
+    hh.ledger().set_address("addr-work", "Work")
+    reads(bot, clear_basket=True)
+    bot._on_message(message("cancel everything"))
+    said(bot, "Basket emptied.")
+    assert hh.ledger().address() is None
+
+
+def test_show_basket(bot, shop):
+    hh, _ = shop
+    hh.ledger().set_basket([("bread", 1)])
+    reads(bot, show_basket=True)
+    bot._on_message(message("basket mein kya hai"))
+    said(bot, "🧺 Your basket")
+
+
+def test_settings_by_message_are_the_owners(bot, shop):
+    hh, _ = shop
+    reads(bot, settings=[("limit", "2000")])
+    bot._on_message(message("limit 2000"))
+    sent(bot, "Delivery:", having="Daily limit: ₹2000")
+    bot.accounts.allow(ADMIN)
+    bot.accounts.join(ADMIN, "Admin", bot.accounts.invite(hh.id))
+    reads(bot, settings=[("limit", "5000")])
+    bot._on_message(message("limit 5000", uid=ADMIN))
+    said(bot, "Only Asha", chat=ADMIN)
+    assert bot.accounts.get(hh.id).daily_cap == 2000
+
+
+def test_chatter_in_a_group_gets_no_reply(bot, shop):
+    reads(bot)
+    bot._on_message(message("good morning") | {"chat": {"id": -5, "type": "group"}})
+    idle(bot)
+    assert not [c for c, _, _ in bot.tg.sent if c == -5]
+
+
+def test_settings_apply_to_the_rest_of_the_message(bot, shop):
+    reads(bot, settings=[("ordering", "off")], add=[("bread", 2)])
+    bot._on_message(message("ordering off, 2 bread"))
+    said(bot, "🛒 Cart ready (₹120)")

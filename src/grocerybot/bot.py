@@ -21,8 +21,9 @@ from structlog.contextvars import bind_contextvars, bound_contextvars, clear_con
 
 from . import orders, store
 from .accounts import Accounts, Household
-from .catalog import Product, plan
+from .catalog import Product, normalize, plan
 from .config import Config
+from .intent import Reader
 from .shop import Address, Login, ShopError, Zepto
 from .speech import Transcriber
 from .telegram import Telegram, TelegramError, strikethrough
@@ -115,6 +116,8 @@ def _basket(hh: Household) -> str:
     total_line = f"Total ₹{total:g}" + (f" + {unpriced} without a price" if unpriced else "")
     if not unpriced and total < hh.min_order:
         total_line += f" (orders start at ₹{hh.min_order:g})"
+    if to := hh.ledger().address():
+        total_line += f"\nDelivering to {to[1]}"
     return "\n".join(["🧺 Your basket", *lines, "", total_line])
 
 
@@ -134,6 +137,7 @@ class Picking:
     asks: dict[int, tuple[str, int, list[Product], list[int]]]  # n -> spoken, qty, options, message ids
     picked: list[tuple[str, int]] = field(default_factory=list)
     started: float = field(default_factory=time.time)
+    when: str = "hold"
 
     def to_json(self) -> dict:
         asks = {n: [name, qty, [vars(p) for p in options], ids] for n, (name, qty, options, ids) in self.asks.items()}
@@ -155,6 +159,7 @@ class Bot:
         self.tg = Telegram(cfg.telegram_token)
         self.accounts = Accounts(cfg.data_dir, cfg.admin_id)
         self.transcribe = Transcriber(cfg.whisper_model)
+        self.read = Reader(cfg.anthropic_api_key)
         self.jobs: queue.Queue = queue.Queue()
         self.stopping = threading.Event()
         # Kept on disk, with Telegram's update offset, so a restart neither drops a pick nor redoes an update.
@@ -385,21 +390,19 @@ class Bot:
         elif command == "/basket":
             if self.jobs.unfinished_tasks:
                 self._say(chat_id, "An order is in progress; send /basket again once it's done.")
-            elif text := _basket(hh):
-                self._offer_now(chat_id, hh, text)
             else:
-                self._say(chat_id, "The basket is empty.")
+                self._show_basket(chat_id, hh)
         elif command == "/clear":
             self._queue(self._clear, chat_id, hh)
         elif command == "/usual":
             due = hh.ledger().due()
             self._say(chat_id, f"Due now: {_items(due)}\nSend that back to order it." if due else "Nothing is due.")
         elif voice := msg.get("voice") or msg.get("audio"):
-            self._queue(self._voice, chat_id, hh, voice["file_id"])
+            self._queue(self._voice, chat_id, uid, hh, voice["file_id"])
         elif text and not command:
             if self.jobs.unfinished_tasks:
                 self._say(chat_id, "Another order is in progress; yours is next.")
-            self._queue(self._handle_list, chat_id, hh, text)
+            self._queue(self._handle, chat_id, uid, hh, text)
 
     def _on_button(self, cb: dict) -> None:
         uid, data = cb.get("from", {}).get("id"), cb["data"]
@@ -433,9 +436,9 @@ class Bot:
             return
         busy = self.jobs.unfinished_tasks > 0
         self.tg.answer(cb["id"], "Ordering right after what's in progress …" if busy else "Ordering …")
-        self._queue(self._order, chat_id, hh, [], False)
+        self._queue(self._order, chat_id, hh, [], "now")
 
-    def _voice(self, chat_id: int, hh: Household, file_id: str) -> None:
+    def _voice(self, chat_id: int, uid: int, hh: Household, file_id: str) -> None:
         audio = self.tg.download(file_id)
         started = time.monotonic()
         try:
@@ -445,10 +448,66 @@ class Bot:
         log.info("voice transcribed", seconds=round(time.monotonic() - started, 1), words=len(text.split()))
         self._say(chat_id, f'🎙️ Heard: "{text}"')
         if text:
-            self._handle_list(chat_id, hh, text)
+            self._handle(chat_id, uid, hh, text)
 
-    def _handle_list(self, chat_id: int, hh: Household, text: str) -> None:
-        p = plan(text, hh.catalog())
+    def _handle(self, chat_id: int, uid: int, hh: Household, text: str) -> None:
+        r = self.read(text, hh.catalog().vocabulary(), [key for key, _ in hh.ledger().basket()])
+        for name, value in r.settings:
+            if self._owner(chat_id, uid, hh):
+                self._change(chat_id, hh, f"/{name}", value)
+        hh = self.accounts.get(hh.id) or hh
+        if r.clear_basket:
+            self._clear(chat_id, hh)
+        if r.address and not self._deliver_to(chat_id, hh, r.address):
+            return
+        if r.change:
+            self._change_basket(chat_id, hh, r.change)
+        if r.add:
+            return self._add(chat_id, hh, r.add, "now" if r.now else "hold")
+        if r.now:
+            return self._order(chat_id, hh, [], "now")
+        if r.show_basket or r.change or r.address:
+            return self._show_basket(chat_id, hh)
+        if not (r.settings or r.clear_basket) and chat_id > 0:  # a group's chatter isn't for the bot
+            self._say(chat_id, "I didn't catch any items.")
+
+    def _deliver_to(self, chat_id: int, hh: Household, said: str) -> bool:
+        """This basket goes to the saved address named; False if none or several match."""
+        with Zepto(hh.state_file) as z:
+            saved = z.addresses()
+        found = [a for a in saved if a.label and f" {normalize(a.label)} " in f" {normalize(said)} "]
+        if len(found) != 1:
+            log.info("address not matched", matches=len(found), saved=len(saved))
+            labels = ", ".join(a.label for a in saved if a.label)
+            self._say(chat_id, f"Which saved address: {labels}? Send it again naming one; nothing changed.")
+            return False
+        to = found[0]
+        hh.ledger().set_address(*((to.id, to.label) if to.id != hh.address_id else ()))
+        log.info("address set", default=to.id == hh.address_id)
+        return True
+
+    def _change_basket(self, chat_id: int, hh: Household, changes: list[tuple[str, int]]) -> None:
+        catalog, basket = hh.catalog(), dict(hh.ledger().basket())
+        for name, qty in changes:
+            if (key := catalog.lookup(name)) not in basket:
+                self._say(chat_id, f'"{name}" isn\'t in the basket.')
+            elif qty:
+                basket[key] = min(qty, catalog.max_qty(key))
+            else:
+                basket.pop(key)
+        hh.ledger().set_basket(list(basket.items()))
+        if not basket:
+            self._unhold(hh)
+            self._withdraw(hh)
+
+    def _show_basket(self, chat_id: int, hh: Household) -> None:
+        if text := _basket(hh):
+            self._offer_now(chat_id, hh, text)
+        else:
+            self._say(chat_id, "The basket is empty.")
+
+    def _add(self, chat_id: int, hh: Household, items: list[tuple[str, int]], when: str) -> None:
+        p = plan(items, hh.catalog())
         log.info("list planned", ready=len(p.ready), to_pick=len(p.to_pick), notes=len(p.notes))
         for note in p.notes:
             self._say(chat_id, note)
@@ -466,12 +525,14 @@ class Bot:
                 self._say(chat_id, f'Nothing for "{name}", so here is "{query}".')
         asks = {n: (name, qty, options, []) for n, (name, qty, _, options) in enumerate(found) if options}
         if not asks:
-            return self._order(chat_id, hh, p.ready) if p.ready else self._say(chat_id, "I didn't catch any items.")
+            if not p.ready:
+                return self._say(chat_id, "I didn't catch any items.")
+            return self._order(chat_id, hh, p.ready, when)
 
         pid = secrets.token_hex(4)
         with self.lock:
             self.picking = {k: v for k, v in self.picking.items() if v.chat_id != chat_id}  # newest list wins
-            self.picking[pid] = Picking(chat_id, hh.id, p.ready, asks)
+            self.picking[pid] = Picking(chat_id, hh.id, p.ready, asks, when=when)
         if p.ready:
             self._say(chat_id, f"Got: {_items(p.ready)}. Pick the rest:")
         for n, (name, qty, options, ids) in list(asks.items()):  # taps answer (pop) items while these go out
@@ -521,7 +582,7 @@ class Bot:
             self.tg.edit_text(picking.chat_id, ids[0], f'"{name}": {result}')
         if done:
             if items := picking.ready + picking.picked:
-                self._queue(self._order, picking.chat_id, hh, items)
+                self._queue(self._order, picking.chat_id, hh, items, picking.when)
             else:
                 self._say(picking.chat_id, "Nothing left to order.")
 
@@ -529,6 +590,7 @@ class Bot:
         self._unhold(hh)
         self._withdraw(hh)
         hh.ledger().set_basket([])
+        hh.ledger().set_address()
         self._say(chat_id, "Basket emptied.")
 
     def _hold(self, chat_id: int, hh: Household, seconds: float) -> None:
@@ -576,9 +638,9 @@ class Bot:
         if (to := self._chat_for(hh, chat_id)) != chat_id:
             text = f"⏸ The waiting order wasn't placed, since {self.accounts.name(chat_id)} left. {KEPT}"
             return self._offer_now(to, hh, text)
-        self._order(chat_id, hh, [], hold=False)
+        self._order(chat_id, hh, [], "due")
 
-    def _order(self, chat_id: int, hh: Household, items: list[tuple[str, int]], hold: bool = True) -> None:
+    def _order(self, chat_id: int, hh: Household, items: list[tuple[str, int]], when: str = "hold") -> None:
         self._unhold(hh)
         self._withdraw(hh)
         if items:
@@ -588,7 +650,8 @@ class Bot:
         else:
             self._say(chat_id, "Placing the order …")
         try:
-            out = orders.order(hh, items, hold=hold)
+            to = hh.ledger().address()
+            out = orders.order(hh, items, when)
         except Exception as e:
             if hh.ledger().placing():  # stopped after the order call, so it may have gone through
                 raise
@@ -615,7 +678,8 @@ class Bot:
         how = ", cash on delivery" if out.cod else ""
         problems = "".join(f"\n- {p}" for p in out.problems)
         if out.placed:
-            text = f"✅ Ordered, {total} {'cash on delivery' if out.cod else 'from the wallet'}:"
+            where = f" to {to[1]}" if to else ""
+            text = f"✅ Ordered{where}, {total} {'cash on delivery' if out.cod else 'from the wallet'}:"
         elif out.unconfirmed:
             text = f"⚠️ I couldn't confirm the order. Check the shop's app before resending.{problems}"
         elif out.waiting and out.estimated:

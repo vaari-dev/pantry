@@ -74,9 +74,10 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_ADMIN_ID: ${{ vars.TELEGRAM_ADMIN_ID }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           required=(TELEGRAM_BOT_TOKEN TELEGRAM_ADMIN_ID)
-          names=("${required[@]}" LOG_LEVEL)
+          names=("${required[@]}" LOG_LEVEL ANTHROPIC_API_KEY)
           for name in "${required[@]}"; do
             [ -n "${!name}" ] || { echo "::error::$name is unset in the oracle-cloud environment." >&2; exit 1; }
           done
