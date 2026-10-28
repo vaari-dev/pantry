@@ -6,13 +6,13 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from grocerybot import bot as botmod
-from grocerybot import store
-from grocerybot.catalog import Choice, Product
-from grocerybot.config import Config
-from grocerybot.intent import Request
-from grocerybot.ledger import Ledger
-from grocerybot.shop import Address, Cart, ShopError
+from pantry import bot as botmod
+from pantry import store
+from pantry.catalog import Choice, Product
+from pantry.config import Config
+from pantry.intent import Request
+from pantry.ledger import Ledger
+from pantry.shop import Address, Cart, ShopError
 
 ADMIN, NEW = 1, 42
 ADDRESS = Address("addr-home", "Home", "T6/503, MG Road")

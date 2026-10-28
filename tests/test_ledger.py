@@ -1,7 +1,7 @@
 from datetime import date
 
-from grocerybot import store
-from grocerybot.ledger import Ledger
+from pantry import store
+from pantry.ledger import Ledger
 
 
 def test_spend_counts_placed_and_unconfirmed(tmp_path):

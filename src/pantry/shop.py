@@ -31,7 +31,7 @@ SCOPES = (
 )
 TIMEOUT = 60
 RENEW = 3 * 86400  # tokens last 7 days; the daily health check renews them well before
-DEVICE = "grocery-bot"  # update_cart wants one; the cart is the account's either way
+DEVICE = "pantry"  # update_cart wants one; the cart is the account's either way
 NOT_CONNECTED = "this account is not connected to the shop; its owner can /setup again"
 LOGIN_EXPIRED = "the shop login has expired; the account's owner can /setup again"
 NOT_ANSWERING = "the shop is not answering; try again in a minute"
@@ -166,7 +166,7 @@ class Login:
         status, client = _json(
             f"{AUTH}/register",
             {
-                "client_name": "grocery-bot",
+                "client_name": "pantry",
                 "redirect_uris": [REDIRECT],
                 "grant_types": ["authorization_code", "refresh_token"],
                 "response_types": ["code"],
@@ -252,7 +252,7 @@ class Zepto:
         if self._login["expires_at"] - time.time() < RENEW:
             self._renew()
         self._rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
-                                 "clientInfo": {"name": "grocery-bot", "version": "1"}})  # fmt: skip
+                                 "clientInfo": {"name": "pantry", "version": "1"}})  # fmt: skip
         self._rpc("notifications/initialized")
         return self
 

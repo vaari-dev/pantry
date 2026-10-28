@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from grocerybot.intent import Reader, Request, grounded
+from pantry.intent import Reader, Request, grounded
 
 EMPTY = {
     "add": [],

@@ -1,7 +1,7 @@
 import pytest
 
-from grocerybot import store
-from grocerybot.catalog import PACK, Catalog, Choice, Product, combine, grouped, measure, plan
+from pantry import store
+from pantry.catalog import PACK, Catalog, Choice, Product, combine, grouped, measure, plan
 
 EGGS = Product("Urban White Eggs", "1 pack (10 pcs)", "/pn/eggs/pvid/1")
 BREAD = Product("Multigrain Bread", "1 pack (400 g)", "/pn/bread/pvid/2")

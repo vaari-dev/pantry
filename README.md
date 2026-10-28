@@ -1,4 +1,4 @@
-# grocery-bot
+# Pantry
 
 Order groceries by Telegram voice note or text, like *"bread aur do anda"*. Each family connects
 its own shop account; the bot fills the cart, checks it, and pays from the shop's wallet, or cash
@@ -46,7 +46,7 @@ and confirmed by its id in the shop's history, so an interrupted order is report
    `ANTHROPIC_API_KEY`.
 2. Push to `main`. *Actions → Operate* runs `check`, `logs` or `remove` (deletes the bot and its data).
 
-Logs are JSON lines in Loki: `{service_name="grocery-bot"}`. They never hold message text.
+Logs are JSON lines in Loki: `{service_name="pantry"}`. They never hold message text.
 
 ## Develop
 

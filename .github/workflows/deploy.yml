@@ -59,7 +59,7 @@ jobs:
       contents: read
       packages: read
     env:
-      DIR: ${{ vars.DEPLOY_DIR || '/opt/grocery-bot' }}
+      DIR: ${{ vars.DEPLOY_DIR || '/opt/pantry' }}
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/box

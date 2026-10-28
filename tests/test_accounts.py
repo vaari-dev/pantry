@@ -2,8 +2,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from grocerybot import store
-from grocerybot.accounts import Accounts
+from pantry import store
+from pantry.accounts import Accounts
 
 ADMIN, ASHA, RAVI, MEERA = 1, 2, 3, 4
 
