@@ -5,10 +5,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf 
  && useradd --uid 1001 --create-home bot
 
 WORKDIR /app
-COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /bin/uv
 COPY pyproject.toml uv.lock ./
 ENV UV_COMPILE_BYTECODE=1 UV_NO_CACHE=1 UV_PYTHON_DOWNLOADS=never PATH=/app/.venv/bin:$PATH
-RUN uv sync --locked --no-install-project --no-dev --extra runtime
+RUN --mount=from=ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0,source=/uv,target=/bin/uv \
+    uv sync --locked --no-dev --extra runtime
 
 ARG WHISPER_MODEL=small
 ENV HF_HOME=/opt/hf PYTHONUNBUFFERED=1 DATA_DIR=/data

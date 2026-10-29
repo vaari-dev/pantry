@@ -11,8 +11,6 @@ class Transcriber:
         self._loading = threading.Lock()
 
     def load(self) -> None:
-        """Run at startup on its own thread, so the first voice note after a deploy doesn't wait for it.
-        A voice note that arrives while it runs waits for the same load."""
         with self._loading:
             if self._model is None:
                 from faster_whisper import WhisperModel

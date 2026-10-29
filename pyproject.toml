@@ -15,12 +15,8 @@ runtime = [
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.8"]
 
-[build-system]
-requires = ["setuptools>=75"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.uv]
+package = false
 
 [tool.ruff]
 line-length = 120
