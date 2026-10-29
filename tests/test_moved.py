@@ -34,3 +34,8 @@ def test_an_unreachable_old_bot_does_not_stop_the_move():
     old = Fake(fails=("getMe",))
     assert "nobody was told" in announce(old, Fake("pantry_home_bot"), [1])
     assert old.calls == [("getMe", None)]
+
+
+def test_a_refused_profile_change_still_tells_everyone():
+    old = Fake("joey_butler_bot", fails=("setMyShortDescription",))
+    assert announce(old, Fake("pantry_home_bot"), [1]) == "moved to @pantry_home_bot; told 1 of 1"

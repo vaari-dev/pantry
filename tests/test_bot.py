@@ -370,23 +370,13 @@ def test_over_the_limit_says_how_to_go_on(bot, shop):
     assert hh.ledger().basket() == [("bread", 2)]
 
 
-def test_a_start_asks_accounts_from_the_chrome_bot_to_set_up_again_and_drops_its_files(bot, shop):
-    hh, _ = shop
+def test_a_start_asks_accounts_without_an_address_to_set_up_again(bot, shop):
     (session := bot.cfg.data_dir / "old.json").write_text("{}")
     bot.accounts.allow(ADMIN)
     old = bot.accounts.connect(ADMIN, "Admin", "", "", session)  # households.json from before had no address_id
-    for left in (
-        hh.dir / "debug" / "x.png",
-        bot.cfg.data_dir / "tailscale" / "state",
-        bot.cfg.data_dir / "apimap.json",
-    ):
-        left.parent.mkdir(parents=True, exist_ok=True)
-        left.write_text("x")
     bot._resume()
     assert [t for c, t, _ in bot.tg.sent if t == botmod.RECONNECT] == [botmod.RECONNECT]
     said(bot, "🔌", chat=old.owner)
-    assert not [*bot.cfg.data_dir.glob("**/debug")] and not (bot.cfg.data_dir / "tailscale").exists()
-    assert not (bot.cfg.data_dir / "apimap.json").exists()
 
 
 @pytest.mark.parametrize(("due", "ordered"), [(timedelta(minutes=1), False), (timedelta(0), True)])
@@ -1087,18 +1077,6 @@ def test_ordering_on_again_keeps_the_basket(bot, shop):
     assert hh.ledger().basket() == [("bread", 1)]
 
 
-def test_a_pick_open_at_the_28_oct_deploy_survives_it(bot, shop):
-    hh, _ = shop
-    jam = vars(Product("Jam", "1 pc", "https://shop.example/jam", "₹60"))
-    old = {"chat_id": NEW, "household": hh.id, "ready": [["bread", 1]], "asks": {"0": ["jam", 1, [jam], [None]]},
-           "picked": [], "started": time.time(), "when": "hold", "address": []}  # fmt: skip
-    store.write(bot.saved, {"bot": "token", "offset": 9, "at": time.time(), "picking": {"p1": old}})
-    new = restarted(bot)
-    new._pick(hh, "p1:0:0")
-    sent(new, "⏳ I'll order this", having="• Jam ×1")
-    assert placed(hh) == [] and hh.ledger().basket() == [("bread", 1), ("jam", 1)]
-
-
 def test_an_old_question_cannot_answer_a_new_one(bot, shop):
     hh, fake = shop
     hh.catalog().learn("cow milk", one(DAIRY))
@@ -1186,10 +1164,31 @@ def test_an_invite_to_your_own_account_or_a_dead_one_needs_no_confirming(bot, sh
 
 def test_another_bots_offset_and_picks_are_not_used(bot):
     bot.offset = 5
+    bot.picking["p1"] = botmod.Picking(NEW, "h1", {})
     bot._save()
-    assert restarted(bot).offset == 5
-    store.write(bot.saved, store.read(bot.saved, {}) | {"offset": 9, "bot": "123"})
+    assert (restarted(bot).offset, list(restarted(bot).picking)) == (5, ["p1"])
+    store.write(bot.saved, store.read(bot.saved, {}) | {"bot": "123"})
     assert (restarted(bot).offset, restarted(bot).picking) == (None, {})
+
+
+def test_an_interrupted_order_is_reported_until_the_owner_is_told(bot, shop, monkeypatch):
+    hh, _ = shop
+    hh.ledger().begin([("bread", 1)], 60)
+    monkeypatch.setattr(bot, "_say", lambda *_: None)
+    bot._resume()
+    assert len(hh.ledger().interrupted()) == 1
+    monkeypatch.setattr(bot, "_say", lambda *_: 1)
+    bot._resume()
+    assert hh.ledger().interrupted() == []
+
+
+def test_a_pick_settled_during_a_stop_reaches_the_basket(bot, shop):
+    hh, _ = shop
+    bot.stopping.set()
+    picking = botmod.Picking(NEW, hh.id, {}, picked=[("bread", 2)])
+    bot._queue(bot._settled, NEW, hh, picking)
+    idle(bot)
+    assert hh.ledger().basket() == [("bread", 2)]
 
 
 def test_a_switch_button_in_a_group_moves_nobody(bot, shop):

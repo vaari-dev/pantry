@@ -15,7 +15,7 @@ def _required(name: str) -> str:
 @dataclass(frozen=True)
 class Config:
     telegram_token: str
-    admin_id: int  # lets new people in, gets the bot's own alerts
+    admin_id: int
     whisper_model: str
     data_dir: Path
     health_hour: int

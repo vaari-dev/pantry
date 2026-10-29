@@ -12,7 +12,7 @@ UNPRICED = 10**6  # a pack whose price isn't known is taken only when nothing pr
 class Offer:
     product: Product
     size: int  # in the unit the item is wanted in
-    most: int  # the most one order may have
+    most: int
     price: float | None
 
 

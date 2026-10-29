@@ -17,13 +17,13 @@ class Outcome:
     placed: bool = False
     total: float | None = None
     lines: list[str] = field(default_factory=list)
-    unavailable: dict[str, str] = field(default_factory=dict)  # item -> why it couldn't be added
-    questions: dict[str, str] = field(default_factory=dict)  # item -> whether to add another product for it
+    unavailable: dict[str, str] = field(default_factory=dict)
+    questions: dict[str, str] = field(default_factory=dict)
     problems: list[str] = field(default_factory=list)
     item_total: float = 0
     waiting: bool = False
     held: bool = False
-    asking_first: bool = False  # ordering is off: it waits for Order now
+    asking_first: bool = False
     unconfirmed: bool = False  # the order call was made, but no new order seen
     over_limit: bool = False
     cod: bool = False
@@ -170,7 +170,7 @@ def _offers(z: Zepto, choice: Choice, unit: str) -> tuple[list[Offer], str | Non
 class Fill:
     take: dict[Product, int] = field(default_factory=dict)
     note: str = ""
-    why: str = ""  # nothing could be added
+    why: str = ""
     ask: str = ""
 
 
@@ -244,9 +244,9 @@ def order(hh: Household, items: list[tuple[str, Qty]], when: str = "due") -> Out
             for p, n in f.take.items():  # two items can come to one product
                 p = next((e for e in expected if e.variant == p.variant), p)
                 expected[p] = expected.get(p, 0) + n
-        if out.questions:  # nothing is ordered until they are answered
+        if out.questions:
             return out
-        kept = [(k, q) for k, q in items if k in out.unavailable]  # stay in the basket, whatever happens
+        kept = [(k, q) for k, q in items if k in out.unavailable]
         if not expected:
             out.problems.append("none of the items can be added right now")
             return out

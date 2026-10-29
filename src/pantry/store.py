@@ -26,8 +26,15 @@ def write(path: Path, data: Any) -> None:
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(data, f, indent=1, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())  # the ledger must outlive a power cut right after an order
             os.chmod(tmp, 0o600)
             os.replace(tmp, path)
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
             raise

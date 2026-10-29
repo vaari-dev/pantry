@@ -48,22 +48,22 @@ class Ledger:
             data["basket"] = [list(i) for i in items]
             data["address"] = data["address"] if items else None
             for answers in ("others", "asked"):
-                data[answers] = {k: v for k, v in data.get(answers, {}).items() if k in dict(items)}
+                data[answers] = {k: v for k, v in data[answers].items() if k in dict(items)}
 
     def others(self) -> dict[str, bool]:
         return self._read()["others"]
 
     def set_others(self, key: str, allowed: bool) -> None:
         with self._edit() as data:
-            data["others"] = {**data.get("others", {}), key: allowed}
-            data["asked"] = {k: v for k, v in data.get("asked", {}).items() if k != key}
+            data["others"][key] = allowed
+            data["asked"].pop(key, None)
 
     def asked(self) -> dict[str, list]:
         return self._read()["asked"]
 
     def set_asked(self, key: str, chat_id: int, message_id: int | None, when: str) -> None:
         with self._edit() as data:
-            data["asked"] = {**data.get("asked", {}), key: [chat_id, message_id, when]}
+            data["asked"][key] = [chat_id, message_id, when]
 
     def bought(self, key: str) -> list[Qty]:
         return [q for o in self._orders() if o["status"] == "placed" for k, q in o["items"] if k == key]
@@ -120,12 +120,8 @@ class Ledger:
         return any(o["status"] == "placing" for o in self._orders())
 
     def interrupted(self) -> list[dict]:
-        """Attempts still 'placing' (the bot stopped mid-order). Marks them 'unknown'."""
-        with self._edit() as data:
-            stuck = [o for o in data["orders"] if o["status"] == "placing"]
-            for o in stuck:
-                o["status"] = "unknown"
-        return stuck
+        """Attempts the bot stopped in the middle of; they stay 'placing' until finished as 'unknown'."""
+        return [o for o in self._orders() if o["status"] == "placing"]
 
     def due(self, today: date | None = None) -> list[tuple[str, Qty]]:
         """Items bought 3+ times whose usual gap has passed (but not lapsed: > 3 gaps)."""
