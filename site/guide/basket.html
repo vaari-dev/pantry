@@ -1,0 +1,44 @@
+<p class="intro">Everything you ask for goes into one basket for your family. Pantry orders it when there’s enough for a delivery, after giving you {{hold}} to add anything else.</p>
+
+<h2>How an order goes out</h2>
+<ol class="steps-list">
+  <li><b>Items collect in the basket.</b> Anyone in the family can add to it.</li>
+  <li><b>Small baskets wait.</b> Until the basket reaches the smallest order ({{min_order}} to start), Pantry just shows it and waits for more, so you don’t pay for a small delivery.</li>
+  <li><b>{{hold}} to add more.</b> Once it’s enough, Pantry says <span class="chatline bot">⏳ I’ll order this in {{hold}}; send more to add, or tap Order now.</span> Anything you send in that time joins the same order, and starts the wait again.</li>
+  <li><b>It’s ordered.</b> Pantry checks Zepto’s bill and places the order. See <a href="after.html">After you order</a>.</li>
+</ol>
+
+<h2>Order right away</h2>
+<p>Don’t want to wait? Either:</p>
+<ul>
+  <li>tap <b>🛒 Order now</b> under the basket, or</li>
+  <li>say it: “abhi”, “now”, “turant” or “jaldi”, on its own or with items (“2 milk, bananas abhi”).</li>
+</ul>
+<p>Ordering right away skips the wait <b>and the smallest-order rule</b>, so you may pay Zepto’s fee for a small order. Your daily limit and every bill check still apply.</p>
+<div class="callout"><span>🔘</span><p>Only the newest <b>Order now</b> button works. An older one says <span class="chatline bot">That button is out of date; /basket shows what’s waiting.</span>, so an old message can’t place an order early.</p></div>
+
+<h2>See the basket</h2>
+<p>Send <b>/basket</b>, or ask “basket mein kya hai?”. Each line shows the item, the product and pack, and the price Zepto last showed:</p>
+<div class="chat-demo">
+  <span class="chatline bot">🧺 Your basket
+• Bread ×1: White Bread 400 g ×1 · ₹45
+• Egg ×2: Farm Eggs 6 pcs ×2 · ₹144
+
+Total ₹189</span>
+</div>
+<p>If the total is below the smallest order, it says so: “(orders start at {{min_order}})”.</p>
+
+<h2>Change the basket</h2>
+<table>
+  <thead><tr><th>To</th><th>Say or send</th></tr></thead>
+  <tbody>
+    <tr><td>Add something</td><td>Just say it: “aur ek bread”.</td></tr>
+    <tr><td>Change a quantity</td><td>“make it 3 milk”, “nahi, teen doodh”.</td></tr>
+    <tr><td>Remove something</td><td>“bread hata do”, “no bread”.</td></tr>
+    <tr><td>Empty it</td><td><b>/clear</b>, or “sab cancel karo”.</td></tr>
+  </tbody>
+</table>
+<p>Adding the same item again adds to it: “2 milk” then “1 milk” makes three.</p>
+
+<h2>When Pantry is busy</h2>
+<p>Pantry handles one order at a time for everyone, so two people can never set off two orders at once. If you send something while an order is going through, it says <span class="chatline bot">Another order is in progress; yours is next.</span> and gets to yours right after.</p>

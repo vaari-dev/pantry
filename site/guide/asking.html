@@ -1,0 +1,50 @@
+<p class="intro">Say what you need the way you’d say it at home. Pantry understands everyday English and Hinglish, by voice or text.</p>
+
+<h2>Voice or text</h2>
+<p>Both work the same way. For a voice note, Pantry first shows what it heard, so you can catch a mishearing:</p>
+<div class="chat-demo">
+  <span class="chatline me">🎙️ 0:04</span>
+  <span class="chatline bot">🎙️ Heard: “ek doodh, dhania aur aloo”</span>
+</div>
+<p>Several items in one message are fine, separated however you like: “milk, bread and eggs”, “doodh aur bread”.</p>
+
+<h2>How many</h2>
+<p>Say a number before the item, in English or Hindi: “2 milk”, “do anda” (two eggs), “teen kela” (three bananas). No number means one.</p>
+<p>A count means packs of the product you usually get: “2 milk” is two of your usual milk packs.</p>
+
+<h2>Amounts and sizes</h2>
+<p>Ask for an amount and Pantry works out the packs: “2 litre milk”, “aadha kilo paneer”, “500 g dahi”. It buys the cheapest mix of your usual product’s sizes on sale that makes up the amount.</p>
+<ul>
+  <li>It may come out a little over, by less than one of the smallest pack, and never more than double.</li>
+  <li>If Zepto can’t supply all of it, Pantry orders what it can and says so: <span class="chatline bot">(1.5 l of 2 l: all the shop allows)</span></li>
+  <li>“1 kg aloo” buys 1 kg in all. A word like “dozen” isn’t a size Pantry measures: “a dozen eggs” is one pack of your usual eggs, whatever its size.</li>
+</ul>
+
+<h2>More than usual</h2>
+<p>If you ask for far more than you usually buy Pantry asks before adding it, since a big number is more often misheard than meant:</p>
+<div class="chat-demo">
+  <span class="chatline bot">❓ egg ×20? You usually get ×2.<span class="kb">Yes, ×20</span><span class="kb">×2</span><span class="kb">Skip</span></span>
+</div>
+<p>Before your first order of something, a large amount gets the same question: “That’s a lot for a first order.” Pantry never buys more than {{max_packs}} packs of one size in an order.</p>
+
+<h2>Other things you can say</h2>
+<p>The same message can change the basket, order right away, or send this order elsewhere:</p>
+<table>
+  <thead><tr><th>Say</th><th>What happens</th></tr></thead>
+  <tbody>
+    <tr><td>“bread hata do”, “no bread”</td><td>Removes bread from the basket.</td></tr>
+    <tr><td>“make it 3 milk”, “nahi, teen doodh”</td><td>Changes the quantity.</td></tr>
+    <tr><td>“basket mein kya hai?”</td><td>Shows the basket.</td></tr>
+    <tr><td>“sab cancel karo”</td><td>Empties the basket.</td></tr>
+    <tr><td>“2 milk, bananas abhi”</td><td>Adds them and orders right away. See <a href="basket.html#order-right-away">Order right away</a>.</td></tr>
+    <tr><td>“office pe bhej do”</td><td>Sends this order to your saved “Office” address. See <a href="delivery.html">Delivery</a>.</td></tr>
+    <tr><td>“limit 2000 kar do”</td><td>Changes a setting (owner only). See <a href="settings.html">Settings</a>.</td></tr>
+  </tbody>
+</table>
+<p>The full list is in <a href="reference.html">Everything you can say</a>.</p>
+
+<h2>When Pantry doesn’t understand</h2>
+<ul>
+  <li><span class="chatline bot">I didn’t catch any items.</span> Try again, naming the items plainly.</li>
+  <li><span class="chatline bot">Couldn’t find “…” in the shop; leaving it out.</span> Zepto had nothing by that name. Try another word for it.</li>
+</ul>

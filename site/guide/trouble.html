@@ -1,0 +1,49 @@
+<p class="intro">When Pantry can’t do something, it stops, tells you why in plain words, and keeps your basket. Here is what each situation means and what to do.</p>
+
+<h2>An order wasn’t placed</h2>
+<p>Pantry found something wrong with Zepto’s bill and stopped before paying. Its message starts <span class="bot">❌ Not ordered:</span> and lists each reason. Your items stay in the basket.</p>
+<table>
+  <thead><tr><th>If the reason is about…</th><th>Do this</th></tr></thead>
+  <tbody>
+    <tr><td>Today’s limit</td><td>Wait until tomorrow, or ask the owner to raise the limit (see <a href="settings.html#daily-limit">Daily limit</a>). Then tap <b>Order now</b>.</td></tr>
+    <tr><td>Delivery to your address</td><td>Zepto isn’t delivering there right now. Try again later.</td></tr>
+    <tr><td>An item missing, a wrong quantity, or an extra item in the cart</td><td>The cart didn’t match your basket. Tap <b>Order now</b> to try again; Pantry rebuilds the cart each time.</td></tr>
+    <tr><td>None of the items can be added</td><td>They’re out of stock. Try again later, or ask for something else.</td></tr>
+  </tbody>
+</table>
+
+<h2>No ✅ after ordering</h2>
+<p>If Pantry says it couldn’t confirm an order, it asked Zepto to place it but couldn’t see it in your Zepto order history afterwards.</p>
+<div class="callout warn"><span>⚠️</span><p><b>Open the Zepto app and check your orders before asking again.</b> The order may have gone through. Pantry never retries on its own, so you won’t be charged twice unless you order again.</p></div>
+<p>The same applies if Pantry tells you an order was interrupted while being placed.</p>
+
+<h2>An item couldn’t be added</h2>
+<ul>
+  <li><b>Out of stock:</b> the item stays in the basket for next time; the rest is ordered.</li>
+  <li><b>Out of stock, with another product saved for it:</b> Pantry asks whether to add that instead. Answer to carry on.</li>
+  <li><b>Zepto allows fewer than you asked for:</b> Pantry orders what it can and notes it on the line.</li>
+  <li><b>Not found in the shop:</b> Zepto had nothing by that name. Ask again using another word for it.</li>
+</ul>
+
+<h2>Pantry didn’t understand</h2>
+<p>If it says <span class="bot">I didn't catch any items.</span>, say the items plainly: “2 milk, bread”. For a voice note, check what it heard; a quieter place helps.</p>
+
+<h2>Your order is waiting</h2>
+<ul>
+  <li><b>Below the smallest order:</b> the basket waits for more. Add items, or say “abhi” to order anyway.</li>
+  <li><b>A question is open:</b> an unusual amount or an out-of-stock swap needs your answer before Pantry can order.</li>
+  <li><b>Someone else’s order is going through:</b> yours is next.</li>
+</ul>
+
+<h2>Zepto login problems</h2>
+<p>If Pantry says the shop login has expired, or the account isn’t connected, the account’s owner sends <b>/setup</b> to connect again. Picks, basket and history are kept. Pantry checks every login each morning and tells the owner if one needs attention.</p>
+<p>If Zepto isn’t answering, wait a minute and try again.</p>
+
+<h2>After an update</h2>
+<p>Pantry is sometimes updated, which takes about a minute. It finishes any order in progress first. If your message arrived during the update, it asks you to send it again. If a waiting order’s time passed while it was offline, it asks before ordering: tap <b>Order now</b> to go ahead.</p>
+
+<h2>Invite links</h2>
+<ul>
+  <li><b>Expired or used:</b> each link works once, within {{invite_valid}}. Ask the owner for a new one.</li>
+  <li><b>You have an account of your own, alone:</b> send /leave first, then open the link. In any other case, opening a link moves you to the new account.</li>
+</ul>

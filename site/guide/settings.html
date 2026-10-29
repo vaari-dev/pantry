@@ -1,0 +1,41 @@
+<p class="intro">A few settings decide how much Pantry may spend and when it orders. Everyone can see them; only the owner can change them.</p>
+
+<h2>See your settings</h2>
+<p>Send <b>/settings</b>:</p>
+<div class="chat-demo">
+  <span class="chatline bot">Delivery: Home: 12 Park Street (/setup to change)
+Daily limit: {{daily_cap}}, ₹189 spent today (/limit 1500)
+Smallest order: {{min_order}} (/minimum 99)
+Placing orders: on (/ordering on or off)</span>
+</div>
+
+<h2>Daily limit</h2>
+<p>The most Pantry may spend in a day, across the whole family. It starts at {{daily_cap}}.</p>
+<ul>
+  <li>Change it with <b>/limit 1500</b>, or say “limit 2000 kar do”.</li>
+  <li>An order that would cross it isn’t placed; the basket waits, and Pantry tells you how much is left.</li>
+  <li>Orders Pantry couldn’t confirm count towards it too, to be safe.</li>
+</ul>
+
+<h2>Smallest order</h2>
+<p>Pantry waits until the basket reaches this amount before ordering, so you don’t pay Zepto’s fee for a small order. It starts at {{min_order}}.</p>
+<ul>
+  <li>Change it with <b>/minimum 99</b>, or say “minimum 150 kar do”.</li>
+  <li>Saying “abhi” or tapping <b>Order now</b> orders anyway. See <a href="basket.html#order-right-away">Order right away</a>.</li>
+</ul>
+
+<h2>Ordering on or off</h2>
+<p>With ordering <b>off</b>, Pantry does everything except pay: it puts your request into your Zepto cart, checks the bill, and stops. There’s no wait first.</p>
+<div class="chat-demo">
+  <span class="chatline bot">🛒 Cart ready (₹189); placing orders is off (/settings).</span>
+</div>
+<p>Then open the Zepto app and check out yourself. It’s a good way to try Pantry, or to look over an unusual order first.</p>
+<ul>
+  <li><b>/ordering off</b> and <b>/ordering on</b> switch it, as does saying “ordering band karo” or “ordering on karo”.</li>
+  <li>Each request replaces your Zepto cart with just that request, so check out in the app before sending the next.</li>
+  <li>Turning ordering back on empties Pantry’s basket, since those items went to your Zepto cart.</li>
+</ul>
+
+<h2>Address and login</h2>
+<p>The owner sends <b>/setup</b> to change the home address or reconnect Zepto. It runs the same three steps as the first time; your picks and history stay. See <a href="getting-started.html#connect-your-zepto-account">Connect your Zepto account</a>.</p>
+<p>Pantry checks every account’s Zepto login each morning and renews it before it lapses. If something’s wrong, the owner hears first: <span class="chatline bot">⚠️ Daily check of your shop account failed: …</span></p>
