@@ -177,7 +177,8 @@ class Bot:
         # Kept on disk, with Telegram's update offset, so a restart neither drops a pick nor redoes an update.
         self.saved = cfg.data_dir / "bot.json"
         saved = store.read(self.saved, {})
-        fresh = time.time() - saved.get("at", 0) < KEEP
+        self.bot_id = cfg.telegram_token.partition(":")[0]  # another bot's offset and messages mean nothing here
+        fresh = time.time() - saved.get("at", 0) < KEEP and saved.get("bot") == self.bot_id
         self.offset: int | None = saved.get("offset") if fresh else None
         self.picking: dict[str, Picking] = {}
         for pid, p in saved.get("picking", {}).items():
@@ -238,7 +239,9 @@ class Bot:
         with self.lock:  # held through the write, so an older state never lands last
             picking = {pid: p.to_json() for pid, p in self.picking.items()}
             try:
-                store.write(self.saved, {"offset": self.offset, "at": time.time(), "picking": picking})
+                store.write(
+                    self.saved, {"bot": self.bot_id, "offset": self.offset, "at": time.time(), "picking": picking}
+                )
             except OSError:
                 log.exception("bot state not saved")
 
@@ -427,7 +430,7 @@ class Bot:
             return self._now(cb, hh, arg)
         self.tg.answer(cb["id"])
         msg = cb.get("message") or {}
-        if kind == "join" and msg:
+        if kind == "join" and msg.get("chat", {}).get("id") == uid:  # in a group, only for the one it asked
             self.tg.remove_buttons(msg["chat"]["id"], msg["message_id"])
             self._join(msg["chat"]["id"], cb["from"], arg, sure=True)
         elif kind in ("allow", "remove"):
