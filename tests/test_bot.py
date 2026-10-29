@@ -1102,7 +1102,7 @@ def test_a_pick_open_at_the_28_oct_deploy_survives_it(bot, shop):
     jam = vars(Product("Jam", "1 pc", "https://shop.example/jam", "₹60"))
     old = {"chat_id": NEW, "household": hh.id, "ready": [["bread", 1]], "asks": {"0": ["jam", 1, [jam], [None]]},
            "picked": [], "started": time.time(), "when": "hold", "address": []}  # fmt: skip
-    store.write(bot.saved, {"offset": 9, "at": time.time(), "picking": {"p1": old}})
+    store.write(bot.saved, {"bot": "token", "offset": 9, "at": time.time(), "picking": {"p1": old}})
     new = restarted(bot)
     new._pick(hh, "p1:0:0")
     sent(new, "⏳ I'll order this", having="• Jam ×1")
@@ -1159,3 +1159,55 @@ def test_a_stale_tap_never_answers_a_later_item(bot, shop):
     said(bot, "Tea 1")
     bot._pick(hh, f"{pid}:1:1")  # the egg card again
     assert [name for name, *_ in bot.picking[pid].asks.values()] == ["jam", "tea"]
+
+
+@pytest.mark.parametrize("owner", [True, False])
+def test_an_invite_to_another_account_asks_before_moving_anyone(bot, shop, owner):
+    hh, _ = shop
+    (session := bot.cfg.data_dir / "other.json").write_text("{}")
+    other = bot.accounts.connect(ADMIN, "Meera", ADDRESS.id, str(ADDRESS), session)
+    bot.accounts.join(7, "Ravi", bot.accounts.invite(hh.id))
+    uid = NEW if owner else 7
+    code = bot.accounts.invite(other.id)
+    bot._on_message(message(f"/start {code}", uid=uid))
+    text = sent(bot, "This link moves you", chat=uid)
+    assert ("logs it out" in text) is owner
+    assert bot.accounts.household_of(uid).id == hh.id
+    bot._on_button(
+        {
+            "id": "q",
+            "from": {"id": uid, "first_name": "Asha"},
+            "data": f"join:{code}",
+            "message": {"chat": {"id": uid}, "message_id": 3},
+        }
+    )
+    sent(bot, "🎉 Welcome! You now order with Meera's", chat=uid)
+    assert bot.accounts.household_of(uid).id == other.id
+
+
+def test_an_invite_to_your_own_account_or_a_dead_one_needs_no_confirming(bot, shop):
+    hh, _ = shop
+    bot.accounts.join(7, "Ravi", bot.accounts.invite(hh.id))
+    bot._on_message(message(f"/start {bot.accounts.invite(hh.id)}", uid=7))
+    sent(bot, "🎉 Welcome!", chat=7)
+    bot._on_message(message("/start NOSUCH", uid=7))
+    sent(bot, "That invite link has expired", chat=7)
+
+
+def test_another_bots_offset_and_picks_are_not_used(bot):
+    bot.offset = 5
+    bot._save()
+    assert restarted(bot).offset == 5
+    store.write(bot.saved, store.read(bot.saved, {}) | {"offset": 9, "bot": "123"})
+    assert (restarted(bot).offset, restarted(bot).picking) == (None, {})
+
+
+def test_a_switch_button_in_a_group_moves_nobody(bot, shop):
+    hh, _ = shop
+    (session := bot.cfg.data_dir / "other.json").write_text("{}")
+    other = bot.accounts.connect(ADMIN, "Meera", ADDRESS.id, str(ADDRESS), session)
+    code = bot.accounts.invite(other.id)
+    bot.accounts.join(7, "Ravi", bot.accounts.invite(hh.id))
+    group = {"chat": {"id": -5}, "message_id": 3}
+    bot._on_button({"id": "q", "from": {"id": 7, "first_name": "Ravi"}, "data": f"join:{code}", "message": group})
+    assert bot.accounts.household_of(7).id == hh.id

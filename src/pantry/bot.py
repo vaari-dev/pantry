@@ -177,7 +177,8 @@ class Bot:
         # Kept on disk, with Telegram's update offset, so a restart neither drops a pick nor redoes an update.
         self.saved = cfg.data_dir / "bot.json"
         saved = store.read(self.saved, {})
-        fresh = time.time() - saved.get("at", 0) < KEEP
+        self.bot_id = cfg.telegram_token.partition(":")[0]  # another bot's offset and messages mean nothing here
+        fresh = time.time() - saved.get("at", 0) < KEEP and saved.get("bot") == self.bot_id
         self.offset: int | None = saved.get("offset") if fresh else None
         self.picking: dict[str, Picking] = {}
         for pid, p in saved.get("picking", {}).items():
@@ -238,7 +239,9 @@ class Bot:
         with self.lock:  # held through the write, so an older state never lands last
             picking = {pid: p.to_json() for pid, p in self.picking.items()}
             try:
-                store.write(self.saved, {"offset": self.offset, "at": time.time(), "picking": picking})
+                store.write(
+                    self.saved, {"bot": self.bot_id, "offset": self.offset, "at": time.time(), "picking": picking}
+                )
             except OSError:
                 log.exception("bot state not saved")
 
@@ -422,12 +425,15 @@ class Bot:
         bind_contextvars(user_id=uid, chat_id=(cb.get("message") or {}).get("chat", {}).get("id"))
         if hh := self.accounts.household_of(uid):
             bind_contextvars(household_id=hh.id)
-        log.info("button pressed", kind=kind if kind in ("allow", "remove", "now", "more") else "pick")
+        log.info("button pressed", kind=kind if kind in ("allow", "remove", "now", "more", "join") else "pick")
         if kind == "now":
             return self._now(cb, hh, arg)
         self.tg.answer(cb["id"])
         msg = cb.get("message") or {}
-        if kind in ("allow", "remove"):
+        if kind == "join" and msg.get("chat", {}).get("id") == uid:  # in a group, only for the one it asked
+            self.tg.remove_buttons(msg["chat"]["id"], msg["message_id"])
+            self._join(msg["chat"]["id"], cb["from"], arg, sure=True)
+        elif kind in ("allow", "remove"):
             done = self._allow(uid, int(arg)) if kind == "allow" else self._remove(uid, int(arg))
             if done and msg:
                 self.tg.remove_buttons(msg["chat"]["id"], msg["message_id"])
@@ -848,12 +854,24 @@ class Bot:
         # Group chats have negative ids; a reply keyboard there would pop up for everyone.
         self._say(chat_id, prefix + NOT_SET_UP, markup=CONNECT_BUTTON if chat_id > 0 else None)
 
-    def _join(self, chat_id: int, user: dict, code: str) -> None:
+    def _join(self, chat_id: int, user: dict, code: str, sure: bool = False) -> None:
         uid, name = user.get("id"), user.get("first_name", "")
         mine = self.accounts.household_of(uid)
         if mine and mine.owner == uid and len(mine.members) == 1:
             log.info("invite rejected", reason="owns an account")
             return self._say(chat_id, "You have your own shop account here. /leave it first, then open the link.")
+        other = self.accounts.get(self.accounts.invited(code) or "")
+        if not sure and mine and other and other.id != mine.id:
+            log.info("invite needs confirming")
+            current = "your own" if mine.owner == uid else f"{self.accounts.name(mine.owner)}'s"
+            theirs = f"{self.accounts.name(other.owner)}'s"
+            text = f"This link moves you from {current} shop account to {theirs}."
+            if mine.owner == uid:
+                text += (
+                    "\n\nYou connected the account you're in, so switching logs it out of the shop: "
+                    "the others can't order until one of them sends /setup."
+                )
+            return self._say(chat_id, text, [(f"Switch to {theirs}", f"join:{code}")])
         if not (hh := self.accounts.join(uid, name, code)):
             log.info("invite rejected", reason="expired or used")
             return self._say(chat_id, "That invite link has expired or was used. Ask for a new one.")

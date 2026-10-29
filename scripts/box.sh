@@ -48,6 +48,18 @@ back_to_old() {
   return 1
 }
 
+# A new bot token: before the running bot stops, it tells everyone where the new one is.
+# Fails, keeping the running bot, if the new token doesn't work.
+moving() {
+  local id old new
+  id=$(compose ps -q pantry)
+  [ -n "$id" ] || return 0
+  old=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$id" | sed -n 's/^TELEGRAM_BOT_TOKEN=//p')
+  new=$(sed -n 's/^TELEGRAM_BOT_TOKEN=//p' .env)
+  [ -n "$old" ] && [ "$old" != "$new" ] || return 0
+  OLD_TELEGRAM_BOT_TOKEN=$old compose run --rm --no-deps -e OLD_TELEGRAM_BOT_TOKEN pantry python -m pantry moved
+}
+
 old_gone() {
   [ -n "$(old)" ] || return 0
   # shellcheck disable=SC2046
@@ -63,6 +75,7 @@ case "${1:?command}" in
     echo "APP_IMAGE=$APP_IMAGE" > .image  # so later commands (and reboots) use the same image
     compose pull -q
     from_old
+    moving
     compose up -d --remove-orphans  # the old bot finishes its jobs first: stop_grace_period
     wait_healthy || { [ -z "$(old)" ] || back_to_old; exit 1; }
     old_gone
