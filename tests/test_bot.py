@@ -657,12 +657,18 @@ def test_the_shops_limit_per_order_is_ordered_and_told(bot, shop):
     assert placed(hh) == [[["bread", 3], ["milk", 1]]]
 
 
-def test_with_ordering_off_every_message_fills_the_shop_cart(bot, shop):
+def test_with_ordering_off_nothing_is_ordered_until_order_now(bot, shop):
     hh, fake = shop
     bot.accounts.update(hh.id, place_orders=False)
+    reads(bot, add=[("bread", 2)])
     bot._on_message(message("2 bread"))
-    said(bot, "🛒 Cart ready (₹120)")
-    assert fake.opened == 1
+    assert said(bot, "🧺 Your basket") == botmod._order_now(hh)
+    sent(bot, "🧺 Your basket", having="Ordering is off")
+    idle(bot)
+    assert (fake.opened, bot.holds, placed(hh)) == (0, {}, [])
+    tap(bot, hh)
+    said(bot, "✅ Ordered")
+    assert placed(hh) == [[["bread", 2]]]
 
 
 def test_one_accounts_failed_check_does_not_skip_the_others(bot, shop, monkeypatch):
@@ -773,13 +779,15 @@ def test_the_address_goes_when_the_basket_empties(bot, shop):
     assert hh.ledger().address() is None
 
 
-def test_with_ordering_off_the_address_is_for_that_cart_only(bot, shop):
-    hh, _ = shop
+def test_with_ordering_off_the_address_waits_with_the_basket(bot, shop):
+    hh, fake = shop
     bot.accounts.update(hh.id, place_orders=False)
     reads(bot, add=[("bread", 2)], address="work")
     bot._on_message(message("2 bread to work"))
-    said(bot, "🛒 Cart ready")
-    assert hh.ledger().address() is None
+    sent(bot, "🧺 Your basket", having="Delivering to Work")
+    tap(bot, hh)
+    said(bot, "✅ Ordered to Work")
+    assert fake.placed_to == ["addr-work"]
 
 
 def test_an_address_goes_if_none_of_its_items_were_added(bot, shop):
@@ -863,7 +871,7 @@ def test_chatter_in_a_group_gets_no_reply(bot, shop):
 def test_settings_apply_to_the_rest_of_the_message(bot, shop):
     reads(bot, settings=[("ordering", "off")], add=[("bread", 2)])
     bot._on_message(message("ordering off, 2 bread"))
-    said(bot, "🛒 Cart ready (₹120)")
+    sent(bot, "🧺 Your basket", having="Ordering is off")
 
 
 AMUL = [
@@ -986,7 +994,7 @@ def test_a_new_item_or_a_change_far_over_one_pack_is_asked(bot, shop):
     assert hh.ledger().basket() == [("bread", 30)]
 
 
-def test_with_ordering_off_an_answer_still_fills_the_cart(bot, shop):
+def test_with_ordering_off_an_answer_still_orders(bot, shop):
     hh, fake = shop
     bot.accounts.update(hh.id, place_orders=False)
     hh.catalog().learn("cow milk", one(DAIRY))
@@ -995,8 +1003,10 @@ def test_with_ordering_off_an_answer_still_fills_the_cart(bot, shop):
     fake.limits = {AMUL[1].label(): 1}
     reads(bot, add=[("cow milk", "2 l")])
     bot._on_message(message("2 litre cow milk"))
+    said(bot, "🧺 Your basket")
+    tap(bot, hh)
     press(bot, "❓ Amul Cow Milk has only 1 l today.", "Yes")
-    said(bot, "🛒 Cart ready")
+    said(bot, "✅ Ordered")
     assert {p.variant: n for p, n in fake.cart.items()} == {AMUL[1].variant: 1, DAIRY.variant: 1}
     assert hh.ledger().basket() == [] and hh.ledger().others() == {}
 
@@ -1057,26 +1067,6 @@ def test_a_newer_list_joins_the_open_one_and_keeps_its_address(bot, shop):
     said(bot, "✅ Ordered to Work")
     assert fake.orders == 1 and fake.placed_to == ["addr-work"]
     assert hh.ledger().address() is None and placed(hh) == [[["bread", 1], ["jam", 1], ["cow milk", "1 l"]]]
-
-
-def test_an_unanswered_cart_only_question_is_dropped_when_ordering_goes_on(bot, shop):
-    hh, fake = shop
-    bot.accounts.update(hh.id, place_orders=False)
-    hh.catalog().learn("cow milk", one(DAIRY))
-    hh.catalog().learn("cow milk", Choice("Amul Cow Milk", [AMUL[1]]))
-    fake.search = lambda query, limit=4: []
-    fake.limits = {AMUL[1].label(): 1}
-    reads(bot, add=[("cow milk", "2 l")])
-    bot._on_message(message("2 litre cow milk"))
-    said(bot, "❓ Amul Cow Milk has only 1 l today.")
-    reads(bot, add=[("bread", 2)])
-    bot._on_message(message("2 bread"))
-    said(bot, "Adding bread ×2")
-    assert hh.ledger().basket() == [("cow milk", "2 l"), ("bread", 2)]  # still asking
-    bot._on_message(message("/ordering on", uid=NEW))
-    said(bot, "Delivery:")
-    idle(bot)
-    assert hh.ledger().basket() == []
 
 
 def test_a_far_over_change_with_now_waits_for_the_answer(bot, shop):
@@ -1211,3 +1201,14 @@ def test_a_switch_button_in_a_group_moves_nobody(bot, shop):
     group = {"chat": {"id": -5}, "message_id": 3}
     bot._on_button({"id": "q", "from": {"id": 7, "first_name": "Ravi"}, "data": f"join:{code}", "message": group})
     assert bot.accounts.household_of(7).id == hh.id
+
+
+def test_ordering_turned_off_during_a_wait_asks_instead_of_ordering(bot, shop, monkeypatch):
+    monkeypatch.setattr(botmod, "HOLD", 0.2)
+    hh, fake = shop
+    reads(bot, add=[("bread", 2)])
+    bot._on_message(message("2 bread"))
+    said(bot, "⏳ I'll order this")
+    bot.accounts.update(hh.id, place_orders=False)
+    sent(bot, "🧺 Your basket", having="Ordering is off")
+    assert (fake.opened, placed(hh)) == (0, [])

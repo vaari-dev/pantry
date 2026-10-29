@@ -37,7 +37,7 @@ Empty said, value 0 and unit "" when no size or weight is said.
 - address: the words naming where to deliver this order, copied exactly ("office", "mummy's \
 place"); empty when not said.
 - settings: limit (rupees a day the bot may spend), minimum (the smallest order, in rupees) or \
-ordering (on or off: whether the bot places orders or only fills the cart). said: the words \
+ordering (on or off: whether the bot orders on its own or waits for Order now). said: the words \
 that asked for it, copied exactly. value: the number they said, in digits, or on/off.
 
 Anything else (chat, questions, a message not meant for the bot) leaves every field empty. \

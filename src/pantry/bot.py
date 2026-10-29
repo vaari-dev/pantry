@@ -797,7 +797,6 @@ class Bot:
         missing = (f"Couldn't add {k} ({why}); it stays in the /basket" for k, why in out.unavailable.items())
         details = "\n".join([*out.lines, *missing])
         total = f"₹{out.total:g}" if out.total is not None else ""
-        how = ", cash on delivery" if out.cod else ""
         problems = "".join(f"\n- {p}" for p in out.problems)
         if out.placed:
             where = f" to {to[1]}" if to else ""
@@ -812,8 +811,8 @@ class Bot:
             text = f"⏳ I'll order this in {HOLD // 60} minutes; send more to add, or tap Order now.\n\n{_basket(hh)}"
             self._offer_now(chat_id, hh, f"{text}\n{details}".strip())
             return self._hold(chat_id, hh, HOLD)
-        elif not out.problems:
-            text = f"🛒 Cart ready ({total}{how}); placing orders is off (/settings)."
+        elif out.asking_first:
+            return self._offer_now(chat_id, hh, f"{_basket(hh)}\n\nOrdering is off: tap Order now to order this.")
         else:
             text = f"❌ Not ordered:{problems}"
             if hh.ledger().basket():
@@ -932,7 +931,7 @@ class Bot:
             f"Delivery: {hh.address} (/setup to change)\n"
             f"Daily limit: ₹{hh.daily_cap:g}, ₹{hh.ledger().spent_today():g} spent today (/limit 1500)\n"
             f"Smallest order: ₹{hh.min_order:g} (/minimum 99)\n"
-            f"Placing orders: {'on' if hh.place_orders else 'off, cart only'} (/ordering on or off)",
+            f"Placing orders: {'on' if hh.place_orders else 'off, I ask first'} (/ordering on or off)",
         )
 
     def _change(self, chat_id: int, hh: Household, command: str, arg: str) -> None:
@@ -943,13 +942,8 @@ class Bot:
             log.info("setting rejected", setting=key)
             return self._say(chat_id, f"For example: {command} {example}")
         self.accounts.update(hh.id, **{key: value})
-        if key == "place_orders" and value and not hh.place_orders:  # what cart-only use left isn't ordered
-            self._queue(self._drop_basket, chat_id, hh)
         log.info("setting changed", setting=key)
         self._settings(chat_id, self.accounts.get(hh.id))
-
-    def _drop_basket(self, _chat_id: int, hh: Household) -> None:
-        hh.ledger().set_basket([])
 
     def _ask(self, uid: int, question: str, wait: int = ANSWER_WAIT, markup=None, secret=False) -> str:
         """Their next message; secret ones (phone number, OTP) are deleted from the chat."""
@@ -1006,7 +1000,11 @@ class Bot:
                 address = self._choose_address(uid, z)
             hh = self.accounts.connect(uid, name, address.id, str(address), session)
             log.info("household connected", household_id=hh.id)
-            paid = "paid from your wallet or on delivery" if hh.place_orders else "carts filled for you (/ordering on)"
+            paid = (
+                "paid from your wallet or on delivery"
+                if hh.place_orders
+                else "each one once you tap Order now (/ordering on)"
+            )
             self._say(
                 uid,
                 f"🎉 You're all set{', ' + name if name else ''}!\n\n{TRY}\n\n"
