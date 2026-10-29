@@ -942,6 +942,8 @@ class Bot:
             log.info("setting rejected", setting=key)
             return self._say(chat_id, f"For example: {command} {example}")
         self.accounts.update(hh.id, **{key: value})
+        if key == "place_orders" and not value and self._unhold(hh):  # the countdown's message would mislead
+            self._queue(self._order, chat_id, hh, [], "due")
         log.info("setting changed", setting=key)
         self._settings(chat_id, self.accounts.get(hh.id))
 

@@ -31,7 +31,7 @@ SCOPES = (
 )
 TIMEOUT = 60
 RENEW = 3 * 86400  # tokens last 7 days; the daily health check renews them well before
-DEVICE = "pantry"  # update_cart wants one; the cart is the account's either way
+DEVICE = "pantry"  # update_cart keys its cart by it: not the Zepto app's cart (checked live, 29 Oct)
 NOT_CONNECTED = "this account is not connected to the shop; its owner can /setup again"
 LOGIN_EXPIRED = "the shop login has expired; the account's owner can /setup again"
 NOT_ANSWERING = "the shop is not answering; try again in a minute"

@@ -1212,3 +1212,13 @@ def test_ordering_turned_off_during_a_wait_asks_instead_of_ordering(bot, shop, m
     bot.accounts.update(hh.id, place_orders=False)
     sent(bot, "🧺 Your basket", having="Ordering is off")
     assert (fake.opened, placed(hh)) == (0, [])
+
+
+def test_turning_ordering_off_stops_the_countdown_at_once(bot, shop):
+    hh, fake = shop
+    reads(bot, add=[("bread", 2)])
+    bot._on_message(message("2 bread"))
+    said(bot, "⏳ I'll order this")
+    bot._on_message(message("/ordering off"))
+    sent(bot, "🧺 Your basket", having="Ordering is off")
+    assert (bot.holds, hh.ledger().hold(), fake.opened) == ({}, None, 0)
