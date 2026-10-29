@@ -1,10 +1,11 @@
 name: Pages
 
-# Publishes site/ as it is: no build step. Needs Settings → Pages → Source: GitHub Actions.
+# Builds site/ (numbers, commands and quotes come from the bot's code) and publishes it, also when the
+# code changes. Needs Settings → Pages → Source: GitHub Actions.
 on:
   push:
     branches: [main]
-    paths: ['site/**', .github/workflows/pages.yml]
+    paths: ['site/**', 'src/pantry/**', .github/workflows/pages.yml]
   workflow_dispatch:
 
 permissions:
@@ -27,8 +28,9 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
+      - run: python3 site/build.py
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: site
+          path: site/_site
       - id: deploy
         uses: actions/deploy-pages@v5

@@ -1,0 +1,43 @@
+<p class="intro">One Zepto account, one basket, the whole family. Each person orders from their own Telegram; the person who connected Zepto stays in charge.</p>
+
+<h2>Owner and members</h2>
+<table>
+  <thead><tr><th></th><th>Owner</th><th>Member</th></tr></thead>
+  <tbody>
+    <tr><td>Order, change and empty the basket</td><td>✓</td><td>✓</td></tr>
+    <tr><td>Send one order to another saved address</td><td>✓</td><td>✓</td></tr>
+    <tr><td>See settings, members and /usual</td><td>✓</td><td>✓</td></tr>
+    <tr><td>Invite someone</td><td>✓</td><td></td></tr>
+    <tr><td>Remove a member</td><td>✓</td><td></td></tr>
+    <tr><td>Change the limit, smallest order or ordering on/off</td><td>✓</td><td></td></tr>
+    <tr><td>Change the home address or Zepto login (/setup)</td><td>✓</td><td></td></tr>
+  </tbody>
+</table>
+<p>The owner is whoever connected the Zepto account. Everyone orders from that account and its wallet.</p>
+
+<h2>Invite someone</h2>
+<ol class="steps-list">
+  <li>The owner sends <b>/invite</b>.</li>
+  <li>Pantry sends a link. Forward it to <b>one</b> person.</li>
+  <li>They open it and can order straight away. You’re told when they join.</li>
+</ol>
+<p>Each link works once, within {{invite_valid}}, for whoever opens it first, with no further approval. Send it only to the person you mean. Need another? Send /invite again.</p>
+<div class="callout warn"><span>⚠️</span><p>Opening an invite link moves you out of any account you’re in. If you own an account with others in it, it passes to one of them and your Zepto login is removed from it. If you own one alone, Pantry asks you to send <b>/leave</b> first. And a member who sends <b>/setup</b> starts an account of their own, leaving yours.</p></div>
+
+<h2>See and remove members</h2>
+<p><b>/members</b> lists everyone ordering with the account. The owner also sees a <b>Remove</b> button for each person.</p>
+
+<h2>Leaving</h2>
+<ul>
+  <li><b>A member</b> sends /leave and stops ordering with the account.</li>
+  <li><b>The owner</b> leaving hands the account to another member. Their Zepto login leaves with them, so nobody can order until the new owner sends /setup to connect their own.</li>
+  <li><b>The last person</b> to leave deletes the account: its Zepto login, saved picks and order history. Pantry asks you to confirm with <b>/leave yes</b>.</li>
+</ul>
+
+<h2>In a family group</h2>
+<p>You can add Pantry to a Telegram group. Each person’s messages go to their own Pantry account, so a family group works like everyone’s private chats in one place.</p>
+<ul>
+  <li>Depending on how Pantry is set up on Telegram, it may read every text message in the group. It stays quiet when there’s nothing to order.</li>
+  <li>Someone in the group who isn’t in Pantry yet sends the admin a request to join when they write.</li>
+  <li>/setup works only in a private chat, since it asks for your number and code.</li>
+</ul>

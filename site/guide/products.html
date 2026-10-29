@@ -1,0 +1,30 @@
+<p class="intro">The first time you ask for something, you choose the exact product. Pantry remembers, so “milk” always means your milk.</p>
+
+<h2>Picking a product</h2>
+<p>For anything new, Pantry shows up to {{cards}} options from Zepto, each with a photo, its sizes and prices (with the price before discount struck through):</p>
+<div class="chat-demo">
+  <span class="chatline bot">Which “milk” (×1)?<span class="kb">Skip this item</span></span>
+  <span class="chatline card">Toned Milk
+500 ml ₹27 · 1 l ₹54<span class="kb">✅ 500 ml</span><span class="kb">✅ 1 l</span></span>
+</div>
+<ul>
+  <li>When a product comes in several sizes, each size is its own button. The one you tap becomes your usual pack.</li>
+  <li>When you asked for an amount, there’s one <b>✅ Pick</b> button: Pantry chooses the sizes for the amount each time.</li>
+  <li><b>Skip this item</b> leaves it out of this order.</li>
+</ul>
+<p>Once every new item is picked or skipped, the order carries on. If a basket is waiting to be ordered, it waits for your picks too, for up to {{pick_wait}}.</p>
+
+<h2>Remembered for next time</h2>
+<p>Your pick is saved for your whole family: the next time anyone says “milk”, it goes straight into the basket at your usual pack. And it understands that “doodh” and “milk” are the same thing.</p>
+<p>Saved picks are what Pantry uses to recognise your items and to estimate the basket total before an order.</p>
+<div class="callout warn"><span>✋</span><p>A pick can’t be changed from the chat yet. To get a different product, ask for it by a more specific name (“brown bread”), which counts as a new item.</p></div>
+
+<h2>When something is out of stock</h2>
+<p>If your usual product is sold out, the item usually stays in your basket for next time, with the reason, and the rest is ordered. If another product is saved for the same item, Pantry asks before swapping:</p>
+<div class="chat-demo">
+  <span class="chatline bot">❓ Toned Milk is out of stock today. Add Full Cream Milk 500 ml ×1?<span class="kb">Yes</span><span class="kb">No</span></span>
+</div>
+<p>Nothing is ordered until you answer.</p>
+
+<h2>Prices</h2>
+<p>Prices shown in the basket are the ones Zepto last showed. The order itself is checked against Zepto’s live bill. See <a href="safety.html">How your money stays safe</a>.</p>

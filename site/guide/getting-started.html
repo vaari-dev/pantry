@@ -1,0 +1,38 @@
+<p class="intro">Three things to do once: get in, connect your Zepto account, and say your first order. It takes about a minute.</p>
+
+<h2>What you need</h2>
+<ul>
+  <li><b>Telegram</b> on your phone.</li>
+  <li><b>A Zepto account</b> on an Indian (+91) mobile number.</li>
+  <li><b>Your delivery address saved in the Zepto app.</b> Pantry delivers only to addresses you’ve saved there.</li>
+</ul>
+
+<h2>Get in</h2>
+<p>Pantry is invite-only for now. There are two ways in.</p>
+<h3>With an invite link from family</h3>
+<p>Open the link. You join their account straight away and can order at once, from their Zepto account and within their limits. There’s nothing to connect: skip to <a href="#say-your-first-order">your first order</a>.</p>
+<h3>On your own</h3>
+<ol class="steps-list">
+  <li>Open <a href="{{BOT}}">{{HANDLE}}</a> on Telegram and send any message.</li>
+  <li>Pantry tells you it has asked to let you in. You don’t need to do anything else.</li>
+  <li>When you’re approved, Pantry messages you: <span class="chatline bot">🎉 You’re in!</span></li>
+</ol>
+
+<h2>Connect your Zepto account</h2>
+<p>Send <b>/setup</b>, or tap <b>🛒 Connect my shop account</b>, in your private chat with Pantry. It asks three things:</p>
+<ol class="steps-list">
+  <li><b>Your phone number.</b> Tap <b>📱 Share my phone number</b>, or type the 10 digits you use for Zepto.</li>
+  <li><b>The login code Zepto texts you.</b> Send it within {{code_wait}}.</li>
+  <li><b>Where orders should go.</b> Pantry lists the addresses saved in your Zepto app; tap one.</li>
+</ol>
+<div class="callout"><span>🔒</span><p>Pantry deletes your number and the code from the chat as soon as it has read them, and shows back only the end of your number. Zepto’s sign-in uses no password, so there’s none to share.</p></div>
+<p>When it’s done, Pantry tells you where orders will go, how they’re paid and your daily limit. Send <b>/cancel</b> at any point to stop; nothing changes.</p>
+
+<h2>Say your first order</h2>
+<p>Send a voice note or type what you need:</p>
+<div class="chat-demo">
+  <span class="chatline me">bread aur do anda</span>
+</div>
+<p>The first time you ask for something, Pantry shows options from Zepto with photos, sizes and prices. Tap the one you want; next time, it goes straight in. See <a href="products.html">Choose your products</a>.</p>
+<p>Your items wait in the <a href="basket.html">basket</a> until they reach the smallest order ({{min_order}} to start). Then Pantry waits {{hold}} for anything else, and orders.</p>
+<div class="callout"><span>🧪</span><p>Want to see it work before it spends anything? Send <b>/ordering off</b>. Pantry then puts each request into your Zepto cart instead of ordering, and you check out in the Zepto app. More in <a href="settings.html">Settings and limits</a>.</p></div>
