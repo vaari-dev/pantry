@@ -120,12 +120,8 @@ class Ledger:
         return any(o["status"] == "placing" for o in self._orders())
 
     def interrupted(self) -> list[dict]:
-        """Attempts still 'placing' (the bot stopped mid-order). Marks them 'unknown'."""
-        with self._edit() as data:
-            stuck = [o for o in data["orders"] if o["status"] == "placing"]
-            for o in stuck:
-                o["status"] = "unknown"
-        return stuck
+        """Attempts the bot stopped in the middle of; they stay 'placing' until finished as 'unknown'."""
+        return [o for o in self._orders() if o["status"] == "placing"]
 
     def due(self, today: date | None = None) -> list[tuple[str, Qty]]:
         """Items bought 3+ times whose usual gap has passed (but not lapsed: > 3 gaps)."""

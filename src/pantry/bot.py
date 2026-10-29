@@ -177,7 +177,7 @@ class Bot:
         fresh = time.time() - saved.get("at", 0) < KEEP and saved.get("bot") == self.bot_id
         self.offset: int | None = saved.get("offset") if fresh else None
         self.picking: dict[str, Picking] = {}
-        for pid, p in saved.get("picking", {}).items():
+        for pid, p in saved.get("picking", {}).items() if fresh else ():
             try:
                 if time.time() - p["started"] < KEEP:
                     self.picking[pid] = Picking.from_json(p)
@@ -191,12 +191,12 @@ class Bot:
         self.username = ""
 
     def run(self) -> None:
+        signal.signal(signal.SIGTERM, lambda *_: self.stopping.set())
         self.username = self.tg.setup(NAME, COMMANDS, DESCRIPTION, SHORT)
         log.info("bot started", bot_username=self.username, households=len(self.accounts.all()))
         self._resume()
         threading.Thread(target=self._worker, daemon=True).start()
         threading.Thread(target=self._daily, daemon=True).start()
-        signal.signal(signal.SIGTERM, lambda *_: self.stopping.set())
         while not self.stopping.is_set():
             HEARTBEAT.touch()
             try:
@@ -248,11 +248,9 @@ class Bot:
                 self.alert(hh.owner, RECONNECT)
             for o in hh.ledger().interrupted():
                 log.warning("interrupted order found", household_id=hh.id, total=o["total"], at=o["at"])
-                self.alert(
-                    hh.owner,
-                    f"⚠️ An order (₹{o['total']:g}, {o['at']}) was interrupted while being placed. "
-                    "Check the shop's app; it was NOT retried.",
-                )
+                text = f"⚠️ An order (₹{o['total']:g}, {o['at']}) was interrupted while being placed. "
+                if self._say(hh.owner, text + "Check the shop's app; it was NOT retried."):
+                    hh.ledger().finish(o["id"], "unknown")
             if not (held := hh.ledger().hold()):
                 continue
             chat_id, until = held
@@ -281,7 +279,7 @@ class Bot:
                 if None in args:
                     log.info("job dropped", reason="household gone")
                     continue
-                if self.stopping.is_set():
+                if self.stopping.is_set() and job != self._settled:  # what was picked must not be lost
                     log.info("job dropped", reason="restarting")
                     if job != self._release:  # a hold stays in the ledger and resumes itself
                         self._say(args[0], NOT_REACHED)

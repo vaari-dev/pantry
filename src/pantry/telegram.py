@@ -70,7 +70,8 @@ class Telegram:
             )
 
     def answer(self, callback_id: str, text: str | None = None) -> None:
-        self.call("answerCallbackQuery", callback_query_id=callback_id, text=text)
+        with contextlib.suppress(TelegramError):  # too old after a restart; the tap still counts
+            self.call("answerCallbackQuery", callback_query_id=callback_id, text=text)
 
     def updates(self, offset: int | None) -> list[dict]:
         return self.call(

@@ -52,7 +52,7 @@ jobs:
 
   deploy:
     needs: [checks, image]
-    timeout-minutes: 20
+    timeout-minutes: 30  # pull, a 10 minute stop, 6 minutes of health checks
     runs-on: ubuntu-24.04-arm
     environment: oracle-cloud
     permissions:

@@ -26,3 +26,7 @@ def test_a_refused_rename_does_not_stop_the_bot():
     tg = Recording("Joey Butler", refuse="setMyName")
     assert tg.setup("Pantry", {"help": "How to order"}, "description", "short") == "pantry_bot"
     assert "setMyCommands" in tg.calls
+
+
+def test_a_tap_too_old_to_answer_is_still_handled():
+    Recording("Pantry", refuse="answerCallbackQuery").answer("q")

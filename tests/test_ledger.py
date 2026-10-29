@@ -12,10 +12,12 @@ def test_spend_counts_placed_and_unconfirmed(tmp_path):
     assert ledger.spent_today() == 147
 
 
-def test_interrupted_attempts_are_reported_once(tmp_path):
+def test_interrupted_attempts_are_reported_until_finished(tmp_path):
     ledger = Ledger(tmp_path / "ledger.json")
-    ledger.begin([("egg", 1)], 87)  # crash before finish()
+    attempt = ledger.begin([("egg", 1)], 87)  # crash before finish()
     assert [o["total"] for o in ledger.interrupted()] == [87]
+    assert [o["id"] for o in ledger.interrupted()] == [attempt]
+    ledger.finish(attempt, "unknown")
     assert ledger.interrupted() == []
     assert ledger.spent_today() == 87  # still counted against the cap
 
