@@ -8,7 +8,6 @@ import math
 import queue
 import re
 import secrets
-import shutil
 import signal
 import threading
 import time
@@ -29,7 +28,7 @@ from .shop import Address, Login, ShopError, Zepto
 from .speech import Transcriber
 from .telegram import Telegram, TelegramError, strikethrough
 
-log = structlog.get_logger(__name__)  # user_id, chat_id, household_id and job ride along as contextvars
+log = structlog.get_logger(__name__)
 
 COMMANDS = {
     "basket": "What is waiting to be ordered",
@@ -67,7 +66,7 @@ ALERT_REPEAT = timedelta(hours=6)
 ANSWER_WAIT = 600
 OTP_WAIT = 300
 HOLD = 180
-CARDS = 4  # products shown to pick from
+CARDS = 4
 PICK_HOLD, PICK_WAIT = 60, 600  # an open pick delays a held order in PICK_HOLD steps, for up to PICK_WAIT
 STALE = timedelta(minutes=5)  # a restart this late past a hold asks before ordering
 KEPT = "Still in the /basket: tap Order now to try again, or /clear to empty it."
@@ -90,7 +89,7 @@ def _rupees(text: str) -> float:
     return value
 
 
-SETTINGS = {  # command: (setting, parse, example)
+SETTINGS = {
     "/limit": ("daily_cap", _rupees, "1500"),
     "/minimum": ("min_order", _rupees, "99"),
     "/ordering": ("place_orders", {"on": True, "off": False}.__getitem__, "on"),
@@ -102,7 +101,6 @@ def _items(items: list[tuple[str, Qty]]) -> str:
 
 
 def _basket(hh: Household) -> str:
-    """'' when empty."""
     rows, total, unpriced = orders.priced(hh)
     if not rows:
         return ""
@@ -158,10 +156,8 @@ class Picking:
         asks = {
             int(n): (name, qty, [Choice.from_json(c) for c in cs], ids) for n, (name, qty, cs, ids) in d["asks"].items()
         }
-        checks = {int(n): Check(*c) for n, c in d.get("checks", {}).items()}
-        picked = [tuple(i) for i in d.get("ready", []) + d["picked"]]  # "ready": saved before 28 Oct
-        changed = [tuple(i) for i in d.get("changed", [])]
-        d = {"numbered": max([*asks, *checks], default=-1) + 1} | {k: v for k, v in d.items() if k != "ready"}
+        checks = {int(n): Check(*c) for n, c in d["checks"].items()}
+        picked, changed = [tuple(i) for i in d["picked"]], [tuple(i) for i in d["changed"]]
         return cls(**{**d, "asks": asks, "checks": checks, "picked": picked, "changed": changed})
 
 
@@ -174,7 +170,7 @@ class Bot:
         self.read = Reader(cfg.anthropic_api_key)
         self.jobs: queue.Queue = queue.Queue()
         self.stopping = threading.Event()
-        # Kept on disk, with Telegram's update offset, so a restart neither drops a pick nor redoes an update.
+        # With the update offset on disk, a restart neither drops a pick nor redoes an update.
         self.saved = cfg.data_dir / "bot.json"
         saved = store.read(self.saved, {})
         self.bot_id = cfg.telegram_token.partition(":")[0]  # another bot's offset and messages mean nothing here
@@ -187,7 +183,7 @@ class Bot:
                     self.picking[pid] = Picking.from_json(p)
             except (KeyError, TypeError, ValueError):
                 log.warning("saved pick dropped", exc_info=True)
-        self.holds: dict[str, threading.Timer] = {}  # household id -> the timer that places its basket
+        self.holds: dict[str, threading.Timer] = {}
         self.replies: dict[int, queue.Queue] = {}
         self.wants_setup: dict[int, str] = {}  # uid -> first name: asked for /setup before being let in
         self.lock = threading.Lock()
@@ -217,6 +213,7 @@ class Bot:
                     except Exception:
                         log.exception("update failed")
             except TelegramError as e:
+                clear_contextvars()
                 log.warning("telegram polling failed", error=str(e))
                 time.sleep(5)
         self._drain()
@@ -224,7 +221,7 @@ class Bot:
     def _drain(self) -> None:
         """On SIGTERM: Telegram keeps new updates for the next start; the running job finishes, the
         worker hands back the queued ones, then the bot exits."""
-        clear_contextvars()  # not the last update's
+        clear_contextvars()
         log.info("stopping", jobs=self.jobs.unfinished_tasks)
         with self.lock:
             for timer in self.holds.values():  # the ledger keeps holds; _resume restarts them
@@ -246,10 +243,6 @@ class Bot:
                 log.exception("bot state not saved")
 
     def _resume(self) -> None:
-        """What a restart left behind: orders cut off mid-placing, held baskets, logins to redo."""
-        for left in [*self.cfg.data_dir.glob("**/debug"), self.cfg.data_dir / "tailscale"]:  # from the Chrome bot
-            shutil.rmtree(left, ignore_errors=True)
-        (self.cfg.data_dir / "apimap.json").unlink(missing_ok=True)
         for hh in self.accounts.all():
             if not hh.address_id:
                 self.alert(hh.owner, RECONNECT)
@@ -271,17 +264,15 @@ class Bot:
                 self._offer_now(self._chat_for(hh, chat_id), hh, text)
 
     def _queue(self, job, *args) -> None:
-        """job(chat_id, ...) on the worker, logging with the context of whoever asked for it."""
         self.jobs.put((job, args, get_contextvars()))
 
     def _worker(self) -> None:
-        """Runs jobs (function, (chat_id, ...), log context); failures are told to chat_id."""
+        """Failures are told to the job's first argument, a chat."""
         while True:
             job, args, context = self.jobs.get()
             name = job.__name__.lstrip("_")
             clear_contextvars()
             bind_contextvars(**{**context, "job": name})
-            # settings or membership may have changed while queued
             args = tuple(self.accounts.get(a.id) if isinstance(a, Household) else a for a in args)
             if hh := next((a for a in args if isinstance(a, Household)), None):
                 bind_contextvars(household_id=hh.id)
@@ -322,7 +313,7 @@ class Bot:
                 except ShopError as e:
                     log.warning("health check failed", error=e.logged)
                     self.alert(hh.owner, f"⚠️ Daily check of your shop account failed: {e}.")
-                except Exception:  # never the other accounts' checks
+                except Exception:
                     log.exception("health check failed")
 
     def _say(self, chat_id: int, text: str, buttons=None, markup=None, entities=None) -> int | None:
@@ -363,7 +354,6 @@ class Bot:
         if command == "/start" and arg:
             return self._join(chat_id, user, arg)
         if not self.accounts.allowed(uid):
-            # Any first message, not just /start: people often tap /setup in the menu straight away.
             if private:
                 self._say(
                     chat_id,
@@ -497,7 +487,6 @@ class Bot:
             self._say(chat_id, "I didn't catch any items.")
 
     def _saved_address(self, chat_id: int, hh: Household, r: Request) -> Address | None:
-        """The one saved address whose label holds what was said."""
         if not (r.add or hh.ledger().basket()):
             self._say(chat_id, "The basket is empty; send the items with the address.")
             return None
@@ -587,17 +576,17 @@ class Bot:
             picking.address = address or picking.address
             picking.started = time.time()
             self.picking[pid] = picking
-        for old in stale:  # left open too long, it no longer holds new items back
+        for old in stale:
             hh.ledger().set_basket(combine(hh.ledger().basket(), old.picked))
             for ids in [*(a[3] for a in old.asks.values()), *(c.ids for c in old.checks.values())]:
                 for mid in filter(None, ids):
                     self.tg.remove_buttons(chat_id, mid)
-        for n, (name, qty, choices, ids) in new_asks.items():  # taps answer (pop) items while these go out
+        for n, (name, qty, choices, ids) in new_asks.items():
             ids.append(self._say(chat_id, f'Which "{name}" ({shown(qty)})?', [("Skip this item", f"{pid}:{n}:x")]))
             ids += [self._offer(chat_id, choice, qty, f"{pid}:{n}:{i}") for i, choice in enumerate(choices)]
         for n, check in new_checks.items():
             self._send_check(chat_id, hh, pid, n, check)
-        self._save()  # with the message ids, which a pick after a restart cleans up
+        self._save()
 
     def _send_check(self, chat_id: int, hh: Household, pid: str, n: int, check: Check) -> None:
         """Far more than usual is more often misheard than meant."""
@@ -635,7 +624,6 @@ class Bot:
             hh.ledger().set_asked(key, chat_id, message_id, when)
 
     def _answer_others(self, chat_id: int, message_id: int, hh: Household, yes: bool) -> None:
-        """On the worker. Once every question is answered, the order goes on."""
         asked = hh.ledger().asked()
         if not (key := next((k for k, (c, m, _) in asked.items() if (c, m) == (chat_id, message_id)), None)):
             return
@@ -758,7 +746,7 @@ class Bot:
         self._order(chat_id, hh, [], "due")
 
     def _order(self, chat_id: int, hh: Household, items: list[tuple[str, Qty]], when="hold", address=()) -> None:
-        if address:  # once its items join the basket
+        if address:
             hh.ledger().set_address(*address)
         self._unhold(hh)
         self._withdraw(hh)
@@ -845,7 +833,6 @@ class Bot:
         return True
 
     def _start_setup(self, uid: int, name: str) -> None:
-        """Setup runs in the private chat, whose id is the user's id."""
         self.replies[uid] = queue.Queue()
         threading.Thread(target=self._setup, args=(uid, name), daemon=True).start()
 
@@ -942,7 +929,7 @@ class Bot:
             log.info("setting rejected", setting=key)
             return self._say(chat_id, f"For example: {command} {example}")
         self.accounts.update(hh.id, **{key: value})
-        if key == "place_orders" and not value and self._unhold(hh):  # the countdown's message would mislead
+        if key == "place_orders" and not value and self._unhold(hh):
             self._queue(self._order, chat_id, hh, [], "due")
         log.info("setting changed", setting=key)
         self._settings(chat_id, self.accounts.get(hh.id))
@@ -974,7 +961,7 @@ class Bot:
         )
 
     def _setup(self, uid: int, name: str) -> None:
-        bind_contextvars(user_id=uid, chat_id=uid)  # a fresh thread; maybe started by the admin's tap
+        bind_contextvars(user_id=uid, chat_id=uid)
         log.info("setup started")
         session = self.cfg.data_dir / f".login-{uid}.json"
         try:

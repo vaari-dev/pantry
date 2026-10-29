@@ -25,7 +25,7 @@ URL = "https://vaari-dev.github.io/pantry/"
 BOT = "pantry_butler_bot"
 ASSETS = ("style.css", "favicon.svg", "og.png")
 
-GUIDE = [  # (section, [(page, title, one-line summary)])
+GUIDE = [
     ("Start", [
         ("index", "Welcome", "What Pantry does, and where to find everything"),
         ("getting-started", "Join and connect", "Get in, connect your Zepto account, place a first order"),

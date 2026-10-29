@@ -370,23 +370,13 @@ def test_over_the_limit_says_how_to_go_on(bot, shop):
     assert hh.ledger().basket() == [("bread", 2)]
 
 
-def test_a_start_asks_accounts_from_the_chrome_bot_to_set_up_again_and_drops_its_files(bot, shop):
-    hh, _ = shop
+def test_a_start_asks_accounts_without_an_address_to_set_up_again(bot, shop):
     (session := bot.cfg.data_dir / "old.json").write_text("{}")
     bot.accounts.allow(ADMIN)
     old = bot.accounts.connect(ADMIN, "Admin", "", "", session)  # households.json from before had no address_id
-    for left in (
-        hh.dir / "debug" / "x.png",
-        bot.cfg.data_dir / "tailscale" / "state",
-        bot.cfg.data_dir / "apimap.json",
-    ):
-        left.parent.mkdir(parents=True, exist_ok=True)
-        left.write_text("x")
     bot._resume()
     assert [t for c, t, _ in bot.tg.sent if t == botmod.RECONNECT] == [botmod.RECONNECT]
     said(bot, "🔌", chat=old.owner)
-    assert not [*bot.cfg.data_dir.glob("**/debug")] and not (bot.cfg.data_dir / "tailscale").exists()
-    assert not (bot.cfg.data_dir / "apimap.json").exists()
 
 
 @pytest.mark.parametrize(("due", "ordered"), [(timedelta(minutes=1), False), (timedelta(0), True)])
@@ -1085,18 +1075,6 @@ def test_ordering_on_again_keeps_the_basket(bot, shop):
     bot._on_message(message("/ordering on"))
     said(bot, "Delivery:")
     assert hh.ledger().basket() == [("bread", 1)]
-
-
-def test_a_pick_open_at_the_28_oct_deploy_survives_it(bot, shop):
-    hh, _ = shop
-    jam = vars(Product("Jam", "1 pc", "https://shop.example/jam", "₹60"))
-    old = {"chat_id": NEW, "household": hh.id, "ready": [["bread", 1]], "asks": {"0": ["jam", 1, [jam], [None]]},
-           "picked": [], "started": time.time(), "when": "hold", "address": []}  # fmt: skip
-    store.write(bot.saved, {"bot": "token", "offset": 9, "at": time.time(), "picking": {"p1": old}})
-    new = restarted(bot)
-    new._pick(hh, "p1:0:0")
-    sent(new, "⏳ I'll order this", having="• Jam ×1")
-    assert placed(hh) == [] and hh.ledger().basket() == [("bread", 1), ("jam", 1)]
 
 
 def test_an_old_question_cannot_answer_a_new_one(bot, shop):

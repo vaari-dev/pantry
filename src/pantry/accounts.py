@@ -29,8 +29,8 @@ class Household:
     dir: Path
     owner: int
     members: tuple[int, ...]
-    address_id: str  # the shop's saved address that orders go to
-    address: str  # that address, as the shop words it
+    address_id: str
+    address: str
     daily_cap: float
     min_order: float  # the shop charges a delivery fee below this
     place_orders: bool
@@ -79,7 +79,6 @@ class Accounts:
         return [self._household(data, hid) for hid in data["households"]]
 
     def people(self) -> list[int]:
-        """Everyone let in, the admin first."""
         return [self.admin, *(int(u) for u in self._read()["users"])]
 
     def name(self, uid: int) -> str:
@@ -111,26 +110,23 @@ class Accounts:
             data["households"][hid].update(settings)
 
     def invite(self, hid: str) -> str:
-        now = datetime.now()
         code = "".join(secrets.choice(INVITE_LETTERS) for _ in range(6))
+        expires = (datetime.now() + INVITE_VALID).isoformat(timespec="seconds")
         with self._edit() as data:
-            data["invites"] = {c: i for c, i in data["invites"].items() if datetime.fromisoformat(i["expires"]) > now}
-            data["invites"][code] = {"household": hid, "expires": (now + INVITE_VALID).isoformat(timespec="seconds")}
+            data["invites"] = {c: i for c, i in data["invites"].items() if _live(i)}
+            data["invites"][code] = {"household": hid, "expires": expires}
         return code
 
     def invited(self, code: str) -> str | None:
         """The household a live invite is for, leaving the invite unused."""
         invite = self._read()["invites"].get(code.strip().upper())
-        if invite and datetime.fromisoformat(invite["expires"]) > datetime.now():
-            return invite["household"]
-        return None
+        return invite["household"] if invite and _live(invite) else None
 
     def join(self, uid: int, name: str, code: str) -> Household | None:
         """None if the code is unknown, used or expired."""
         with self._edit() as data:
-            invite = data["invites"].pop(code.strip().upper(), {"household": None, "expires": "2000-01-01"})
-            hid = invite["household"]
-            if datetime.fromisoformat(invite["expires"]) < datetime.now() or hid not in data["households"]:
+            invite = data["invites"].pop(code.strip().upper(), None)
+            if not (invite and _live(invite) and (hid := invite["household"]) in data["households"]):
                 return None
             if data["users"].get(str(uid), {}).get("household") == hid:
                 return self._household(data, hid)
@@ -142,6 +138,10 @@ class Accounts:
         with self._edit() as data:
             if data["users"].get(str(uid), {}).get("household") == hid:
                 _leave(self.root, data, uid)
+
+
+def _live(invite: dict) -> bool:
+    return datetime.fromisoformat(invite["expires"]) > datetime.now()
 
 
 def _leave(root: Path, data: dict, uid: int) -> None:

@@ -109,7 +109,7 @@ class Request:
     clear_basket: bool = False
     now: bool = False
     address: str = ""
-    settings: list[tuple[str, str]] = field(default_factory=list)  # (limit | minimum | ordering, value)
+    settings: list[tuple[str, str]] = field(default_factory=list)
 
 
 def grounded(reply: dict, text: str) -> Request:

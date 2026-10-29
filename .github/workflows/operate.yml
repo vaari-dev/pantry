@@ -1,7 +1,6 @@
 name: Operate
 run-name: ${{ inputs.action }}
 
-# Day-two tasks on the box, so nobody needs to SSH in by hand.
 on:
   workflow_dispatch:
     inputs:

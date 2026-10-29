@@ -20,7 +20,7 @@ QUANTITY = re.compile(
 )
 FILLER_IN_SIZE = re.compile(r"\([^)]*\)|[^\w\s]|\d|\b(x|approx|each)\b", re.I)
 UNITS = {"k": ("g", 1000), "g": ("g", 1), "mg": ("g", 0.001), "m": ("ml", 1), "l": ("ml", 1000)}  # by first letters
-PACK = "pack"  # the unit of things sold by the piece
+PACK = "pack"
 
 Qty = int | str  # packs, or an amount like "2 l"
 
@@ -30,7 +30,7 @@ def measure(text: str) -> tuple[int, str] | None:
     for m in QUANTITY.finditer(text or ""):
         unit = (m.group(3) or "").lower()
         base, factor = UNITS.get(unit[:2]) or UNITS.get(unit[:1], (None, 0))
-        times = int(m.group(1) or 1) * int(m.group(4) or 1)  # 2 x 500 ml, 500 ml x 2
+        times = int(m.group(1) or 1) * int(m.group(4) or 1)
         if base and (value := round(times * float(m.group(2)) * factor)) > 0:
             return value, base
     return None
@@ -62,7 +62,7 @@ class Product:
     url: str
     price: str = ""
     image: str = ""
-    mrp: str = ""  # the original price, when the shop shows it struck through
+    mrp: str = ""
     family: str = ""  # the shop's id for the product, the same in all its sizes
 
     def label(self) -> str:
@@ -124,7 +124,6 @@ class Choice:
 
 
 def grouped(found: list[Product], limit: int) -> list[Choice]:
-    """Search results as products, each in all the sizes found."""
     choices: list[Choice] = []
     for p in found:
         if same := next((c for c in choices if same_product(c.sizes[0], p)), None):
@@ -157,7 +156,6 @@ class Catalog:
         return _choices(self._load().get(key, {}))
 
     def reprice(self, prices: dict[str, str]) -> None:
-        """url -> price, as the shop's cart showed it."""
         with store.edit(self.path, {}) as items:
             for entry in items.values():
                 entry["choices"] = [c.to_json() for c in _choices(entry)]
@@ -187,7 +185,7 @@ def _choices(entry: dict) -> list[Choice]:
         return [Choice.from_json(c) for c in entry["choices"] if c["sizes"]]
     old = [_repaired(Product(o["name"], o["size"], o["url"], o.get("price", ""))) for o in entry.get("options", [])]
     old = [p for p in old if p.url]
-    return [Choice(c.name, sorted(c.sizes, key=old.index)) for c in grouped(old, MAX_CHOICES)]  # latest pick first
+    return [Choice(c.name, sorted(c.sizes, key=old.index)) for c in grouped(old, MAX_CHOICES)]
 
 
 def _repaired(p: Product) -> Product:

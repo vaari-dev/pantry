@@ -28,5 +28,5 @@ def announce(old: Telegram, new: Telegram, people: list[int]) -> str:
             old.send(uid, MESSAGE.format(handle=handle), markup=button)
             told += 1
         except TelegramError:
-            pass  # they blocked the bot or never started it
+            pass
     return f"moved to @{handle}; told {told} of {len(people)}"

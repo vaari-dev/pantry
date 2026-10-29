@@ -48,22 +48,22 @@ class Ledger:
             data["basket"] = [list(i) for i in items]
             data["address"] = data["address"] if items else None
             for answers in ("others", "asked"):
-                data[answers] = {k: v for k, v in data.get(answers, {}).items() if k in dict(items)}
+                data[answers] = {k: v for k, v in data[answers].items() if k in dict(items)}
 
     def others(self) -> dict[str, bool]:
         return self._read()["others"]
 
     def set_others(self, key: str, allowed: bool) -> None:
         with self._edit() as data:
-            data["others"] = {**data.get("others", {}), key: allowed}
-            data["asked"] = {k: v for k, v in data.get("asked", {}).items() if k != key}
+            data["others"][key] = allowed
+            data["asked"].pop(key, None)
 
     def asked(self) -> dict[str, list]:
         return self._read()["asked"]
 
     def set_asked(self, key: str, chat_id: int, message_id: int | None, when: str) -> None:
         with self._edit() as data:
-            data["asked"] = {**data.get("asked", {}), key: [chat_id, message_id, when]}
+            data["asked"][key] = [chat_id, message_id, when]
 
     def bought(self, key: str) -> list[Qty]:
         return [q for o in self._orders() if o["status"] == "placed" for k, q in o["items"] if k == key]

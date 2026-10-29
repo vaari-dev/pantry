@@ -76,7 +76,7 @@ class Cart:
     item_total: float = 0
     problems: list[str] = field(default_factory=list)
     cod: bool = False
-    prices: dict[Product, str] = field(default_factory=dict)  # unit price charged
+    prices: dict[Product, str] = field(default_factory=dict)
 
 
 def _rupees(paise: int) -> str:
@@ -88,7 +88,6 @@ def _size(pack: str) -> str:
 
 
 def _url(name: str, variant: str) -> str:
-    """Like the shop's own product links, which end /pvid/<variant id>."""
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "item"
     return f"{SITE}/pn/{slug}/pvid/{variant}"
 
@@ -156,8 +155,6 @@ def _problems(bill: dict, expected: dict[Product, int], rules: Rules) -> list[st
 
 
 class Login:
-    """One sign-in: request_otp, then enter_otp gives the tokens to keep."""
-
     def __init__(self):
         self.verifier, self.state = secrets.token_urlsafe(48), secrets.token_urlsafe(8)
         self.client_id = self.session = self.phone = ""
@@ -241,13 +238,13 @@ class Zepto:
     def __init__(self, login_file: Path):
         self.login_file = login_file
         self._sid: str | None = None
-        self._spid: dict[str, str] = {}  # variant -> its id in the selected store
+        self._spid: dict[str, str] = {}
         self._price: dict[str, str] = {}  # variant -> price there; bills don't say
         self._n = 0
 
     def __enter__(self) -> "Zepto":
         self._login = store.read(self.login_file, {})
-        if "refresh_token" not in self._login:  # also a Chrome session saved before the MCP
+        if "refresh_token" not in self._login:
             raise ShopError(NOT_CONNECTED)
         if self._login["expires_at"] - time.time() < RENEW:
             self._renew()
@@ -264,7 +261,7 @@ class Zepto:
             fcntl.flock(lock, fcntl.LOCK_EX)
             saved = store.read(self.login_file, {})
             if saved.keys() >= TOKENS and saved["refresh_token"] != self._login["refresh_token"]:
-                self._login = saved  # renewed meanwhile by the other process
+                self._login = saved
                 return
             self._renew_now()
 
@@ -306,7 +303,7 @@ class Zepto:
             raise ShopError(LOGIN_EXPIRED if status == 401 else NOT_ANSWERING)
         self._sid = {k.lower(): v for k, v in got.items()}.get("mcp-session-id") or self._sid
         text = raw.decode()
-        if "data:" in text and not text.lstrip().startswith("{"):  # a server-sent event stream
+        if "data:" in text and not text.lstrip().startswith("{"):
             text = [line[5:] for line in text.splitlines() if line.startswith("data:")][-1]
         try:
             return json.loads(text) if text.strip() else {}
@@ -379,7 +376,6 @@ class Zepto:
         return self._price.get(product.variant, "")
 
     def fill(self, items: dict[Product, int]) -> None:
-        """Makes the cart exactly items: anything else in it goes."""
         cart = [
             {"productVariantId": p.variant, "storeProductId": self._spid[p.variant], "quantity": q}
             for p, q in items.items()
@@ -396,7 +392,7 @@ class Zepto:
         result.total = bill["toPayAmount"] / 100 if isinstance(bill.get("toPayAmount"), int) else None
         wallet = self.tool("create_wallet_order", quiet=True, confirmOrder=False, userAddressId=rules.address_id)
         result.cod = not (wallet and wallet.get("isPreview") and wallet.get("toPayAmount") == 0)
-        if not result.cod:  # the bill that would be placed
+        if not result.cod:
             result.problems += [p for p in _problems(wallet, expected, rules) if p not in result.problems]
         log.info(
             "bill read",
