@@ -78,6 +78,10 @@ class Accounts:
         data = self._read()
         return [self._household(data, hid) for hid in data["households"]]
 
+    def people(self) -> list[int]:
+        """Everyone let in, the admin first."""
+        return [self.admin, *(int(u) for u in self._read()["users"])]
+
     def name(self, uid: int) -> str:
         return self._read()["users"].get(str(uid), {}).get("name") or str(uid)
 
@@ -113,6 +117,13 @@ class Accounts:
             data["invites"] = {c: i for c, i in data["invites"].items() if datetime.fromisoformat(i["expires"]) > now}
             data["invites"][code] = {"household": hid, "expires": (now + INVITE_VALID).isoformat(timespec="seconds")}
         return code
+
+    def invited(self, code: str) -> str | None:
+        """The household a live invite is for, leaving the invite unused."""
+        invite = self._read()["invites"].get(code.strip().upper())
+        if invite and datetime.fromisoformat(invite["expires"]) > datetime.now():
+            return invite["household"]
+        return None
 
     def join(self, uid: int, name: str, code: str) -> Household | None:
         """None if the code is unknown, used or expired."""

@@ -85,3 +85,18 @@ def test_leave_is_scoped_and_own_invite_is_harmless(tmp_path, accounts):
     assert accounts.join(ASHA, "Asha", accounts.invite(hh.id)).owner == ASHA
     accounts.leave(RAVI, "elsewhere")
     assert accounts.get(hh.id).members == (ASHA, RAVI)
+
+
+def test_people_are_the_admin_and_everyone_let_in(accounts):
+    accounts.allow(7)
+    accounts.allow(ADMIN)
+    assert accounts.people() == [ADMIN, 7, ADMIN]
+
+
+def test_an_invite_can_be_looked_at_without_using_it(accounts):
+    code = accounts.invite("h1")
+    assert accounts.invited(code.lower()) == accounts.invited(code) == "h1"
+    assert accounts.invited("NOSUCH") is None
+    with accounts._edit() as data:
+        data["invites"][code]["expires"] = "2000-01-01T00:00:00"
+    assert accounts.invited(code) is None
