@@ -22,7 +22,7 @@ SITE = Path(__file__).parent
 OUT = SITE / "_site"
 CODE = SITE.parent / "src" / "pantry"
 URL = "https://vaari-dev.github.io/pantry/"
-BOT = "joey_butler_bot"
+BOT = "pantry_butler_bot"
 ASSETS = ("style.css", "favicon.svg", "og.png")
 
 GUIDE = [  # (section, [(page, title, one-line summary)])
