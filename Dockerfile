@@ -5,8 +5,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf 
  && useradd --uid 1001 --create-home bot
 
 WORKDIR /app
-COPY pyproject.toml ./
-RUN mkdir -p src/pantry && touch src/pantry/__init__.py && pip install --no-cache-dir ".[runtime]"
+COPY pyproject.toml uv.lock ./
+ENV UV_COMPILE_BYTECODE=1 UV_NO_CACHE=1 UV_PYTHON_DOWNLOADS=never PATH=/app/.venv/bin:$PATH
+RUN --mount=from=ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0,source=/uv,target=/bin/uv \
+    uv sync --locked --no-dev --extra runtime
 
 ARG WHISPER_MODEL=small
 ENV HF_HOME=/opt/hf PYTHONUNBUFFERED=1 DATA_DIR=/data

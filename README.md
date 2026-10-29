@@ -25,5 +25,5 @@ Logs: Loki, `{service_name="pantry"}`; never message text.
 ## Develop
 
 ```sh
-pip install -e '.[dev]' && ruff check . && ruff format --check . && pytest
+uv sync && uv run ruff check . && uv run ruff format --check . && uv run pytest
 ```

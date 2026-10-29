@@ -4,7 +4,7 @@ name: Image
 # the deploy builds the image anyway, and main can't read caches written by PR branches.
 on:
   pull_request:
-    paths: [Dockerfile, .dockerignore, pyproject.toml, 'docker/**', .github/workflows/image.yml]
+    paths: [Dockerfile, .dockerignore, pyproject.toml, uv.lock, 'docker/**', .github/workflows/image.yml]
 
 permissions:
   contents: read

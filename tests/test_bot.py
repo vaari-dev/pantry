@@ -66,6 +66,7 @@ class FakeAddresses:
 def bot(tmp_path, monkeypatch):
     monkeypatch.setattr(botmod, "Login", FakeLogin)
     monkeypatch.setattr(botmod, "Zepto", lambda _: FakeAddresses())
+    monkeypatch.setattr(botmod.Transcriber, "load", lambda _: None)  # run() must not load Whisper
     monkeypatch.setattr(botmod.signal, "signal", lambda *_: None)  # run() must not take pytest's SIGTERM
     cfg = Config("token", ADMIN, "small", tmp_path, 9, "key")
     b = botmod.Bot(cfg)

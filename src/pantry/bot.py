@@ -195,6 +195,7 @@ class Bot:
         self.username = self.tg.setup(NAME, COMMANDS, DESCRIPTION, SHORT)
         log.info("bot started", bot_username=self.username, households=len(self.accounts.all()))
         self._resume()
+        threading.Thread(target=self._load_whisper, daemon=True).start()
         threading.Thread(target=self._worker, daemon=True).start()
         threading.Thread(target=self._daily, daemon=True).start()
         while not self.stopping.is_set():
@@ -217,6 +218,15 @@ class Bot:
                 log.warning("telegram polling failed", error=str(e))
                 time.sleep(5)
         self._drain()
+
+    def _load_whisper(self) -> None:
+        started = time.monotonic()
+        try:
+            self.transcribe.load()
+        except Exception:  # the first voice note tries again
+            log.exception("whisper not loaded")
+            return
+        log.info("whisper loaded", seconds=round(time.monotonic() - started, 1))
 
     def _drain(self) -> None:
         """On SIGTERM: Telegram keeps new updates for the next start; the running job finishes, the
