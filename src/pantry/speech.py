@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 
 # Nudges Whisper to write Hindi words in Latin script.
@@ -7,12 +8,19 @@ PROMPT = "Bread aur do anda, ek doodh, teen kela, dhania aur aloo. Grocery items
 class Transcriber:
     def __init__(self, model: str):
         self._model_name, self._model = model, None
+        self._loading = threading.Lock()
+
+    def load(self) -> None:
+        """Run at startup on its own thread, so the first voice note after a deploy doesn't wait for it.
+        A voice note that arrives while it runs waits for the same load."""
+        with self._loading:
+            if self._model is None:
+                from faster_whisper import WhisperModel
+
+                self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8")
 
     def __call__(self, audio: Path, vocabulary: list[str]) -> str:
-        if self._model is None:
-            from faster_whisper import WhisperModel
-
-            self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8")
+        self.load()
         items = ", ".join(vocabulary[:80])
         segments, _ = self._model.transcribe(
             str(audio), language="en", beam_size=5, vad_filter=True, initial_prompt=PROMPT.format(items=items)

@@ -17,15 +17,11 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.13'
-          cache: pip
-          cache-dependency-path: pyproject.toml
-      - run: pip install -e '.[dev]'
-      - run: ruff check .
-      - run: ruff format --check .
-      - run: pytest -q
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q
       - name: No personal data or secrets
         run: |
           if git grep -nIE '(\+91[ -]?[0-9]{5}|bot[0-9]{8,}:[A-Za-z0-9_-]{30,}|tskey-[a-z]+-[A-Za-z0-9]{10,})' -- ':!*.md'; then exit 1; fi
