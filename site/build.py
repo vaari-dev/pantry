@@ -23,7 +23,16 @@ OUT = SITE / "_site"
 CODE = SITE.parent / "src" / "pantry"
 URL = "https://vaari-dev.github.io/pantry/"
 BOT = "pantry_butler_bot"
-ASSETS = ("style.css", "favicon.svg", "og.png")
+ASSETS = (
+    "style.css",
+    "favicon.svg",
+    "og.png",
+    "demo.mp4",
+    "demo.jpg",
+    "demo-portrait.mp4",
+    "demo-portrait.jpg",
+    "demo.vtt",
+)
 
 GUIDE = [
     ("Start", [
